@@ -22,7 +22,7 @@ Extension that enables seamless navigation between Rust backend commands/events 
 - **Performance Optimized**: Debounced scanning, cached paths, efficient regex parsing.
 - **Supported Languages**: TypeScript/TSX, JavaScript/JSX, Vue, Rust.
 
-<img width="397" height="234" alt="Image" src="https://github.com/user-attachments/assets/28d06b6a-d4c4-44f0-9071-f562176bd792" />
+<img width="397" height="234" alt="Image" src="https://github.com/user-attachments/assets/0ef78701-ad7e-4229-9b51-6ad2433ff823" />
 
 ## Installation
 
