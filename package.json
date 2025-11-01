@@ -1,0 +1,115 @@
+{
+  "name": "tarus-vscode-extension",
+  "displayName": "TARUS",
+  "author": {
+    "name": "mvoof",
+    "url": "https://github.com/mvoof"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mvoof/tarus-vscode-extension"
+  },
+  "publisher": "mvoof",
+  "description": "A Visual Studio Code extension that enables you to navigate between your Rust code and the corresponding Tauri commands",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:javascript",
+    "onLanguage:javascriptreact"
+  ],
+  "main": "./out/extension.js",
+  "icon": "images/icon.png",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tarus.rescan",
+        "title": "Tarus: Rescan Symbols"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Tarus Configuration",
+      "properties": {
+        "tarus.codeLensAction": {
+          "type": "string",
+          "enum": [
+            "open",
+            "references"
+          ],
+          "default": "open",
+          "description": "Action for CodeLens: 'open' — open file, 'references' — show references."
+        },
+        "tarus.rustRoot": {
+          "type": "string",
+          "default": "src-tauri/src"
+        },
+        "tarus.frontendRoot": {
+          "type": "string",
+          "default": "src"
+        },
+        "tarus.mappings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "rust": {
+                "type": "string"
+              },
+              "frontend": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "eventArgIndex": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "command",
+                  "event"
+                ]
+              }
+            },
+            "required": [
+              "rust",
+              "frontend",
+              "eventArgIndex",
+              "type"
+            ]
+          },
+          "default": []
+        }
+      }
+    }
+  },
+  "extensionKind": [
+    "workspace",
+    "ui"
+  ],
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix"
+  },
+  "devDependencies": {
+    "@types/node": "22.x",
+    "@types/vscode": "^1.105.0",
+    "@typescript-eslint/eslint-plugin": "^8.45.0",
+    "@typescript-eslint/parser": "^8.45.0",
+    "eslint": "^9.36.0",
+    "typescript": "^5.9.3"
+  }
+}

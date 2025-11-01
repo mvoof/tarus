@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "module": "node20",
+    "target": "esnext",
+    "outDir": "out",
+    "lib": ["esnext"],
+    "sourceMap": true,
+    "rootDir": "src",
+    "strict": true /* enable all strict type-checking options */,
+    "skipLibCheck": true,
+    "noEmitOnError": false
+  }
+}
