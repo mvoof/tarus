@@ -11,7 +11,7 @@
   },
   "publisher": "mvoof",
   "description": "A Visual Studio Code extension that enables you to navigate between your Rust code and the corresponding Tauri commands",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "engines": {
     "vscode": "^1.105.0"
   },
