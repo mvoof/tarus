@@ -45,8 +45,8 @@ Extension that enables seamless navigation between Rust backend commands/events 
 3. **From Source (Development)**:
    ```bash
    npm install -g @vscode/vsce
-   git clone https://github.com/mvoof/tarus-vscode-extension
-   cd tarus-vscode-extension
+   git clone https://github.com/mvoof/tarus
+   cd tarus
    vsce package
    ```
 
