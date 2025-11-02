@@ -1,6 +1,6 @@
 # TARUS IDE Extension
 
-[![VS Code Marketplace](https://img.shields.io/vscode-marketplace/v/mvoof.tarus-vscode-extension?color=blue)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Installs](https://img.shields.io/vscode-marketplace/i/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Version](https://img.shields.io/vscode-marketplace/v/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![License](https://img.shields.io/github/license/mvoof/tarus)](LICENSE)
+[![Installs](https://img.shields.io/vscode-marketplace/i/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Version](https://img.shields.io/vscode-marketplace/v/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![License](https://img.shields.io/github/license/mvoof/tarus)](LICENSE)
 
 Extension that enables seamless navigation between Rust backend commands/events and their corresponding frontend usages in Tauri applications. Supports **Tauri v2**
 
@@ -13,10 +13,12 @@ Extension that enables seamless navigation between Rust backend commands/events 
 - **Go to Definition**: Ctrl+Click (or F12) on frontend event/command names to jump to the Rust implementation.
 - **Hover Information**: Display Tauri command/event details on hover in frontend code.
 - **CodeLens Navigation**:
+
   | Direction | Action |
   |--------------------|---------------------------------|
   | **Frontend → Rust**| `Go to Rust: my-command` |
   | **Rust → Frontend**| `Go to Frontend: my-event` |
+
 - **Automatic Re-indexing**: Triggers on file saves in `src/` or `src-tauri/`.
 - **Customizable Mappings**: Extend support for custom Tauri patterns via settings.
 - **Performance Optimized**: Debounced scanning, cached paths, efficient regex parsing.
