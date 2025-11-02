@@ -1,6 +1,6 @@
 # TARUS IDE Extension
 
-[![VS Code Marketplace](https://img.shields.io/vscode-marketplace/v/tarus?color=blue)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus) [![Installs](https://img.shields.io/vscode-marketplace/i/mvoof.tarus)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus) [![Version](https://img.shields.io/vscode-marketplace/v/tarus)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus) [![License](https://img.shields.io/github/license/mvoof/tarus)](LICENSE)
+[![VS Code Marketplace](https://img.shields.io/vscode-marketplace/v/mvoof.tarus-vscode-extension?color=blue)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Installs](https://img.shields.io/vscode-marketplace/i/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Version](https://img.shields.io/vscode-marketplace/v/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![License](https://img.shields.io/github/license/mvoof/tarus)](LICENSE)
 
 Extension that enables seamless navigation between Rust backend commands/events and their corresponding frontend usages in Tauri applications. Supports **Tauri v2**
 
