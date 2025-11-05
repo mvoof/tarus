@@ -1,12 +1,15 @@
 import * as vscode from 'vscode';
 import { registerPair, updateCounterpart } from './registry';
 import { SymbolType, LanguageId, FilePath } from './types';
-
-const FRONTEND_FUNCS_FIRST = ['invoke', 'listen', 'once', 'emit'];
-const FRONTEND_FUNCS_SECOND = ['emitTo'];
+import {
+  RUST_LANGUAGE_ID,
+  REGEX_FRONTEND_FIRST,
+  REGEX_FRONTEND_SECOND,
+} from './constants';
 
 export class FrontendScanner {
   async scanAll() {
+    // Removed FRONTEND_FUNCS_FIRST and FRONTEND_FUNCS_SECOND from here
     const files = await vscode.workspace.findFiles(
       '**/*.{ts,tsx,js,jsx,vue}',
       '{**/node_modules/**,**/.git/**,**/target/**,**/dist/**,**/build/**,**/gen/**,**/vite.config.ts}'
@@ -31,15 +34,13 @@ export class FrontendScanner {
   ) {
     const text = doc.getText();
     const filePath: FilePath = doc.uri.fsPath;
-    const rustLanguageId: LanguageId = 'rust';
+    const rustLanguageId: LanguageId = RUST_LANGUAGE_ID; // Use constant
 
     // invoke, listen, once, emit
-    const regexFirst = new RegExp(
-      `\\b(${FRONTEND_FUNCS_FIRST.join('|')})\\s*(?:<[^>]*>)?\\s*\\(\\s*['"]([^'"]+)['"]`,
-      'g'
-    );
+    const regexFirst = REGEX_FRONTEND_FIRST;
 
     let match: RegExpExecArray | null;
+    regexFirst.lastIndex = 0; // Reset regex state before loop
 
     while ((match = regexFirst.exec(text)) !== null) {
       const func = match[1];
@@ -58,14 +59,13 @@ export class FrontendScanner {
         offset
       );
 
+      // This is necessary to update the current document's registry entry with its own offset
       updateCounterpart(name, filePath, currentDocumentLanguage, type, offset);
     }
 
     // emitTo
-    const regexSecond = new RegExp(
-      `\\b(${FRONTEND_FUNCS_SECOND.join('|')})\\s*\\(\\s*['"][^'"]+['"]\\s*,\\s*['"]([^'"]+)['"]`,
-      'g'
-    );
+    const regexSecond = REGEX_FRONTEND_SECOND;
+    regexSecond.lastIndex = 0; // Reset regex state before loop
 
     while ((match = regexSecond.exec(text)) !== null) {
       const name = match[2];
@@ -73,22 +73,19 @@ export class FrontendScanner {
       const nameIndex = match[0].lastIndexOf(name);
       const offset = match.index + nameIndex;
 
+      const type: SymbolType = 'event'; // explicitly set for emitTo
+
       registerPair(
         name,
         filePath,
         currentDocumentLanguage,
         rustLanguageId,
-        'event' as SymbolType,
+        type,
         offset
       );
 
-      updateCounterpart(
-        name,
-        filePath,
-        currentDocumentLanguage,
-        'event' as SymbolType,
-        offset
-      );
+      // This is necessary to update the current document's registry entry with its own offset
+      updateCounterpart(name, filePath, currentDocumentLanguage, type, offset);
     }
   }
 }

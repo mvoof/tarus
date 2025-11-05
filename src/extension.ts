@@ -14,7 +14,19 @@ import {
   LanguageId,
   CodeLensSettings,
   DeveloperMode,
+  SymbolInfo,
 } from './types';
+import {
+  SUPPORTED_LANGUAGES,
+  RUST_LANGUAGE_ID,
+  REGEX_RUST_COMMAND,
+  REGEX_FRONTEND_CALLS,
+  REGEX_RUST_FN_NAME,
+  REGEX_QUOTED_STRING,
+  REGEX_FULL_CALL_CHECK,
+  REGEX_RUST_EVENT_SINGLE_ARG,
+  REGEX_RUST_EVENT_TWO_ARGS,
+} from './constants';
 
 const output = vscode.window.createOutputChannel('Tarus');
 
@@ -25,6 +37,7 @@ const backendScanner = new BackendScanner();
 const _onDidChangeCodeLenses: vscode.EventEmitter<void> =
   new vscode.EventEmitter<void>();
 
+/** Debounces a function call */
 function debounce<T extends any[]>(
   func: (...args: T) => void,
   wait: number
@@ -46,7 +59,7 @@ function debounce<T extends any[]>(
   };
 }
 
-// Debug function only in dev mode
+/** Debug function only in dev mode: saves the registry to a JSON file */
 function saveRegistryForDebug(
   output: vscode.OutputChannel,
   isDevMode: DeveloperMode
@@ -91,7 +104,7 @@ function saveRegistryForDebug(
     output.appendLine(`Debug: Registry successfully saved to ${filePath}`);
 
     vscode.window.showInformationMessage(
-      `Tarus Debug: Registry savet to ${path.basename(filePath)}`
+      `Tarus Debug: Registry saved to ${path.basename(filePath)}`
     );
   } catch (error) {
     output.appendLine(`Debug: Failed to save registry: ${error}`);
@@ -100,6 +113,44 @@ function saveRegistryForDebug(
       `Tarus Debug: Failed to save registry. Check output channel.`
     );
   }
+}
+
+/** Creates a CodeLens for transition */
+function createCodeLens(
+  document: vscode.TextDocument,
+  name: string,
+  startOffset: number,
+  info: { location: string; offset: number },
+  useReferences: boolean
+): vscode.CodeLens {
+  const start = document.positionAt(startOffset);
+  const end = document.positionAt(startOffset + name.length);
+  const range = new vscode.Range(start, end);
+
+  const isRust = document.languageId === RUST_LANGUAGE_ID;
+
+  const title = isRust ? `Go to Frontend: ${name}` : `Go to Rust: ${name}`;
+
+  let command: string;
+  let args: any[];
+
+  if (useReferences) {
+    command = 'editor.action.peekDefinition';
+    args = [];
+  } else {
+    command = 'tarus.goToSymbol';
+
+    const targetUri = vscode.Uri.file(info.location);
+    const targetOffset = info.offset;
+
+    args = [targetUri, targetOffset];
+  }
+
+  return new vscode.CodeLens(range, {
+    title,
+    command: command,
+    arguments: args,
+  });
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -121,12 +172,12 @@ export function activate(context: vscode.ExtensionContext) {
     if (savedDocument) {
       const langId = savedDocument.languageId;
 
-      if (supportedLanguages.includes(langId)) {
+      if (SUPPORTED_LANGUAGES.includes(langId)) {
         const filePath = savedDocument.uri.fsPath;
 
         clearRegistryForFile(filePath);
 
-        if (langId === 'rust') {
+        if (langId === RUST_LANGUAGE_ID) {
           backendScanner.scanDocument(savedDocument);
         } else {
           frontendScanner.scanDocument(savedDocument);
@@ -204,16 +255,6 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('tarus.rescan', debouncedScan)
   );
 
-  const supportedLanguages = [
-    'typescript',
-    'typescriptreact',
-    'javascript',
-    'javascriptreact',
-    'vue',
-    'rust',
-    'frontend-generic',
-  ];
-
   // Command for precise transition
   context.subscriptions.push(
     vscode.commands.registerCommand(
@@ -231,7 +272,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Definition Provider (Ctrl+Click/F12)
   context.subscriptions.push(
-    vscode.languages.registerDefinitionProvider(supportedLanguages, {
+    vscode.languages.registerDefinitionProvider(SUPPORTED_LANGUAGES, {
       async provideDefinition(
         document,
         position
@@ -249,6 +290,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         const uri = vscode.Uri.file(info.location);
 
+        // Open the target document to get its positions correctly
         const targetDoc = await vscode.workspace.openTextDocument(uri);
         const targetPosition = targetDoc.positionAt(info.offset);
 
@@ -268,11 +310,11 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Hover
   context.subscriptions.push(
-    vscode.languages.registerHoverProvider(supportedLanguages, {
+    vscode.languages.registerHoverProvider(SUPPORTED_LANGUAGES, {
       async provideHover(document, position) {
         const symbol = getSymbolAtPosition(document, position);
 
-        if (!symbol || !symbol.name || !symbol.type) return;
+        if (!symbol) return;
 
         const { name, type, range } = symbol;
 
@@ -282,8 +324,8 @@ export function activate(context: vscode.ExtensionContext) {
         if (!info) return;
 
         const md = new vscode.MarkdownString(
-          `**${type}** \`${name}\` → \`${info.location}\``
-        );
+          `**${type}** \`${name}\` → \`${path.basename(info.location)}\``
+        ); // Display file name instead of full path
         md.isTrusted = true;
 
         return new vscode.Hover(md, range);
@@ -293,7 +335,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // CodeLens
   context.subscriptions.push(
-    vscode.languages.registerCodeLensProvider(supportedLanguages, {
+    vscode.languages.registerCodeLensProvider(SUPPORTED_LANGUAGES, {
       onDidChangeCodeLenses: _onDidChangeCodeLenses.event,
 
       provideCodeLenses(document) {
@@ -305,22 +347,13 @@ export function activate(context: vscode.ExtensionContext) {
         const text = document.getText();
 
         const language: LanguageId = document.languageId;
-        const isRust = language === 'rust';
+        const isRust = language === RUST_LANGUAGE_ID;
 
-        // (#[tauri::command] fn name)
-        const rustCommandRegex =
-          /#\[\s*(?:tauri::)?command(?:[^\]]*?)?\]\s*[\s\S]*?(?:pub\s+)?(?:async\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
-
-        // Rust events
-        const rustEventRegex =
-          /\b\w+\.(emit|emit_to|emit_filter|emit_str|emit_str_to|emit_str_filter|listen|listen_any|once|once_any)\s*\(\s*['"]([^'"]+)['"]/g;
-
-        // Frontend events
-        const frontendRegex =
-          /(invoke|emit|listen|once)\s*(?:<[^>]*>)?\s*\(\s*['"]([^'"]+)['"]|emitTo\s*\(\s*['"][^'"]+['"]\s*,\s*['"]([^'"]+)['"]/g;
+        let match: RegExpExecArray | null;
 
         if (isRust) {
-          let match: RegExpExecArray | null;
+          const rustCommandRegex = REGEX_RUST_COMMAND;
+          rustCommandRegex.lastIndex = 0; // Reset regex state
 
           while ((match = rustCommandRegex.exec(text)) !== null) {
             const name = match[1];
@@ -333,87 +366,81 @@ export function activate(context: vscode.ExtensionContext) {
 
             if (!info) continue;
 
-            const start = document.positionAt(startOffset);
-            const end = document.positionAt(startOffset + name.length);
-            const range = new vscode.Range(start, end);
+            lenses.push(
+              createCodeLens(document, name, startOffset, info, useReferences)
+            );
+          }
 
-            const title = `Go to Frontend: ${name}`;
+          // 2. Rust events (Single-argument)
+          const singleEventRegex = REGEX_RUST_EVENT_SINGLE_ARG;
+          singleEventRegex.lastIndex = 0;
 
-            let command: string;
-            let args: any[];
+          while ((match = singleEventRegex.exec(text)) !== null) {
+            const name = match[2];
+            const type: SymbolType = 'event';
 
-            if (useReferences) {
-              command = 'editor.action.peekDefinition';
-              args = [];
-            } else {
-              command = 'tarus.goToSymbol';
+            if (!name) continue;
 
-              const targetUri = vscode.Uri.file(info.location);
-              const targetOffset = info.offset;
+            const nameIndex = match[0].lastIndexOf(name);
+            const startOffset = match.index + nameIndex;
 
-              args = [targetUri, targetOffset];
-            }
+            const info = getCounterpartInfo(language, type, name);
+
+            if (!info) continue;
 
             lenses.push(
-              new vscode.CodeLens(range, {
-                title,
-                command: command,
-                arguments: args,
-              })
+              createCodeLens(document, name, startOffset, info, useReferences)
+            );
+          }
+
+          // 3. Rust events (Two-argument - emit_to)
+          const twoArgEventRegex = REGEX_RUST_EVENT_TWO_ARGS;
+          twoArgEventRegex.lastIndex = 0;
+
+          while ((match = twoArgEventRegex.exec(text)) !== null) {
+            const name = match[2];
+            const type: SymbolType = 'event';
+
+            if (!name) continue;
+
+            const nameIndex = match[0].lastIndexOf(name);
+            const startOffset = match.index + nameIndex;
+
+            const info = getCounterpartInfo(language, type, name);
+
+            if (!info) continue;
+
+            lenses.push(
+              createCodeLens(document, name, startOffset, info, useReferences)
             );
           }
         }
 
-        // Handling Rust/Frontend events/commands (calls)
-        const currentRegex = isRust ? rustEventRegex : frontendRegex;
+        // 4. Frontend calls (Commands and Events)
+        if (!isRust) {
+          const frontendRegex = REGEX_FRONTEND_CALLS;
+          frontendRegex.lastIndex = 0;
 
-        let match: RegExpExecArray | null;
+          while ((match = frontendRegex.exec(text)) !== null) {
+            const name = match[2] || match[4];
+            const funcName = match[1] || match[3];
 
-        while ((match = currentRegex.exec(text)) !== null) {
-          const name = isRust ? match[2] : match[2] || match[4];
-          const funcName = isRust ? match[1] : match[1] || match[3];
+            if (!name) continue;
 
-          if (!name) continue;
+            const type: SymbolType =
+              funcName === 'invoke' ? 'command' : 'event';
 
-          const type: SymbolType = funcName === 'invoke' ? 'command' : 'event';
+            const nameIndex = match[0].lastIndexOf(name);
+            const startOffset = match.index + nameIndex;
 
-          const nameIndex = match[0].lastIndexOf(name);
-          const startOffset = match.index + nameIndex;
+            const info = getCounterpartInfo(language, type, name);
 
-          const info = getCounterpartInfo(language, type, name);
+            if (!info) continue;
 
-          if (!info) continue;
-
-          const start = document.positionAt(startOffset);
-          const end = document.positionAt(startOffset + name.length);
-          const range = new vscode.Range(start, end);
-
-          const title = isRust
-            ? `Go to Frontend: ${name}`
-            : `Go to Rust: ${name}`;
-
-          let command: string;
-          let args: any[];
-
-          if (useReferences) {
-            command = 'editor.action.peekDefinition';
-            args = [];
-          } else {
-            command = 'tarus.goToSymbol';
-
-            const targetUri = vscode.Uri.file(info.location);
-            const targetOffset = info.offset;
-
-            args = [targetUri, targetOffset];
+            lenses.push(
+              createCodeLens(document, name, startOffset, info, useReferences)
+            );
           }
-
-          lenses.push(
-            new vscode.CodeLens(range, {
-              title,
-              command: command,
-              arguments: args,
-            })
-          );
         }
 
         return lenses;
@@ -426,87 +453,89 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 /**
- * Gets the name, type, offset, and RANGE of the symbol under the cursor.
+ * Checks if the cursor is on a Rust command function name.
  */
-function getSymbolAtPosition(
+function getRustSymbolAtPosition(
   document: vscode.TextDocument,
   position: vscode.Position
-): {
-  name: string;
-  type: SymbolType;
-  offset: number;
-  range: vscode.Range;
-} | null {
+): SymbolInfo | null {
   const line = document.lineAt(position.line);
   const lineText = line.text;
-  const isRust = document.languageId === 'rust';
+
+  const fnMatch = lineText.match(REGEX_RUST_FN_NAME);
+
+  if (!fnMatch) return null;
+
+  const nameCandidate = fnMatch[1];
+  const nameStartIndex = lineText.indexOf(nameCandidate, fnMatch.index);
+
+  if (nameStartIndex === -1) return null;
+
+  const nameEndIndex = nameStartIndex + nameCandidate.length;
+
+  // Check if the cursor is inside the function name
+  if (
+    position.character < nameStartIndex ||
+    position.character > nameEndIndex
+  ) {
+    return null;
+  }
+
+  // Check the previous lines (up to 3) for the presence of the #[tauri::command] attribute
+  let isCommand = false;
+
+  for (let j = position.line; j >= 0 && position.line - j < 3; j--) {
+    if (document.lineAt(j).text.includes('#[tauri::command]')) {
+      isCommand = true;
+
+      break;
+    }
+  }
+
+  if (isCommand) {
+    const name = nameCandidate;
+    const type: SymbolType = 'command';
+
+    const offset = document.offsetAt(
+      new vscode.Position(position.line, nameStartIndex)
+    );
+
+    const range = new vscode.Range(
+      new vscode.Position(position.line, nameStartIndex),
+      new vscode.Position(position.line, nameEndIndex)
+    );
+
+    return { name, type, offset, range };
+  }
+
+  return null;
+}
+
+/**
+ * Checks if the cursor is on a string argument of a Tauri call (frontend or Rust event/command call).
+ */
+function getFrontendSymbolAtPosition(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): SymbolInfo | null {
+  const line = document.lineAt(position.line);
+  const lineText = line.text;
 
   let name = '';
   let offset = -1;
   let symbolRange: vscode.Range | null = null;
   let type: SymbolType | null = null;
 
-  if (isRust) {
-    // Check if the cursor is on a line that contains a function name
-    const fnPattern =
-      /(?:pub\s+)?(?:async\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/;
-    const fnMatch = lineText.match(fnPattern);
-
-    if (fnMatch) {
-      const nameCandidate = fnMatch[1]; // Function name (example: start_process)
-
-      // The index of the start of the name relative to the start of the string
-      const nameStartIndex = lineText.indexOf(nameCandidate, fnMatch.index);
-
-      if (nameStartIndex !== -1) {
-        const nameEndIndex = nameStartIndex + nameCandidate.length;
-
-        // Check if the cursor is inside the function name
-        if (
-          position.character >= nameStartIndex &&
-          position.character <= nameEndIndex
-        ) {
-          // Check the previous lines (up to 3) for the presence of the #[tauri::command] attribute
-          let isCommand = false;
-          for (let j = position.line; j >= 0 && position.line - j < 3; j--) {
-            if (document.lineAt(j).text.includes('#[tauri::command]')) {
-              isCommand = true;
-
-              break;
-            }
-          }
-
-          if (isCommand) {
-            name = nameCandidate;
-            type = 'command' as SymbolType;
-
-            // Самый важный шаг: вычисляем точный offset
-            offset = document.offsetAt(
-              new vscode.Position(position.line, nameStartIndex)
-            );
-
-            symbolRange = new vscode.Range(
-              new vscode.Position(position.line, nameStartIndex),
-              new vscode.Position(position.line, nameEndIndex)
-            );
-
-            return { name, type, offset, range: symbolRange };
-          }
-        }
-      }
-    }
-  }
-
-  // Regex for 'name' or "name"
-  const quotedStringRegex = /(['"])([^'"]+)\1/g;
-  let match: RegExpExecArray | null;
-
   // Search for a string in quotation marks that contains the cursor position
+  const quotedStringRegex = REGEX_QUOTED_STRING;
+  let match: RegExpExecArray | null;
+  quotedStringRegex.lastIndex = 0; // Reset regex state
+
   while ((match = quotedStringRegex.exec(lineText)) !== null) {
     const startChar = match.index;
     const endChar = match.index + match[0].length;
 
-    // Check if the cursor is inside quotation marks
+    // Check if the cursor is inside quotation marks (not including the quotes themselves)
     if (position.character > startChar && position.character < endChar - 1) {
       name = match[2];
 
@@ -529,15 +558,12 @@ function getSymbolAtPosition(
   if (!name || !symbolRange) return null;
 
   // Regex for finding a full call (invoke, emit, app.listen etc...)
-  // This ensures that we don't hit a random word in quotation marks
-  const fullRegex = new RegExp(
-    `\\b(invoke|emit|listen|once|emitTo|\\b\\w+\\.(emit|emit_filter|emit_str|emit_str_filter|listen|listen_any|once|once_any|emit_to|emit_str_to))\\s*(?:<[^>]*>)?\\s*\\((?:\\s*['"][^'"]+['"]\\s*,)?\\s*['"]${name}['"]`
-  );
-
+  const fullRegex = REGEX_FULL_CALL_CHECK(name);
   const fullLineMatch = lineText.match(fullRegex);
 
   if (!fullLineMatch) return null;
 
+  // Determine the function name and symbol type
   const fullFuncName = fullLineMatch[1];
   const funcName = fullFuncName.split('.').pop() || fullFuncName;
 
@@ -550,21 +576,50 @@ function getSymbolAtPosition(
     (funcName === 'emitTo' || funcName.includes('emit_to')) &&
     type === 'event'
   ) {
+    // Check if the symbol is the FIRST argument in an emitTo/emit_to call.
+    // In emitTo/emit_to calls, the first argument is the window label (not the event name).
+    // The symbol must be the SECOND argument (the event name).
+
+    // Find the index of the event string in the line
     const stringInQuotesIndex =
       lineText.indexOf(`'${name}'`) !== -1
         ? lineText.indexOf(`'${name}'`)
         : lineText.indexOf(`"${name}"`);
 
-    // If the symbol is not the second argument, exit
-    if (
-      stringInQuotesIndex !== -1 &&
-      !lineText.slice(0, stringInQuotesIndex).includes(',')
-    ) {
+    if (stringInQuotesIndex === -1) return null; // Should not happen if fullRegex matched
+
+    // If the symbol is not preceded by a comma before the function call ends, it's the first argument.
+    // This simple check maintains the original logic: if the substring before the symbol
+    // contains no comma, it's the first argument and should be ignored for emitTo.
+    const preSymbolSubstring = lineText.slice(0, stringInQuotesIndex);
+
+    if (!preSymbolSubstring.includes(',')) {
+      // It's the first argument (window label), which we don't track.
       return null;
     }
   }
 
   return { name, type, offset, range: symbolRange };
+}
+
+/**
+ * Gets the name, type, offset, and RANGE of the symbol under the cursor.
+ */
+function getSymbolAtPosition(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): SymbolInfo | null {
+  if (document.languageId === RUST_LANGUAGE_ID) {
+    // 1. Check for Rust command definition
+    const rustCommandSymbol = getRustSymbolAtPosition(document, position);
+
+    if (rustCommandSymbol) {
+      return rustCommandSymbol;
+    }
+  }
+
+  // 2. Check for string argument in any Tauri call (Rust event call, Frontend command/event call)
+  return getFrontendSymbolAtPosition(document, position);
 }
 
 export function deactivate() {}

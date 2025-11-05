@@ -1,3 +1,5 @@
+import { Range } from 'vscode';
+
 export type SymbolType = 'command' | 'event';
 
 export type LanguageId = string;
@@ -19,3 +21,10 @@ export interface RegistryEntry {
 export type CodeLensSettings = 'new tab' | 'references';
 
 export type DeveloperMode = boolean;
+
+export interface SymbolInfo {
+  name: string;
+  type: SymbolType;
+  offset: number;
+  range: Range;
+}

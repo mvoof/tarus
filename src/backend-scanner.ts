@@ -1,9 +1,13 @@
 import * as vscode from 'vscode';
 import { getFrontendLanguageId, registerPair } from './registry';
 import { SymbolType, LanguageId, FilePath } from './types';
-
-const RUST_LANGUAGE_ID: LanguageId = 'rust';
-const GENERIC_FRONTEND_ID: LanguageId = 'frontend-generic'; // placeholder
+import {
+  RUST_LANGUAGE_ID,
+  GENERIC_FRONTEND_ID,
+  REGEX_RUST_COMMAND,
+  REGEX_RUST_EVENT_SINGLE_ARG, // <--- Использование новой константы
+  REGEX_RUST_EVENT_TWO_ARGS, // <--- Использование новой константы
+} from './constants';
 
 export class BackendScanner {
   async scanAll() {
@@ -28,11 +32,11 @@ export class BackendScanner {
     const text = doc.getText();
     const filePath: FilePath = doc.uri.fsPath;
 
-    const regex =
-      /#\[\s*(?:tauri::)?command(?:[^\]]*?)?\]\s*[\s\S]*?(?:pub\s+)?(?:async\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
+    const regex = REGEX_RUST_COMMAND;
 
     let match: RegExpExecArray | null;
     const type: SymbolType = 'command';
+    regex.lastIndex = 0; // Reset regex state
 
     while ((match = regex.exec(text)) !== null) {
       const name = match[1];
@@ -50,17 +54,16 @@ export class BackendScanner {
   private extractEvents(doc: vscode.TextDocument) {
     const text = doc.getText();
     const filePath: FilePath = doc.uri.fsPath;
-
     const type: SymbolType = 'event';
-
-    // any_word.(
-    const regexFirst =
-      /\b\w+\.(emit|emit_filter|emit_str|emit_str_filter|listen|listen_any|once|once_any)\s*\(\s*['"]([^'"]+)['"]/g;
 
     let match: RegExpExecArray | null;
 
-    while ((match = regexFirst.exec(text)) !== null) {
-      const name = match[2];
+    // 1. Scan for single-argument events (emit, listen, once, etc.)
+    const regexSingle = REGEX_RUST_EVENT_SINGLE_ARG;
+    regexSingle.lastIndex = 0;
+
+    while ((match = regexSingle.exec(text)) !== null) {
+      const name = match[2]; // Event name is the second capture group
       const nameIndex = match[0].lastIndexOf(name);
       const offset = match.index + nameIndex;
 
@@ -70,11 +73,12 @@ export class BackendScanner {
       registerPair(name, filePath, RUST_LANGUAGE_ID, targetLang, type, offset);
     }
 
-    const regexSecond =
-      /\b\w+\.(emit_to|emit_str_to)\s*\(\s*['"][^'"]+['"]\s*,\s*['"]([^'"]+)['"]/g;
+    // 2. Scan for two-argument events (emit_to, emit_str_to)
+    const regexTwo = REGEX_RUST_EVENT_TWO_ARGS;
+    regexTwo.lastIndex = 0;
 
-    while ((match = regexSecond.exec(text)) !== null) {
-      const name = match[2];
+    while ((match = regexTwo.exec(text)) !== null) {
+      const name = match[2]; // Event name is the second capture group
       const nameIndex = match[0].lastIndexOf(name);
       const offset = match.index + nameIndex;
 

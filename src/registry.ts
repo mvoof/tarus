@@ -1,4 +1,5 @@
 import { RegistryEntry, SymbolType, LanguageId, FilePath } from './types';
+import { RUST_LANGUAGE_ID } from './constants';
 
 export const registry = new Map<
   LanguageId,
@@ -13,7 +14,7 @@ export function getFrontendLanguageId(
   name: string
 ): LanguageId | null {
   for (const [langId, maps] of registry.entries()) {
-    if (langId !== 'rust') {
+    if (langId !== RUST_LANGUAGE_ID) {
       if (maps[type].has(name)) {
         return langId;
       }
@@ -61,6 +62,8 @@ export function updateCounterpart(
   const entry = langMap[type].get(name);
 
   if (entry) {
+    // These two lines are only relevant if a frontend call is updated with its own location/offset.
+    // The original logic was to update the entry with the *current* location/offset
     entry.location = location;
     entry.offset = offset;
 
@@ -69,6 +72,7 @@ export function updateCounterpart(
       entry.counterpart.name
     );
 
+    // This updates the offset of the counterpart in the target entry
     if (targetEntry) {
       targetEntry.counterpart.offset = offset;
     }
