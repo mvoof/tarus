@@ -10,7 +10,7 @@
     "url": "https://github.com/mvoof/tarus"
   },
   "publisher": "mvoof",
-  "description": "A Visual Studio Code extension that enables you to navigate between your Rust code and the corresponding Tauri commands",
+  "description": "A VS Code extension that provides convenient cross-language navigation between commands/events in frontend and backend code in the IDE (for Tauri projects)",
   "version": "0.0.3",
   "engines": {
     "vscode": "^1.105.0"
@@ -36,60 +36,26 @@
       }
     ],
     "configuration": {
-      "type": "object",
-      "title": "Tarus Configuration",
+      "title": "Tarus",
       "properties": {
         "tarus.codeLensAction": {
           "type": "string",
           "enum": [
-            "open",
+            "new tab",
             "references"
           ],
-          "default": "open",
-          "description": "Action for CodeLens: 'open' — open file, 'references' — show references."
+          "default": "new tab",
+          "description": "Action for CodeLens: 'new tab' — open file in new tab, 'references' — show references."
         },
-        "tarus.rustRoot": {
-          "type": "string",
-          "default": "src-tauri/src"
+        "tarus.showCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Controls whether the CodeLens will be shown for the transition."
         },
-        "tarus.frontendRoot": {
-          "type": "string",
-          "default": "src"
-        },
-        "tarus.mappings": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "rust": {
-                "type": "string"
-              },
-              "frontend": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "eventArgIndex": {
-                "type": "integer",
-                "minimum": 1
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "command",
-                  "event"
-                ]
-              }
-            },
-            "required": [
-              "rust",
-              "frontend",
-              "eventArgIndex",
-              "type"
-            ]
-          },
-          "default": []
+        "tarus.developerMode": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "⚠️WARNING! Do not enable it!\n Enable logging and this will also **create a debug file** in your workspace directory."
         }
       }
     }
