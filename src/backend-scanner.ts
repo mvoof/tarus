@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
 import { getFrontendLanguageId, registerPair } from './registry';
-import { SymbolType, LanguageId, FilePath } from './types';
+import { SymbolType, FilePath } from './types';
 import {
   RUST_LANGUAGE_ID,
   GENERIC_FRONTEND_ID,
   REGEX_RUST_COMMAND,
-  REGEX_RUST_EVENT_SINGLE_ARG, // <--- Использование новой константы
-  REGEX_RUST_EVENT_TWO_ARGS, // <--- Использование новой константы
+  REGEX_RUST_EVENT_SINGLE_ARG,
+  REGEX_RUST_EVENT_TWO_ARGS,
 } from './constants';
 
 export class BackendScanner {
