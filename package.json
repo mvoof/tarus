@@ -19,10 +19,12 @@
     "Other"
   ],
   "activationEvents": [
+    "onLanguage:rust",
     "onLanguage:typescript",
     "onLanguage:typescriptreact",
     "onLanguage:javascript",
-    "onLanguage:javascriptreact"
+    "onLanguage:javascriptreact",
+    "onLanguage:vue"
   ],
   "main": "./out/extension.js",
   "icon": "images/icon.png",
