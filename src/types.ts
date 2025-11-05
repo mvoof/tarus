@@ -1,23 +1,30 @@
-import * as vscode from "vscode";
+import { Range } from 'vscode';
 
-export type SymbolType = "command" | "event";
-export type CodeLensType = "open" | "references";
+export type SymbolType = 'command' | 'event';
 
-export interface TauriMapping {
-  /** Pattern in Rust (e.g. "app.emit") */
-  rust: string;
-  /** Frontend function names (e.g. ["listen", "once"]) */
-  frontend: string[];
-  /** 1-based index of event name argument */
-  eventArgIndex: number;
-  type: SymbolType;
+export type LanguageId = string;
+
+export type FilePath = string;
+
+export interface RegistryEntry {
+  location: FilePath;
+  language: LanguageId; // vscode languageId
+  offset: number; // Offset of the start of the symbol name in the file
+  counterpart: {
+    language: LanguageId; // vscode languageId
+    type: SymbolType;
+    name: string;
+    offset: number;
+  };
 }
 
-export interface TauriSymbol {
+export type CodeLensSettings = 'new tab' | 'references';
+
+export type DeveloperMode = boolean;
+
+export interface SymbolInfo {
   name: string;
-  location: vscode.Location;
   type: SymbolType;
+  offset: number;
+  range: Range;
 }
-
-export type SymbolMap = Map<string, TauriSymbol>;
-export type UsageMap = Map<string, vscode.Location[]>;
