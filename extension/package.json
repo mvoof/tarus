@@ -30,7 +30,19 @@
   ],
   "main": "./out/extension.js",
   "icon": "images/icon.png",
-  "contributes": {},
+  "contributes": {
+    "configuration":{
+      "title": "Tarus",
+      "properties":{
+        "tarus.developerMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enables detailed logging and internal diagnostics (for extension developers). Requires VS Code restart.",
+          "scope": "resource"
+        }
+      }
+    }
+  },
   "extensionKind": [
     "workspace",
     "ui"
