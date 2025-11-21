@@ -31,9 +31,9 @@
   "main": "./out/extension.js",
   "icon": "images/icon.png",
   "contributes": {
-    "configuration":{
+    "configuration": {
       "title": "Tarus",
-      "properties":{
+      "properties": {
         "tarus.developerMode": {
           "type": "boolean",
           "default": false,
