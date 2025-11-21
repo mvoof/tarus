@@ -4,17 +4,23 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Build Extension (Client + Server)",
       "type": "npm",
-      "script": "watch",
-      "problemMatcher": "$tsc-watch",
-      "isBackground": true,
-      "presentation": {
-        "reveal": "never"
+
+      "script": "vscode:prepublish",
+      "options": {
+        "cwd": "${workspaceFolder}/extension"
       },
+
+      "problemMatcher": ["$tsc"],
       "group": {
         "kind": "build",
         "isDefault": true
-      }
+      },
+      "presentation": {
+        "reveal": "silent"
+      },
+      "isBackground": false
     }
   ]
 }

@@ -19,43 +19,26 @@
     "Other"
   ],
   "activationEvents": [
+    "workspaceContains:tauri.conf.json",
     "onLanguage:rust",
     "onLanguage:typescript",
     "onLanguage:typescriptreact",
     "onLanguage:javascript",
     "onLanguage:javascriptreact",
-    "onLanguage:vue"
+    "onLanguage:vue",
+    "onLanguage:svelte"
   ],
   "main": "./out/extension.js",
   "icon": "images/icon.png",
   "contributes": {
-    "commands": [
-      {
-        "command": "tarus.rescan",
-        "title": "Tarus: Rescan Symbols"
-      }
-    ],
     "configuration": {
       "title": "Tarus",
       "properties": {
-        "tarus.codeLensAction": {
-          "type": "string",
-          "enum": [
-            "new tab",
-            "references"
-          ],
-          "default": "new tab",
-          "description": "Action for CodeLens: 'new tab' — open file in new tab, 'references' — show references."
-        },
-        "tarus.showCodeLens": {
-          "type": "boolean",
-          "default": true,
-          "description": "Controls whether the CodeLens will be shown for the transition."
-        },
         "tarus.developerMode": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "⚠️WARNING! Do not enable it!\n Enable logging and this will also **create a debug file** in your workspace directory."
+          "description": "Enables detailed logging and internal diagnostics (for extension developers). Requires VS Code restart.",
+          "scope": "resource"
         }
       }
     }
@@ -65,10 +48,12 @@
     "ui"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "vscode:prepublish": "npm run compile-client && npm run compile-server",
+    "compile-client": "tsc -p ./",
+    "compile-server": "npm run build-rust && npm run copy-local-files",
+    "build-rust": "cargo build --release --manifest-path ../lsp-server/Cargo.toml",
+    "copy-local-files": "node ./scripts/copy-local-binary.js",
     "watch": "tsc -watch -p ./",
-    "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
     "format": "prettier --write .",
@@ -84,5 +69,8 @@
     "eslint-plugin-prettier": "^5.5.4",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
   }
 }
