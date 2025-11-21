@@ -41,7 +41,7 @@ Contextual buttons appear above your commands and events to show usage stats or 
 | **Frontend Call** | `Go to Rust`     | Jumps to the Rust implementation.            |
 | **Multiple Uses** | `3 References`   | Opens a peek view to choose the destination. |
 
-![Demo](https://raw.githubusercontent.com/mvoof/tarus/main/docs/demo.gif)
+![Demo](https://raw.githubusercontent.com/mvoof/tarus/main/assets/demo.gif)
 
 ## License
 
