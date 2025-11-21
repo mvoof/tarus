@@ -1,5 +1,5 @@
 use crate::syntax::{Behavior, EntityType};
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::path::PathBuf;
 use tower_lsp::lsp_types::{Position, Range};
 
@@ -35,11 +35,8 @@ pub struct LocationInfo {
 
 #[derive(Debug, Default)]
 pub struct ProjectIndex {
-    /// (Command, "save") -> [ {main.rs, Def}, {app.ts, Call} ]
-    pub map: HashMap<IndexKey, Vec<LocationInfo>>,
-
-    /// "app.ts" -> [ (Command, "save"), (Event, "login") ]
-    pub file_map: HashMap<PathBuf, Vec<IndexKey>>,
+    pub map: DashMap<IndexKey, Vec<LocationInfo>>,
+    pub file_map: DashMap<PathBuf, Vec<IndexKey>>,
 }
 
 impl ProjectIndex {
@@ -55,9 +52,9 @@ impl ProjectIndex {
     ) -> Option<(IndexKey, LocationInfo)> {
         let keys_in_file = self.file_map.get(path)?;
 
-        for key in keys_in_file {
+        for key in keys_in_file.value() {
             if let Some(locations) = self.map.get(key) {
-                for loc in locations {
+                for loc in locations.value() {
                     if loc.path == *path {
                         if self.is_position_in_range(position, loc.range) {
                             return Some((key.clone(), loc.clone()));
@@ -95,7 +92,7 @@ impl ProjectIndex {
     }
 
     /// Appends (or overwrites) the parsing results of a single file
-    pub fn add_file(&mut self, file_index: FileIndex) {
+    pub fn add_file(&self, file_index: FileIndex) {
         // Clear old data about this file so that there are no duplicates
         self.remove_file(&file_index.path);
 
@@ -123,15 +120,13 @@ impl ProjectIndex {
     }
 
     /// Deletes all entries associated with a specific file.
-    pub fn remove_file(&mut self, path: &PathBuf) {
+    pub fn remove_file(&self, path: &PathBuf) {
         // If the file has already been indexed...
-        if let Some(keys) = self.file_map.remove(path) {
-            // ...go through all the keys that were in it
+        if let Some((_, keys)) = self.file_map.remove(path) {
             for key in keys {
-                if let Some(locations) = self.map.get_mut(&key) {
-                    // Remove from the list only those that belong to this file
-                    locations.retain(|loc| loc.path != *path);
-                }
+                self.map.entry(key.clone()).and_modify(|locs| {
+                    locs.retain(|loc| loc.path != *path);
+                });
 
                 // If the list becomes empty, you can remove the key from the map,
                 // to avoid storing garbage
@@ -149,7 +144,7 @@ impl ProjectIndex {
             name: name.to_string(),
         };
 
-        self.map.get(&key).cloned().unwrap_or_default()
+        self.map.get(&key).map(|v| v.clone()).unwrap_or_default()
     }
 
     /// Preparing data for CodeLens
@@ -162,7 +157,7 @@ impl ProjectIndex {
             None => return result,
         };
 
-        for key in keys {
+        for key in keys.value() {
             // Get ALL locations for key
             let all_locations = match self.map.get(key) {
                 Some(l) => l,

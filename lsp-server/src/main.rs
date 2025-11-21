@@ -3,7 +3,7 @@
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{OnceCell, RwLock};
+use tokio::sync::OnceCell;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -22,7 +22,7 @@ use syntax::{load_syntax, Behavior, CommandSyntax, EntityType};
 async fn process_file_index(
     path: PathBuf,
     command_syntax: &CommandSyntax,
-    index: &Arc<RwLock<ProjectIndex>>,
+    project_index: &Arc<ProjectIndex>,
 ) -> Option<usize> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
@@ -42,7 +42,7 @@ async fn process_file_index(
 
     let count = file_index.findings.len();
 
-    index.write().await.add_file(file_index);
+    project_index.add_file(file_index);
 
     Some(count)
 }
@@ -53,7 +53,7 @@ struct Backend {
     syntax_config_path: PathBuf,
     command_syntax: OnceCell<CommandSyntax>,
     workspace_root: OnceCell<PathBuf>,
-    index: Arc<RwLock<ProjectIndex>>,
+    project_index: Arc<ProjectIndex>,
     is_developer_mode_active: Arc<AtomicBool>,
 }
 
@@ -64,7 +64,9 @@ impl Backend {
             None => return,
         };
 
-        if let Some(count) = process_file_index(path.clone(), command_syntax, &self.index).await {
+        if let Some(count) =
+            process_file_index(path.clone(), command_syntax, &self.project_index).await
+        {
             self.client
                 .log_message(
                     MessageType::INFO,
@@ -184,7 +186,7 @@ impl LanguageServer for Backend {
 
         let root_clone = root.clone();
         let command_syntax_clone = command_syntax.clone();
-        let index_arc = self.index.clone();
+        let project_index_clone = self.project_index.clone();
         let client_clone = self.client.clone();
 
         tokio::spawn(async move {
@@ -200,15 +202,14 @@ impl LanguageServer for Backend {
 
             for path in files {
                 if let Some(count) =
-                    process_file_index(path, &command_syntax_clone, &index_arc).await
+                    process_file_index(path, &command_syntax_clone, &project_index_clone).await
                 {
                     total_findings += count;
                 }
             }
 
             // Report about the indexing process
-            let index_guard = index_arc.read().await;
-            let report = index_guard.technical_report();
+            let report = project_index_clone.technical_report();
             client_clone.log_message(MessageType::INFO, report).await;
 
             client_clone
@@ -243,16 +244,14 @@ impl LanguageServer for Backend {
             }
         };
 
-        let index = self.index.read().await;
-
-        if let Some((key, origin_loc)) = index.get_key_at_position(&path, position) {
+        if let Some((key, origin_loc)) = self.project_index.get_key_at_position(&path, position) {
             self.log_dev_info(&format!(
                 "✅ Found key under cursor: {:?} '{}' (Type: {:?})",
                 key.entity, key.name, origin_loc.behavior
             ))
             .await;
 
-            let all_refs = index.get_locations(key.entity, &key.name);
+            let all_refs = self.project_index.get_locations(key.entity, &key.name);
 
             let targets: Vec<&LocationInfo> = all_refs
                 .iter()
@@ -310,7 +309,7 @@ impl LanguageServer for Backend {
                 )
                 .await;
 
-            if let Some(keys) = index.file_map.get(&path) {
+            if let Some(keys) = self.project_index.file_map.get(&path) {
                 self.log_dev_info(&format!("ℹ️ Keys in this file: {:?}", keys.len()))
                     .await;
             }
@@ -328,14 +327,12 @@ impl LanguageServer for Backend {
             Err(_) => return Ok(None),
         };
 
-        let index = self.index.read().await;
-
         // Find the key under the cursor
-        if let Some((key, _)) = index.get_key_at_position(&path, position) {
+        if let Some((key, _)) = self.project_index.get_key_at_position(&path, position) {
             self.log_dev_info(&format!("🔎 Finding references for: {:?}", key))
                 .await;
 
-            let refs = index.get_locations(key.entity, &key.name);
+            let refs = self.project_index.get_locations(key.entity, &key.name);
 
             let locations: Vec<Location> = refs
                 .iter()
@@ -361,9 +358,7 @@ impl LanguageServer for Backend {
             Err(_) => return Ok(None),
         };
 
-        let index = self.index.read().await;
-
-        let lens_data = index.get_lens_data(&path);
+        let lens_data = self.project_index.get_lens_data(&path);
 
         if lens_data.is_empty() {
             return Ok(None);
@@ -422,10 +417,8 @@ impl LanguageServer for Backend {
             Err(_) => return Ok(None),
         };
 
-        let index = self.index.read().await;
-
-        if let Some((key, origin_loc)) = index.get_key_at_position(&path, position) {
-            let locations = index.get_locations(key.entity, &key.name);
+        if let Some((key, origin_loc)) = self.project_index.get_key_at_position(&path, position) {
+            let locations = self.project_index.get_locations(key.entity, &key.name);
 
             if locations.is_empty() {
                 return Ok(None);
@@ -536,7 +529,7 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let project_index = Arc::new(RwLock::new(ProjectIndex::new()));
+    let project_index = Arc::new(ProjectIndex::new());
 
     let initial_dev_mode_state = Arc::new(AtomicBool::new(false));
 
@@ -545,7 +538,7 @@ async fn main() {
         syntax_config_path: config_path,
         command_syntax: OnceCell::new(),
         workspace_root: OnceCell::new(),
-        index: project_index,
+        project_index,
         is_developer_mode_active: initial_dev_mode_state.clone(),
     });
 
