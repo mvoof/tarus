@@ -1,16 +1,18 @@
-use std::path::Path;
-
 use crate::{
     indexer::{FileIndex, Finding},
     syntax::{ArgSource, FrontendSyntax, Rule},
 };
 use oxc::{
     allocator::Allocator,
-    ast::ast::{Argument, CallExpression, Expression},
+    ast::ast::{
+        Argument, CallExpression, Expression, ImportDeclaration, ImportDeclarationSpecifier,
+    },
     ast_visit::{walk, Visit},
     parser::{Parser, ParserReturn},
     span::SourceType,
 };
+use std::collections::HashMap;
+use std::path::Path;
 use tower_lsp::lsp_types::{Position, Range};
 
 /// Visitor to AST ts/tsx
@@ -18,6 +20,8 @@ struct FrontendVisitor<'a> {
     source_code: &'a str,
     config: &'a FrontendSyntax,
     findings: Vec<Finding>,
+    // "myInvoke" -> "invoke"
+    aliases: HashMap<&'a str, &'a str>,
 }
 
 impl<'a> FrontendVisitor<'a> {
@@ -26,6 +30,7 @@ impl<'a> FrontendVisitor<'a> {
             source_code,
             config,
             findings: Vec::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -95,15 +100,34 @@ impl<'a> FrontendVisitor<'a> {
 }
 
 impl<'a> Visit<'a> for FrontendVisitor<'a> {
+    // Collect imports
+    fn visit_import_declaration(&mut self, decl: &ImportDeclaration<'a>) {
+        if let Some(specifiers) = &decl.specifiers {
+            for specifier in specifiers {
+                if let ImportDeclarationSpecifier::ImportSpecifier(import_spec) = specifier {
+                    let local_name = import_spec.local.name.as_str();
+                    let imported_name = import_spec.imported.name().as_str();
+
+                    self.aliases.insert(local_name, imported_name);
+                }
+            }
+        }
+
+        // Continue
+        walk::walk_import_declaration(self, decl);
+    }
+
+    // Check calls with aliases
     fn visit_call_expression(&mut self, expression: &CallExpression<'a>) {
-        // Get the name of the function being called
         if let Some(fn_name) = self.get_callee_name(&expression.callee) {
-            // Find the corresponding rule in the configuration
+            // Check if the name is an alias or use it as is
+            let original_name = self.aliases.get(fn_name).copied().unwrap_or(fn_name);
+
             let matching_rule = self
                 .config
                 .functions
                 .iter()
-                .find(|rule| rule.name == fn_name);
+                .find(|rule| rule.name == original_name);
 
             if let Some(rule) = matching_rule {
                 self.process_rule(rule, expression);
