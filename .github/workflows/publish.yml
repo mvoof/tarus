@@ -91,7 +91,7 @@ jobs:
           chmod +x extension/bin/lsp-server-macos-x64
           chmod +x extension/bin/lsp-server-macos-arm64
 
-          cp lsp-server/command_syntax.json extension/bin/command_syntax.json
+          cp lsp-server/src/command_syntax.json extension/bin/command_syntax.json
           cp README.md extension/README.md
           cp CHANGELOG.md extension/CHANGELOG.md
           cp LICENSE extension/LICENSE || echo "License file not found, skipping"
