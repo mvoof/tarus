@@ -3,7 +3,7 @@ name: Publish Extension
 on:
   push:
     tags:
-      - "v*" # launch on any tag that starts with v v1.0.0
+      - "v*"
 
 jobs:
   build:
@@ -12,19 +12,15 @@ jobs:
     strategy:
       matrix:
         target:
-          # Linux x64
           - os: ubuntu-latest
             rust-target: x86_64-unknown-linux-gnu
             binary-name: lsp-server-linux-x64
-          # Windows x64
           - os: windows-latest
             rust-target: x86_64-pc-windows-msvc
             binary-name: lsp-server-win-x64.exe
-          # macOS Intel x64
           - os: macos-latest
             rust-target: x86_64-apple-darwin
             binary-name: lsp-server-macos-x64
-          # macOS Apple Silicon
           - os: macos-latest
             rust-target: aarch64-apple-darwin
             binary-name: lsp-server-macos-arm64
@@ -40,13 +36,12 @@ jobs:
           targets: ${{ matrix.target.rust-target }}
 
       - name: Build Rust Binary
-        # build lsp-server binary for each target platform
         run: |
           cd lsp-server
           cargo build --release --target ${{ matrix.target.rust-target }}
 
       - name: Rename Binary
-        # Rename binary to match the target platform and upload it
+        shell: bash
         run: |
           if [ "${{ matrix.target.os }}" = "windows-latest" ]; then
             mv lsp-server/target/${{ matrix.target.rust-target }}/release/lsp-server.exe ${{ matrix.target.binary-name }}
@@ -55,7 +50,6 @@ jobs:
           fi
 
       - name: Upload Binary Artifact
-        # Upload binary as an artifact for further use in other workflows
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target.binary-name }}
@@ -75,41 +69,49 @@ jobs:
         with:
           node-version: 20
           cache: "npm"
-          cache-dependency-path: lsp-client/package-lock.json
+          cache-dependency-path: extension/package-lock.json
 
       - name: Download all Artifacts
         uses: actions/download-artifact@v4
         with:
-          # Download all files to a directory
           path: compiled-binaries
 
-      - name: Prepare Package
+      - name: Prepare Binaries and Config
         run: |
-          # 1. Move binaries to the client directory
-          mkdir -p lsp-client/bin
-          cp compiled-binaries/lsp-server-linux-x64/lsp-server-linux-x64 lsp-client/bin/
-          cp compiled-binaries/lsp-server-win-x64.exe/lsp-server-win-x64.exe lsp-client/bin/
-          cp compiled-binaries/lsp-server-macos-x64/lsp-server-macos-x64 lsp-client/bin/
-          cp compiled-binaries/lsp-server-macos-arm64/lsp-server-macos-arm64 lsp-client/bin/
+          mkdir -p extension/bin
 
-          # 2. Copy the command syntax file to the client directory
-          cp lsp-server/command_syntax.json lsp-client/bin/command_syntax.json
 
-          # 3. Install dependencies and compile the client code
-          cd lsp-client
+          cp compiled-binaries/lsp-server-linux-x64/lsp-server-linux-x64 extension/bin/
+          cp compiled-binaries/lsp-server-win-x64.exe/lsp-server-win-x64.exe extension/bin/
+          cp compiled-binaries/lsp-server-macos-x64/lsp-server-macos-x64 extension/bin/
+          cp compiled-binaries/lsp-server-macos-arm64/lsp-server-macos-arm64 extension/bin/
+
+
+          chmod +x extension/bin/lsp-server-linux-x64
+          chmod +x extension/bin/lsp-server-macos-x64
+          chmod +x extension/bin/lsp-server-macos-arm64
+
+          cp lsp-server/command_syntax.json extension/bin/command_syntax.json
+          cp README.md extension/README.md
+          cp CHANGELOG.md extension/CHANGELOG.md
+          cp LICENSE extension/LICENSE || echo "License file not found, skipping"
+
+      - name: Install Dependencies & Modify Scripts
+        run: |
+          cd extension
           npm ci
-          npm run compile-client
+          npm pkg set scripts.vscode:prepublish="npm run compile-client"
 
       - name: Publish to Visual Studio Marketplace
         uses: HaaLeo/publish-vscode-extension@v2
         with:
           pat: ${{ secrets.VS_MARKETPLACE_TOKEN }}
           registryUrl: https://marketplace.visualstudio.com
-          packagePath: lsp-client # Publishing from the subdirectory of the repository
+          packagePath: extension
 
       - name: Publish to Open VSX Registry
         if: env.OPEN_VSX_TOKEN != ''
         uses: HaaLeo/publish-vscode-extension@v2
         with:
           pat: ${{ secrets.OPEN_VSX_TOKEN }}
-          packagePath: lsp-client # Publishing from the subdirectory of the repository
+          packagePath: extension
