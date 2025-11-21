@@ -1,5 +1,5 @@
 <div align="center">
-   <img src="https://raw.githubusercontent.com/mvoof/tarus/main/images/icon.png" alt="TARUS Logo" width="120"/>
+   <img src="https://raw.githubusercontent.com/mvoof/tarus/main/extension/images/icon.png" alt="TARUS Logo" width="120"/>
    <h1>TARUS</h1>
 
    <p>
@@ -8,18 +8,8 @@
     Seamlessly jump between commands/events in frontend and backend code.
    </p>
 
-   <p>
-      <a href="https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension">
-         <img src="https://img.shields.io/visual-studio-marketplace/i/mvoof.tarus-vscode-extension?style=flat-square" alt="Installs"/>
-      </a>
-      <a href="https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension">
-         <img src="https://img.shields.io/visual-studio-marketplace/v/mvoof.tarus-vscode-extension?style=flat-square" alt="Version"/>
-      </a>
-      <a href="LICENSE">
-         <img src="https://img.shields.io/github/license/mvoof/tarus?style=flat-square" alt="License"/>
-      </a>
+[![Installs](https://img.shields.io/vscode-marketplace/i/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Version](https://img.shields.io/vscode-marketplace/v/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![License](https://img.shields.io/github/license/mvoof/tarus)](LICENSE)
 
-   </p>
 </div>
 
 ---
@@ -51,7 +41,7 @@ Contextual buttons appear above your commands and events to show usage stats or 
 | **Frontend Call** | `Go to Rust`     | Jumps to the Rust implementation.            |
 | **Multiple Uses** | `3 References`   | Opens a peek view to choose the destination. |
 
-![Demo](https://raw.githubusercontent.com/mvoof/tarus/main/images/demo.gif)
+![Demo](https://raw.githubusercontent.com/mvoof/tarus/main/docs/demo.gif)
 
 ## License
 
