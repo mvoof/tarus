@@ -11,7 +11,7 @@
   },
   "publisher": "mvoof",
   "description": "A VS Code extension that provides convenient cross-language navigation between commands/events in frontend and backend code in the IDE (for Tauri projects)",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "engines": {
     "vscode": "^1.105.0"
   },
