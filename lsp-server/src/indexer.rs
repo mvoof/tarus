@@ -1,5 +1,6 @@
 use crate::syntax::{Behavior, EntityType};
 use dashmap::DashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use tower_lsp::lsp_types::{Position, Range};
 
@@ -157,7 +158,13 @@ impl ProjectIndex {
             None => return result,
         };
 
+        let mut processed_keys: HashSet<&IndexKey> = HashSet::new(); //  tracking already processed keys
+
         for key in keys.value() {
+            if !processed_keys.insert(key) {
+                continue;
+            }
+
             // Get ALL locations for key
             let all_locations = match self.map.get(key) {
                 Some(l) => l,
