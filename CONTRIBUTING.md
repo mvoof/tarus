@@ -28,6 +28,13 @@ This extension consists of a Node.js Client (VS Code Extension) and a Rust Langu
     npm run vscode:prepublish
     ```
 
+    then run the extension from VSIX file:
+
+    ```bash
+    cd extension
+    vsce package
+    ```
+
 3.  **Run in Debug Mode:**
 
 - Open the project in VS Code.
