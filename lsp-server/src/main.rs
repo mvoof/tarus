@@ -23,16 +23,16 @@ async fn process_file_index(
     path: PathBuf,
     command_syntax: &CommandSyntax,
     project_index: &Arc<ProjectIndex>,
-) -> Option<usize> {
+) -> bool {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
     if !["rs", "ts", "tsx", "js", "jsx", "vue"].contains(&ext) {
-        return None;
+        return false;
     }
 
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return None,
+        Err(_) => return false,
     };
 
     let file_index = match ext {
@@ -40,11 +40,9 @@ async fn process_file_index(
         _ => parser_frontend::parse(&path, &content, &command_syntax.frontend),
     };
 
-    let count = file_index.findings.len();
-
     project_index.add_file(file_index);
 
-    Some(count)
+    true
 }
 
 #[derive(Debug)]
@@ -64,24 +62,18 @@ impl Backend {
     }
 
     async fn on_change(&self, path: PathBuf) {
+        if !self.is_ready() {
+            return;
+        }
+
         let command_syntax = match self.command_syntax.get() {
             Some(s) => s,
             None => return,
         };
 
-        if let Some(count) =
-            process_file_index(path.clone(), command_syntax, &self.project_index).await
-        {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!(
-                        "🔄 Updated index for {:?} ({} findings)",
-                        path.file_name().unwrap_or_default(),
-                        count
-                    ),
-                )
-                .await;
+        if process_file_index(path.clone(), command_syntax, &self.project_index).await {
+            let report = self.project_index.file_report(&path);
+            self.log_dev_info(&report).await;
         }
     }
 
@@ -187,6 +179,7 @@ impl LanguageServer for Backend {
                 if let Some(is_enabled) = settings.as_bool() {
                     self.is_developer_mode_active
                         .store(is_enabled, Ordering::Relaxed);
+
                     self.client
                         .log_message(
                             MessageType::INFO,
@@ -207,6 +200,8 @@ impl LanguageServer for Backend {
         let project_index_clone = self.project_index.clone();
         let client_clone = self.client.clone();
 
+        let is_dev_mode_clone = self.is_developer_mode_active.clone();
+
         tokio::spawn(async move {
             client_clone
                 .log_message(MessageType::INFO, "🚀 Starting background indexing...")
@@ -216,25 +211,18 @@ impl LanguageServer for Backend {
                 .await
                 .unwrap_or_default();
 
-            let mut total_findings = 0;
-
             for path in files {
-                if let Some(count) =
-                    process_file_index(path, &command_syntax_clone, &project_index_clone).await
-                {
-                    total_findings += count;
-                }
+                let _ = process_file_index(path, &command_syntax_clone, &project_index_clone).await;
             }
 
             // Report about the indexing process
             let report = project_index_clone.technical_report();
-            client_clone.log_message(MessageType::INFO, report).await;
+            if is_dev_mode_clone.load(Ordering::Relaxed) {
+                client_clone.log_message(MessageType::INFO, report).await;
+            }
 
             client_clone
-                .log_message(
-                    MessageType::INFO,
-                    format!("🏁 Indexing complete. Found {} references.", total_findings),
-                )
+                .log_message(MessageType::INFO, format!("🏁 Indexing complete"))
                 .await;
         });
     }
