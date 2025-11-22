@@ -324,11 +324,7 @@ impl LanguageServer for Backend {
 
             return Ok(Some(GotoDefinitionResponse::Link(links)));
         } else {
-            self.client
-                .log_message(
-                    MessageType::WARNING,
-                    "⚠️ No key found at this position. Check ranges!",
-                )
+            self.log_dev_info("⚠️ No key found at this position. Check ranges!")
                 .await;
 
             if let Some(keys) = self.project_index.file_map.get(&path) {
