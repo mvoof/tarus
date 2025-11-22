@@ -1,6 +1,6 @@
 use crate::syntax::{Behavior, EntityType};
 use dashmap::DashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use tower_lsp::lsp_types::{Position, Range};
 
@@ -212,6 +212,57 @@ impl ProjectIndex {
         result
     }
 
+    /// Generates a report only for a specific file (delta update)
+    pub fn file_report(&self, path: &PathBuf) -> String {
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        let mut report_message = String::new();
+
+        report_message.push_str(&format!("\n📝 === UPDATE REPORT: {} ===\n", filename));
+
+        let keys = match self.file_map.get(path) {
+            Some(k) => k,
+            None => {
+                return format!("📝 File update: {:?} (No Tarus keys found)", filename);
+            }
+        };
+
+        let keys_clone: Vec<IndexKey> = keys.value().clone();
+
+        report_message.push_str("\n🔑 === 1. MAIN KEY INDEX (Delta Subset) ===\n");
+
+        let mut delta_map: HashMap<IndexKey, Vec<LocationInfo>> = HashMap::new();
+
+        for key in &keys_clone {
+            if let Some(locs) = self.map.get(key) {
+                let file_locs: Vec<LocationInfo> =
+                    locs.iter().filter(|l| l.path == *path).cloned().collect();
+
+                if !file_locs.is_empty() {
+                    delta_map.insert(key.clone(), file_locs);
+                }
+            }
+        }
+
+        if delta_map.is_empty() {
+            report_message.push_str("   (Map subset is empty)\n");
+        } else {
+            report_message.push_str(&format!("{:#?}\n", delta_map));
+        }
+
+        report_message.push_str("\n📄 === 2. REVERSE FILE MAP (Delta Subset) ===\n");
+
+        let mut delta_file_map: HashMap<PathBuf, Vec<IndexKey>> = HashMap::new();
+        delta_file_map.insert(path.clone(), keys_clone);
+
+        report_message.push_str(&format!("{:#?}\n", delta_file_map));
+
+        report_message
+    }
+
     /// Creates a readable report of the index contents
     pub fn technical_report(&self) -> String {
         let mut report_message = String::from("\n💾 === TECHNICAL INDEX DUMP ===\n");
@@ -222,20 +273,10 @@ impl ProjectIndex {
             return report_message;
         }
 
-        // ===============================================
-        // SECTION 1: MAIN INDEX (map)
-        // Shows where each KEY is used
-        // ===============================================
-
         report_message.push_str("\n\n🔑 === 1. MAIN KEY INDEX (map) ===\n");
         report_message.push_str("   [Key -> List of ALL Locations]\n");
-
+        
         report_message.push_str(&format!("{:#?}\n", self.map));
-
-        // ===============================================
-        // SECTION 2: REVERSE FILE INDEX (file_map)
-        // Shows which KEYS are in each FILE
-        // ===============================================
 
         report_message.push_str("\n\n📄 === 2. REVERSE FILE MAP (file_map) ===\n");
         report_message.push_str("   [FilePath -> List of ALL Keys in that file]\n");

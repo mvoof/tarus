@@ -23,16 +23,16 @@ async fn process_file_index(
     path: PathBuf,
     command_syntax: &CommandSyntax,
     project_index: &Arc<ProjectIndex>,
-) -> Option<usize> {
+) -> bool {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
     if !["rs", "ts", "tsx", "js", "jsx", "vue"].contains(&ext) {
-        return None;
+        return false;
     }
 
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return None,
+        Err(_) => return false,
     };
 
     let file_index = match ext {
@@ -40,11 +40,9 @@ async fn process_file_index(
         _ => parser_frontend::parse(&path, &content, &command_syntax.frontend),
     };
 
-    let count = file_index.findings.len();
-
     project_index.add_file(file_index);
 
-    Some(count)
+    true
 }
 
 #[derive(Debug)]
@@ -58,25 +56,24 @@ struct Backend {
 }
 
 impl Backend {
+    /// Helper: Checks if the server is fully initialized (Config loaded)
+    fn is_ready(&self) -> bool {
+        self.command_syntax.get().is_some()
+    }
+
     async fn on_change(&self, path: PathBuf) {
+        if !self.is_ready() {
+            return;
+        }
+
         let command_syntax = match self.command_syntax.get() {
             Some(s) => s,
             None => return,
         };
 
-        if let Some(count) =
-            process_file_index(path.clone(), command_syntax, &self.project_index).await
-        {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!(
-                        "🔄 Updated index for {:?} ({} findings)",
-                        path.file_name().unwrap_or_default(),
-                        count
-                    ),
-                )
-                .await;
+        if process_file_index(path.clone(), command_syntax, &self.project_index).await {
+            let report = self.project_index.file_report(&path);
+            self.log_dev_info(&report).await;
         }
     }
 
@@ -97,8 +94,12 @@ impl LanguageServer for Backend {
             params.root_path.map(PathBuf::from)
         };
 
+        let mut is_tauri = false;
+
         if let Some(root) = root_path {
             if is_tauri_project(&root) {
+                is_tauri = true;
+
                 let _ = self.workspace_root.set(root.clone());
 
                 match load_syntax(&self.syntax_config_path) {
@@ -120,9 +121,18 @@ impl LanguageServer for Backend {
                                 format!("❌ Failed to load syntax config: {}", e),
                             )
                             .await;
+
+                        is_tauri = false;
                     }
                 }
             }
+        }
+
+        if !is_tauri {
+            return Ok(InitializeResult {
+                capabilities: ServerCapabilities::default(),
+                server_info: None,
+            });
         }
 
         Ok(InitializeResult {
@@ -148,6 +158,11 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        let command_syntax = match self.command_syntax.get() {
+            Some(s) => s,
+            None => return,
+        };
+
         let ext_config_request = ConfigurationParams {
             items: vec![ConfigurationItem {
                 scope_uri: None,
@@ -164,6 +179,7 @@ impl LanguageServer for Backend {
                 if let Some(is_enabled) = settings.as_bool() {
                     self.is_developer_mode_active
                         .store(is_enabled, Ordering::Relaxed);
+
                     self.client
                         .log_message(
                             MessageType::INFO,
@@ -173,11 +189,6 @@ impl LanguageServer for Backend {
                 }
             }
         }
-
-        let command_syntax = match self.command_syntax.get() {
-            Some(s) => s,
-            None => return,
-        };
 
         let root = match self.workspace_root.get() {
             Some(r) => r,
@@ -189,6 +200,8 @@ impl LanguageServer for Backend {
         let project_index_clone = self.project_index.clone();
         let client_clone = self.client.clone();
 
+        let is_dev_mode_clone = self.is_developer_mode_active.clone();
+
         tokio::spawn(async move {
             client_clone
                 .log_message(MessageType::INFO, "🚀 Starting background indexing...")
@@ -198,25 +211,18 @@ impl LanguageServer for Backend {
                 .await
                 .unwrap_or_default();
 
-            let mut total_findings = 0;
-
             for path in files {
-                if let Some(count) =
-                    process_file_index(path, &command_syntax_clone, &project_index_clone).await
-                {
-                    total_findings += count;
-                }
+                let _ = process_file_index(path, &command_syntax_clone, &project_index_clone).await;
             }
 
             // Report about the indexing process
             let report = project_index_clone.technical_report();
-            client_clone.log_message(MessageType::INFO, report).await;
+            if is_dev_mode_clone.load(Ordering::Relaxed) {
+                client_clone.log_message(MessageType::INFO, report).await;
+            }
 
             client_clone
-                .log_message(
-                    MessageType::INFO,
-                    format!("🏁 Indexing complete. Found {} references.", total_findings),
-                )
+                .log_message(MessageType::INFO, format!("🏁 Indexing complete"))
                 .await;
         });
     }
@@ -225,6 +231,10 @@ impl LanguageServer for Backend {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
@@ -302,11 +312,7 @@ impl LanguageServer for Backend {
 
             return Ok(Some(GotoDefinitionResponse::Link(links)));
         } else {
-            self.client
-                .log_message(
-                    MessageType::WARNING,
-                    "⚠️ No key found at this position. Check ranges!",
-                )
+            self.log_dev_info("⚠️ No key found at this position. Check ranges!")
                 .await;
 
             if let Some(keys) = self.project_index.file_map.get(&path) {
@@ -319,6 +325,10 @@ impl LanguageServer for Backend {
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
@@ -352,6 +362,10 @@ impl LanguageServer for Backend {
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
         let uri = params.text_document.uri;
         let path = match uri.to_file_path() {
             Ok(p) => p,
@@ -409,6 +423,10 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
@@ -510,6 +528,10 @@ impl LanguageServer for Backend {
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        if !self.is_ready() {
+            return;
+        }
+
         if let Ok(path) = params.text_document.uri.to_file_path() {
             self.on_change(path).await;
         }
