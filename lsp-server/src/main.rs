@@ -58,6 +58,11 @@ struct Backend {
 }
 
 impl Backend {
+    /// Helper: Checks if the server is fully initialized (Config loaded)
+    fn is_ready(&self) -> bool {
+        self.command_syntax.get().is_some()
+    }
+
     async fn on_change(&self, path: PathBuf) {
         let command_syntax = match self.command_syntax.get() {
             Some(s) => s,
@@ -97,8 +102,12 @@ impl LanguageServer for Backend {
             params.root_path.map(PathBuf::from)
         };
 
+        let mut is_tauri = false;
+
         if let Some(root) = root_path {
             if is_tauri_project(&root) {
+                is_tauri = true;
+
                 let _ = self.workspace_root.set(root.clone());
 
                 match load_syntax(&self.syntax_config_path) {
@@ -120,9 +129,18 @@ impl LanguageServer for Backend {
                                 format!("❌ Failed to load syntax config: {}", e),
                             )
                             .await;
+
+                        is_tauri = false;
                     }
                 }
             }
+        }
+
+        if !is_tauri {
+            return Ok(InitializeResult {
+                capabilities: ServerCapabilities::default(),
+                server_info: None,
+            });
         }
 
         Ok(InitializeResult {
@@ -148,6 +166,11 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        let command_syntax = match self.command_syntax.get() {
+            Some(s) => s,
+            None => return,
+        };
+
         let ext_config_request = ConfigurationParams {
             items: vec![ConfigurationItem {
                 scope_uri: None,
@@ -173,11 +196,6 @@ impl LanguageServer for Backend {
                 }
             }
         }
-
-        let command_syntax = match self.command_syntax.get() {
-            Some(s) => s,
-            None => return,
-        };
 
         let root = match self.workspace_root.get() {
             Some(r) => r,
@@ -225,6 +243,10 @@ impl LanguageServer for Backend {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
@@ -319,6 +341,10 @@ impl LanguageServer for Backend {
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
@@ -352,6 +378,10 @@ impl LanguageServer for Backend {
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
         let uri = params.text_document.uri;
         let path = match uri.to_file_path() {
             Ok(p) => p,
@@ -409,6 +439,10 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
@@ -510,6 +544,10 @@ impl LanguageServer for Backend {
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        if !self.is_ready() {
+            return;
+        }
+
         if let Ok(path) = params.text_document.uri.to_file_path() {
             self.on_change(path).await;
         }
