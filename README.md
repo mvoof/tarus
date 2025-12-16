@@ -1,5 +1,5 @@
 <div align="center">
-   <img src="https://raw.githubusercontent.com/mvoof/tarus/main/extension/images/icon.png" alt="TARUS Logo" width="120"/>
+   <img src="https://raw.githubusercontent.com/mvoof/tarus/main/assets/icon.png" alt="TARUS Logo" width="120"/>
    <h1>TARUS</h1>
 
    <p>
