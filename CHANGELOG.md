@@ -1,5 +1,9 @@
 ## Change Log
 
+### [0.2.2]
+
+- **Refactor:** use tower-lsp-server  instead tower-lsp.
+
 ### [0.2.1]
 
 - **Silent by Default:** Removed reference counting logs. The extension now runs silently in the background without spamming "Updated index" messages.
