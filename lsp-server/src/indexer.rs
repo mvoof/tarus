@@ -2,7 +2,7 @@ use crate::syntax::{Behavior, EntityType};
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use tower_lsp::lsp_types::{Position, Range};
+use tower_lsp_server::lsp_types::{Position, Range};
 
 /// A single occurrence in a file (parser result)
 #[derive(Debug, Clone)]

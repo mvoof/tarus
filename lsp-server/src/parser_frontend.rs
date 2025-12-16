@@ -13,7 +13,7 @@ use oxc::{
 };
 use std::collections::HashMap;
 use std::path::Path;
-use tower_lsp::lsp_types::{Position, Range};
+use tower_lsp_server::lsp_types::{Position, Range};
 
 /// Visitor to AST ts/tsx
 struct FrontendVisitor<'a> {

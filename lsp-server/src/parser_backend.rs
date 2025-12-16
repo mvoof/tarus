@@ -4,7 +4,7 @@ use crate::{
     indexer::{FileIndex, Finding},
     syntax::{ArgSource, BackendSyntax},
 };
-use tower_lsp::lsp_types::{Position, Range};
+use tower_lsp_server::lsp_types::{Position, Range};
 
 use syn::visit::{self, Visit};
 use syn::{Attribute, Expr, ExprLit, ExprMethodCall, ItemFn, Lit, Meta};

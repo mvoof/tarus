@@ -4,9 +4,9 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::*;
-use tower_lsp::{Client, LanguageServer, LspService, Server};
+use tower_lsp_server::{
+    jsonrpc::Result, lsp_types::*, Client, LanguageServer, LspService, Server, UriExt,
+};
 
 mod indexer;
 mod parser_backend;
@@ -84,15 +84,20 @@ impl Backend {
     }
 }
 
-#[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        let root_path = if let Some(root_uri) = params.root_uri {
-            root_uri.to_file_path().ok()
-        } else {
-            #[allow(deprecated)]
-            params.root_path.map(PathBuf::from)
-        };
+        let root_path = params
+            .workspace_folders
+            .as_ref()
+            .and_then(|folders| folders.first())
+            .and_then(|folder| folder.uri.to_file_path())
+            .map(|path_cow| path_cow.to_path_buf())
+            .or_else(|| {
+                #[allow(deprecated)]
+                params
+                    .root_uri
+                    .and_then(|uri| uri.to_file_path().map(|path_cow| path_cow.to_path_buf()))
+            });
 
         let mut is_tauri = false;
 
@@ -244,15 +249,14 @@ impl LanguageServer for Backend {
         ))
         .await;
 
-        let path = match uri.to_file_path() {
-            Ok(p) => p,
-            Err(_) => {
-                self.client
-                    .log_message(MessageType::ERROR, "❌ Failed to convert URI to path")
-                    .await;
-                return Ok(None);
-            }
+        let Some(path_cow) = uri.to_file_path() else {
+            self.client
+                .log_message(MessageType::ERROR, "❌ Failed to convert URI to path")
+                .await;
+            return Ok(None);
         };
+
+        let path: PathBuf = path_cow.to_path_buf();
 
         if let Some((key, origin_loc)) = self.project_index.get_key_at_position(&path, position) {
             self.log_dev_info(&format!(
@@ -298,11 +302,10 @@ impl LanguageServer for Backend {
             let links: Vec<LocationLink> = targets
                 .into_iter()
                 .filter_map(|target| {
-                    let target_uri = Url::from_file_path(&target.path).ok()?;
+                    let target_uri = Uri::from_file_path(&target.path)?;
 
                     Some(LocationLink {
                         origin_selection_range: Some(origin_loc.range),
-
                         target_uri,
                         target_range: target.range,
                         target_selection_range: target.range,
@@ -332,10 +335,11 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        let path = match uri.to_file_path() {
-            Ok(p) => p,
-            Err(_) => return Ok(None),
+        let Some(path_cow) = uri.to_file_path() else {
+            return Ok(None);
         };
+
+        let path: PathBuf = path_cow.to_path_buf();
 
         // Find the key under the cursor
         if let Some((key, _)) = self.project_index.get_key_at_position(&path, position) {
@@ -347,7 +351,7 @@ impl LanguageServer for Backend {
             let locations: Vec<Location> = refs
                 .iter()
                 .filter_map(|r| {
-                    let uri = Url::from_file_path(&r.path).ok()?;
+                    let uri = Uri::from_file_path(&r.path)?;
                     Some(Location {
                         uri,
                         range: r.range,
@@ -367,10 +371,12 @@ impl LanguageServer for Backend {
         }
 
         let uri = params.text_document.uri;
-        let path = match uri.to_file_path() {
-            Ok(p) => p,
-            Err(_) => return Ok(None),
+
+        let Some(path_cow) = uri.to_file_path() else {
+            return Ok(None);
         };
+
+        let path: PathBuf = path_cow.to_path_buf();
 
         let lens_data = self.project_index.get_lens_data(&path);
 
@@ -385,7 +391,7 @@ impl LanguageServer for Backend {
             let lsp_locations: Vec<Location> = targets
                 .iter()
                 .filter_map(|t| {
-                    let target_uri = Url::from_file_path(&t.path).ok()?;
+                    let target_uri = Uri::from_file_path(&t.path)?;
                     Some(Location {
                         uri: target_uri,
                         range: t.range,
@@ -430,10 +436,11 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let path = match uri.to_file_path() {
-            Ok(p) => p,
-            Err(_) => return Ok(None),
+        let Some(path_cow) = uri.to_file_path() else {
+            return Ok(None);
         };
+
+        let path: PathBuf = path_cow.to_path_buf();
 
         if let Some((key, origin_loc)) = self.project_index.get_key_at_position(&path, position) {
             let locations = self.project_index.get_locations(key.entity, &key.name);
@@ -532,7 +539,8 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Ok(path) = params.text_document.uri.to_file_path() {
+        if let Some(path_cow) = params.text_document.uri.to_file_path() {
+            let path: PathBuf = path_cow.into_owned();
             self.on_change(path).await;
         }
     }
