@@ -54,6 +54,23 @@ pub struct CommandSyntax {
     pub backend: BackendSyntax,
 }
 
+impl CommandSyntax {
+    /// Get all function names that should trigger completion
+    pub fn get_trigger_function_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+
+        for func in &self.frontend.functions {
+            names.push(&func.name);
+        }
+
+        for func in &self.backend.functions {
+            names.push(&func.name);
+        }
+        
+        names
+    }
+}
+
 pub fn load_syntax<P: AsRef<Path>>(
     config_path: P,
 ) -> Result<CommandSyntax, Box<dyn Error + Send + Sync>> {
