@@ -407,4 +407,23 @@ impl ProjectIndex {
             })
             .collect()
     }
+
+    /// Get diagnostic information for a key (for diagnostics)
+    pub fn get_diagnostic_info(&self, key: &IndexKey) -> DiagnosticInfo {
+        let locations = self.map.get(key).map(|v| v.clone()).unwrap_or_default();
+        DiagnosticInfo {
+            has_definition: locations.iter().any(|l| l.behavior == Behavior::Definition),
+            has_calls: locations.iter().any(|l| l.behavior == Behavior::Call),
+            has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit),
+            has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen),
+        }
+    }
+}
+
+/// Diagnostic information for a command/event
+pub struct DiagnosticInfo {
+    pub has_definition: bool,
+    pub has_calls: bool,
+    pub has_emitters: bool,
+    pub has_listeners: bool,
 }
