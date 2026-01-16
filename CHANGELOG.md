@@ -1,5 +1,12 @@
 ## Change Log
 
+### [0.3.0]
+
+- **Document Symbols:** View all commands and events in the current file via `Ctrl+Shift+O`.
+- **Workspace Symbols:** Search for commands and events across the entire project via `Ctrl+T`.
+- **Completion:** Autocomplete for command and event names inside `invoke`, `emit`, and `listen` calls.
+- **Diagnostics:** Real-time warnings for undefined commands, unlistened events, and unused definitions.
+
 ### [0.2.2]
 
 - **Refactor:** use tower-lsp-server  instead tower-lsp.

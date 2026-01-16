@@ -11,7 +11,7 @@
   },
   "publisher": "mvoof",
   "description": "Full-featured development toolkit for Tauri apps: navigation, autocomplete, diagnostics, and symbols for commands and events",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "engines": {
     "vscode": "^1.105.0"
   },
