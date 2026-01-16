@@ -148,6 +148,7 @@ impl LanguageServer for Backend {
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
+                document_symbol_provider: Some(OneOf::Left(true)),
 
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
@@ -532,6 +533,30 @@ impl LanguageServer for Backend {
         }
 
         Ok(None)
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
+        let uri = params.text_document.uri;
+
+        let Some(path_cow) = uri.to_file_path() else {
+            return Ok(None);
+        };
+
+        let path: PathBuf = path_cow.to_path_buf();
+        let symbols = self.project_index.get_document_symbols(&path);
+
+        if symbols.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(DocumentSymbolResponse::Flat(symbols)))
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {

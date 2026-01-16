@@ -2,7 +2,8 @@ use crate::syntax::{Behavior, EntityType};
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{Position, Range};
+use tower_lsp_server::lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Uri};
+use tower_lsp_server::UriExt;
 
 /// A single occurrence in a file (parser result)
 #[derive(Debug, Clone)]
@@ -288,5 +289,54 @@ impl ProjectIndex {
         }
 
         report_message
+    }
+
+    /// Get document symbols for outline view (Ctrl+Shift+O)
+    pub fn get_document_symbols(&self, path: &PathBuf) -> Vec<SymbolInformation> {
+        let mut symbols = Vec::new();
+
+        let keys = match self.file_map.get(path) {
+            Some(k) => k,
+            None => return symbols,
+        };
+
+        let uri = match Uri::from_file_path(path) {
+            Some(u) => u,
+            None => return symbols,
+        };
+
+        for key in keys.value() {
+            if let Some(locations) = self.map.get(key) {
+                for loc in locations.iter().filter(|l| l.path == *path) {
+                    let kind = match key.entity {
+                        EntityType::Command => SymbolKind::FUNCTION,
+                        EntityType::Event => SymbolKind::EVENT,
+                    };
+
+                    let prefix = match loc.behavior {
+                        Behavior::Definition => "def",
+                        Behavior::Call => "call",
+                        Behavior::Emit => "emit",
+                        Behavior::Listen => "listen",
+                    };
+
+                    #[allow(deprecated)]
+                    symbols.push(SymbolInformation {
+                        name: format!("[{}] {}", prefix, key.name),
+                        kind,
+                        tags: None,
+                        deprecated: None,
+                        location: Location {
+                            uri: uri.clone(),
+                            range: loc.range,
+                        },
+                        container_name: Some(format!("{:?}", key.entity)),
+                    });
+                }
+            }
+        }
+
+        symbols.sort_by_key(|s| s.location.range.start.line);
+        symbols
     }
 }
