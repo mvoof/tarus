@@ -149,6 +149,7 @@ impl LanguageServer for Backend {
                     resolve_provider: Some(false),
                 }),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
 
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
@@ -557,6 +558,23 @@ impl LanguageServer for Backend {
         }
 
         Ok(Some(DocumentSymbolResponse::Flat(symbols)))
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
+        let symbols = self.project_index.search_workspace_symbols(&params.query);
+
+        if symbols.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(OneOf::Left(symbols)))
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {

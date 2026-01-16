@@ -313,16 +313,17 @@ impl ProjectIndex {
                         EntityType::Event => SymbolKind::EVENT,
                     };
 
-                    let prefix = match loc.behavior {
-                        Behavior::Definition => "def",
-                        Behavior::Call => "call",
+                    // Use terms from command_syntax.json
+                    let behavior_label = match loc.behavior {
+                        Behavior::Definition => "command",
+                        Behavior::Call => "invoke",
                         Behavior::Emit => "emit",
                         Behavior::Listen => "listen",
                     };
 
                     #[allow(deprecated)]
                     symbols.push(SymbolInformation {
-                        name: format!("[{}] {}", prefix, key.name),
+                        name: format!("{} ({})", key.name, behavior_label),
                         kind,
                         tags: None,
                         deprecated: None,
@@ -337,6 +338,57 @@ impl ProjectIndex {
         }
 
         symbols.sort_by_key(|s| s.location.range.start.line);
+        symbols
+    }
+
+    /// Search workspace symbols by query (Ctrl+T)
+    pub fn search_workspace_symbols(&self, query: &str) -> Vec<SymbolInformation> {
+        let mut symbols = Vec::new();
+        let query_lower = query.to_lowercase();
+
+        for entry in self.map.iter() {
+            let key = entry.key();
+
+            // Filter by query (substring match)
+            if !query.is_empty() && !key.name.to_lowercase().contains(&query_lower) {
+                continue;
+            }
+
+            for loc in entry.value().iter() {
+                let uri = match Uri::from_file_path(&loc.path) {
+                    Some(u) => u,
+                    None => continue,
+                };
+
+                let kind = match key.entity {
+                    EntityType::Command => SymbolKind::FUNCTION,
+                    EntityType::Event => SymbolKind::EVENT,
+                };
+
+                let behavior_label = match loc.behavior {
+                    Behavior::Definition => "command",
+                    Behavior::Call => "invoke",
+                    Behavior::Emit => "emit",
+                    Behavior::Listen => "listen",
+                };
+
+                #[allow(deprecated)]
+                symbols.push(SymbolInformation {
+                    name: format!("{} ({})", key.name, behavior_label),
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri,
+                        range: loc.range,
+                    },
+                    container_name: Some(format!("{:?}", key.entity)),
+                });
+            }
+        }
+
+        // Limit results
+        symbols.truncate(100);
         symbols
     }
 }
