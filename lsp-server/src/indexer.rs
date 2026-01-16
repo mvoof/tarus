@@ -391,4 +391,20 @@ impl ProjectIndex {
         symbols.truncate(100);
         symbols
     }
+
+    /// Get all known names for a specific entity type (for completion)
+    pub fn get_all_names(&self, entity: EntityType) -> Vec<(String, Option<LocationInfo>)> {
+        self.map
+            .iter()
+            .filter(|e| e.key().entity == entity)
+            .map(|e| {
+                let definition = e
+                    .value()
+                    .iter()
+                    .find(|l| l.behavior == Behavior::Definition)
+                    .cloned();
+                (e.key().name.clone(), definition)
+            })
+            .collect()
+    }
 }

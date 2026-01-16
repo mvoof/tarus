@@ -150,6 +150,11 @@ impl LanguageServer for Backend {
                 }),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec!["\"".to_string(), "'".to_string()]),
+                    resolve_provider: Some(false),
+                    ..Default::default()
+                }),
 
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
@@ -575,6 +580,50 @@ impl LanguageServer for Backend {
         }
 
         Ok(Some(OneOf::Left(symbols)))
+    }
+
+    async fn completion(&self, _params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
+        // Collect all known commands and events for completion
+        let mut items = Vec::new();
+
+        // Add commands
+        for (name, def_loc) in self.project_index.get_all_names(EntityType::Command) {
+            let detail = def_loc.as_ref().map(|l| {
+                let filename = l
+                    .path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown");
+                format!("Command defined in {}", filename)
+            });
+
+            items.push(CompletionItem {
+                label: name,
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail,
+                ..Default::default()
+            });
+        }
+
+        // Add events
+        for (name, _) in self.project_index.get_all_names(EntityType::Event) {
+            items.push(CompletionItem {
+                label: name,
+                kind: Some(CompletionItemKind::EVENT),
+                detail: Some("Event".to_string()),
+                ..Default::default()
+            });
+        }
+
+        if items.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(CompletionResponse::Array(items)))
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
