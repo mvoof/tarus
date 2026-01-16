@@ -649,8 +649,50 @@ impl LanguageServer for Backend {
         Ok(Some(OneOf::Left(symbols)))
     }
 
-    async fn completion(&self, _params: CompletionParams) -> Result<Option<CompletionResponse>> {
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         if !self.is_ready() {
+            return Ok(None);
+        }
+
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        // Get file path
+        let Some(path_cow) = uri.to_file_path() else {
+            return Ok(None);
+        };
+        let path = path_cow.to_path_buf();
+
+        // Read file content
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+
+        // Get text before cursor on current line
+        let lines: Vec<&str> = content.lines().collect();
+        let line_idx = position.line as usize;
+        if line_idx >= lines.len() {
+            return Ok(None);
+        }
+
+        let line = lines[line_idx];
+        let col = position.character as usize;
+        let prefix = if col <= line.len() { &line[..col] } else { line };
+
+        // Check context - look for patterns from command_syntax config
+        let command_syntax = match self.command_syntax.get() {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        // Check if prefix contains any of the trigger patterns (e.g. "invoke(", "emit(")
+        let in_context = command_syntax
+            .get_trigger_function_names()
+            .iter()
+            .any(|name| prefix.contains(&format!("{}(", name)));
+
+        if !in_context {
             return Ok(None);
         }
 
