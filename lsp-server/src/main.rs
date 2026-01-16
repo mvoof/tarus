@@ -38,7 +38,7 @@ fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec
                     format!("Command '{}' is not defined in Rust backend", key.name),
                 )),
                 Behavior::Definition if !info.has_calls => Some((
-                    DiagnosticSeverity::HINT,
+                    DiagnosticSeverity::WARNING,
                     format!("Command '{}' is defined but never invoked", key.name),
                 )),
                 Behavior::Listen if !info.has_emitters => Some((
@@ -46,7 +46,7 @@ fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec
                     format!("Event '{}' is listened for but never emitted", key.name),
                 )),
                 Behavior::Emit if !info.has_listeners => Some((
-                    DiagnosticSeverity::HINT,
+                    DiagnosticSeverity::WARNING,
                     format!("Event '{}' is emitted but never listened to", key.name),
                 )),
                 _ => None,
