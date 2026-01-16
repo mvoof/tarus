@@ -10,7 +10,7 @@
     "url": "https://github.com/mvoof/tarus"
   },
   "publisher": "mvoof",
-  "description": "A VS Code extension that provides convenient cross-language navigation between commands/events in frontend and backend code in the IDE (for Tauri projects)",
+  "description": "Full-featured development toolkit for Tauri apps: navigation, autocomplete, diagnostics, and symbols for commands and events",
   "version": "0.2.2",
   "engines": {
     "vscode": "^1.105.0"

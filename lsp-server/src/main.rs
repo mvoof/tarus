@@ -14,10 +14,58 @@ mod parser_frontend;
 mod scanner;
 mod syntax;
 
-use crate::indexer::{LocationInfo, ProjectIndex};
+use crate::indexer::{DiagnosticInfo, IndexKey, LocationInfo, ProjectIndex};
 use scanner::{is_tauri_project, scan_workspace_files};
 use std::sync::atomic::{AtomicBool, Ordering};
 use syntax::{load_syntax, Behavior, CommandSyntax, EntityType};
+
+fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    let keys: Vec<IndexKey> = match project_index.file_map.get(path) {
+        Some(k) => k.value().clone(),
+        None => return diagnostics,
+    };
+
+    for key in &keys {
+        let info: DiagnosticInfo = project_index.get_diagnostic_info(key);
+        let locations = project_index.get_locations(key.entity, &key.name);
+
+        for loc in locations.iter().filter(|l| l.path == *path) {
+            let msg = match loc.behavior {
+                Behavior::Call if !info.has_definition => Some((
+                    DiagnosticSeverity::WARNING,
+                    format!("Command '{}' is not defined in Rust backend", key.name),
+                )),
+                Behavior::Definition if !info.has_calls => Some((
+                    DiagnosticSeverity::HINT,
+                    format!("Command '{}' is defined but never invoked", key.name),
+                )),
+                Behavior::Listen if !info.has_emitters => Some((
+                    DiagnosticSeverity::WARNING,
+                    format!("Event '{}' is listened for but never emitted", key.name),
+                )),
+                Behavior::Emit if !info.has_listeners => Some((
+                    DiagnosticSeverity::HINT,
+                    format!("Event '{}' is emitted but never listened to", key.name),
+                )),
+                _ => None,
+            };
+
+            if let Some((severity, message)) = msg {
+                diagnostics.push(Diagnostic {
+                    range: loc.range,
+                    severity: Some(severity),
+                    source: Some("tarus".to_string()),
+                    message,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    diagnostics
+}
 
 async fn process_file_index(
     path: PathBuf,
@@ -81,6 +129,16 @@ impl Backend {
         if self.is_developer_mode_active.load(Ordering::Relaxed) {
             self.client.log_message(MessageType::INFO, message).await;
         }
+    }
+
+    async fn publish_diagnostics_for_file(&self, path: &PathBuf) {
+        let uri = match Uri::from_file_path(path) {
+            Some(u) => u,
+            None => return,
+        };
+
+        let diagnostics = compute_file_diagnostics(path, &self.project_index);
+        self.client.publish_diagnostics(uri, diagnostics, None).await;
     }
 }
 
@@ -147,6 +205,13 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
+                }),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec!["\"".to_string(), "'".to_string()]),
+                    resolve_provider: Some(false),
+                    ..Default::default()
                 }),
 
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -218,6 +283,15 @@ impl LanguageServer for Backend {
 
             for path in files {
                 let _ = process_file_index(path, &command_syntax_clone, &project_index_clone).await;
+            }
+
+            // Publish diagnostics for all indexed files
+            for entry in project_index_clone.file_map.iter() {
+                let path = entry.key().clone();
+                if let Some(uri) = Uri::from_file_path(&path) {
+                    let diagnostics = compute_file_diagnostics(&path, &project_index_clone);
+                    client_clone.publish_diagnostics(uri, diagnostics, None).await;
+                }
             }
 
             // Report about the indexing process
@@ -534,6 +608,91 @@ impl LanguageServer for Backend {
         Ok(None)
     }
 
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
+        let uri = params.text_document.uri;
+
+        let Some(path_cow) = uri.to_file_path() else {
+            return Ok(None);
+        };
+
+        let path: PathBuf = path_cow.to_path_buf();
+        let symbols = self.project_index.get_document_symbols(&path);
+
+        if symbols.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(DocumentSymbolResponse::Flat(symbols)))
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
+        let symbols = self.project_index.search_workspace_symbols(&params.query);
+
+        if symbols.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(OneOf::Left(symbols)))
+    }
+
+    async fn completion(&self, _params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
+        // Collect all known commands and events for completion
+        let mut items = Vec::new();
+
+        // Add commands
+        for (name, def_loc) in self.project_index.get_all_names(EntityType::Command) {
+            let detail = def_loc.as_ref().map(|l| {
+                let filename = l
+                    .path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown");
+                format!("Command defined in {}", filename)
+            });
+
+            items.push(CompletionItem {
+                label: name,
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail,
+                ..Default::default()
+            });
+        }
+
+        // Add events
+        for (name, _) in self.project_index.get_all_names(EntityType::Event) {
+            items.push(CompletionItem {
+                label: name,
+                kind: Some(CompletionItemKind::EVENT),
+                detail: Some("Event".to_string()),
+                ..Default::default()
+            });
+        }
+
+        if items.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(CompletionResponse::Array(items)))
+    }
+
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         if !self.is_ready() {
             return;
@@ -541,7 +700,8 @@ impl LanguageServer for Backend {
 
         if let Some(path_cow) = params.text_document.uri.to_file_path() {
             let path: PathBuf = path_cow.into_owned();
-            self.on_change(path).await;
+            self.on_change(path.clone()).await;
+            self.publish_diagnostics_for_file(&path).await;
         }
     }
 

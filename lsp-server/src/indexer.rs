@@ -2,7 +2,8 @@ use crate::syntax::{Behavior, EntityType};
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{Position, Range};
+use tower_lsp_server::lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Uri};
+use tower_lsp_server::UriExt;
 
 /// A single occurrence in a file (parser result)
 #[derive(Debug, Clone)]
@@ -289,4 +290,140 @@ impl ProjectIndex {
 
         report_message
     }
+
+    /// Get document symbols for outline view (Ctrl+Shift+O)
+    pub fn get_document_symbols(&self, path: &PathBuf) -> Vec<SymbolInformation> {
+        let mut symbols = Vec::new();
+
+        let keys = match self.file_map.get(path) {
+            Some(k) => k,
+            None => return symbols,
+        };
+
+        let uri = match Uri::from_file_path(path) {
+            Some(u) => u,
+            None => return symbols,
+        };
+
+        for key in keys.value() {
+            if let Some(locations) = self.map.get(key) {
+                for loc in locations.iter().filter(|l| l.path == *path) {
+                    let kind = match key.entity {
+                        EntityType::Command => SymbolKind::FUNCTION,
+                        EntityType::Event => SymbolKind::EVENT,
+                    };
+
+                    // Use terms from command_syntax.json
+                    let behavior_label = match loc.behavior {
+                        Behavior::Definition => "command",
+                        Behavior::Call => "invoke",
+                        Behavior::Emit => "emit",
+                        Behavior::Listen => "listen",
+                    };
+
+                    #[allow(deprecated)]
+                    symbols.push(SymbolInformation {
+                        name: format!("{} ({})", key.name, behavior_label),
+                        kind,
+                        tags: None,
+                        deprecated: None,
+                        location: Location {
+                            uri: uri.clone(),
+                            range: loc.range,
+                        },
+                        container_name: Some(format!("{:?}", key.entity)),
+                    });
+                }
+            }
+        }
+
+        symbols.sort_by_key(|s| s.location.range.start.line);
+        symbols
+    }
+
+    /// Search workspace symbols by query (Ctrl+T)
+    pub fn search_workspace_symbols(&self, query: &str) -> Vec<SymbolInformation> {
+        let mut symbols = Vec::new();
+        let query_lower = query.to_lowercase();
+
+        for entry in self.map.iter() {
+            let key = entry.key();
+
+            // Filter by query (substring match)
+            if !query.is_empty() && !key.name.to_lowercase().contains(&query_lower) {
+                continue;
+            }
+
+            for loc in entry.value().iter() {
+                let uri = match Uri::from_file_path(&loc.path) {
+                    Some(u) => u,
+                    None => continue,
+                };
+
+                let kind = match key.entity {
+                    EntityType::Command => SymbolKind::FUNCTION,
+                    EntityType::Event => SymbolKind::EVENT,
+                };
+
+                let behavior_label = match loc.behavior {
+                    Behavior::Definition => "command",
+                    Behavior::Call => "invoke",
+                    Behavior::Emit => "emit",
+                    Behavior::Listen => "listen",
+                };
+
+                #[allow(deprecated)]
+                symbols.push(SymbolInformation {
+                    name: format!("{} ({})", key.name, behavior_label),
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri,
+                        range: loc.range,
+                    },
+                    container_name: Some(format!("{:?}", key.entity)),
+                });
+            }
+        }
+
+        // Limit results
+        symbols.truncate(100);
+        symbols
+    }
+
+    /// Get all known names for a specific entity type (for completion)
+    pub fn get_all_names(&self, entity: EntityType) -> Vec<(String, Option<LocationInfo>)> {
+        self.map
+            .iter()
+            .filter(|e| e.key().entity == entity)
+            .map(|e| {
+                let definition = e
+                    .value()
+                    .iter()
+                    .find(|l| l.behavior == Behavior::Definition)
+                    .cloned();
+                (e.key().name.clone(), definition)
+            })
+            .collect()
+    }
+
+    /// Get diagnostic information for a key (for diagnostics)
+    pub fn get_diagnostic_info(&self, key: &IndexKey) -> DiagnosticInfo {
+        let locations = self.map.get(key).map(|v| v.clone()).unwrap_or_default();
+        DiagnosticInfo {
+            has_definition: locations.iter().any(|l| l.behavior == Behavior::Definition),
+            has_calls: locations.iter().any(|l| l.behavior == Behavior::Call),
+            has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit),
+            has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen),
+        }
+    }
+}
+
+/// Diagnostic information for a command/event
+pub struct DiagnosticInfo {
+    pub has_definition: bool,
+    pub has_calls: bool,
+    pub has_emitters: bool,
+    pub has_listeners: bool,
 }

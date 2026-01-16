@@ -3,3 +3,5 @@ out/
 target/
 bin/
 .continue
+.claude
+CLAUDE.md
