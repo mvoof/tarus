@@ -20,8 +20,8 @@ const EXCLUDED_FILES: &[&str] = &["vite.config.ts"];
 /// Ignored file suffixes list
 const EXCLUDED_FILE_SUFFIXES: &[&str] = &[".d.ts"];
 
-/// List of extensions that are supported by extensions
-const TARGET_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue"];
+/// List of extensions that are supported by the parser
+const TARGET_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
 
 /// Filter: Returns true if this is a folder or file to be IGNORED
 fn should_skip(entry: &DirEntry) -> bool {

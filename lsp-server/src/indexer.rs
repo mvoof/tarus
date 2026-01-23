@@ -276,7 +276,7 @@ impl ProjectIndex {
 
         report_message.push_str("\n\n🔑 === 1. MAIN KEY INDEX (map) ===\n");
         report_message.push_str("   [Key -> List of ALL Locations]\n");
-        
+
         report_message.push_str(&format!("{:#?}\n", self.map));
 
         report_message.push_str("\n\n📄 === 2. REVERSE FILE MAP (file_map) ===\n");
@@ -313,7 +313,7 @@ impl ProjectIndex {
                         EntityType::Event => SymbolKind::EVENT,
                     };
 
-                    // Use terms from command_syntax.json
+                    // Use behavior terms
                     let behavior_label = match loc.behavior {
                         Behavior::Definition => "command",
                         Behavior::Call => "invoke",

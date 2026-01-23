@@ -10,15 +10,6 @@ const serverTargetDir = path.join(
   'release'
 );
 
-const configSrc = path.join(
-  __dirname,
-  '..',
-  '..',
-  'lsp-server',
-  'src',
-  'command_syntax.json'
-);
-
 const clientBinDir = path.join(__dirname, '..', 'bin');
 
 let binaryName;
@@ -42,23 +33,13 @@ if (platform === 'win32') {
 
 const binSrc = path.join(serverTargetDir, binaryName);
 const binDest = path.join(clientBinDir, targetName);
-const configDest = path.join(clientBinDir, 'command_syntax.json');
 
 console.log(`[Copy Script] Binary Source: ${binSrc}`);
-console.log(`[Copy Script] Config Source: ${configSrc}`);
 console.log(`[Copy Script] Destination Dir: ${clientBinDir}`);
 
 if (!fs.existsSync(binSrc)) {
   console.error(`\n❌ ERROR: Source binary not found at ${binSrc}`);
   console.error('   Run "cargo build --release" in lsp-server folder first.\n');
-  process.exit(1);
-}
-
-if (!fs.existsSync(configSrc)) {
-  console.error(`\n❌ ERROR: Config file not found at ${configSrc}`);
-  console.error(
-    '   Make sure command_syntax.json is in the lsp-server root folder.\n'
-  );
   process.exit(1);
 }
 
@@ -87,16 +68,5 @@ try {
   }
 } catch (err) {
   console.error(`❌ Error copying binary: ${err.message}`);
-  process.exit(1);
-}
-
-try {
-  if (fs.existsSync(configDest)) {
-    fs.unlinkSync(configDest);
-  }
-  fs.copyFileSync(configSrc, configDest);
-  console.log('✅ Syntax config copied successfully.');
-} catch (err) {
-  console.error(`❌ Error copying config: ${err.message}`);
   process.exit(1);
 }
