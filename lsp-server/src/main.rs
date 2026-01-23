@@ -85,7 +85,7 @@ fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec
 /// Supported file extensions for parsing
 const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
 
-async fn process_file_index(path: PathBuf, project_index: &Arc<ProjectIndex>) -> bool {
+fn is_supported_file(path: &PathBuf) -> bool {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
     // Check for Angular component files (.component.ts)
@@ -95,7 +95,24 @@ async fn process_file_index(path: PathBuf, project_index: &Arc<ProjectIndex>) ->
         .map(|s| s.ends_with(".component.ts"))
         .unwrap_or(false);
 
-    if !SUPPORTED_EXTENSIONS.contains(&ext) && !is_angular {
+    SUPPORTED_EXTENSIONS.contains(&ext) || is_angular
+}
+
+/// Process file content directly (for did_change - content from editor buffer)
+fn process_file_content(path: &PathBuf, content: &str, project_index: &Arc<ProjectIndex>) -> bool {
+    if !is_supported_file(path) {
+        return false;
+    }
+
+    let file_index = tree_parser::parse(path, content);
+    project_index.add_file(file_index);
+
+    true
+}
+
+/// Process file from disk (for initial scan and did_save)
+async fn process_file_index(path: PathBuf, project_index: &Arc<ProjectIndex>) -> bool {
+    if !is_supported_file(&path) {
         return false;
     }
 
@@ -212,6 +229,7 @@ impl LanguageServer for Backend {
                     TextDocumentSyncOptions {
                         save: Some(TextDocumentSyncSaveOptions::Supported(true)),
                         open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::FULL),
                         ..Default::default()
                     },
                 )),
@@ -741,6 +759,41 @@ impl LanguageServer for Backend {
         }
 
         Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        if !self.is_ready() {
+            return;
+        }
+
+        if let Some(path_cow) = params.text_document.uri.to_file_path() {
+            let path: PathBuf = path_cow.into_owned();
+            let content = &params.text_document.text;
+
+            if process_file_content(&path, content, &self.project_index) {
+                let report = self.project_index.file_report(&path);
+                self.log_dev_info(&report).await;
+            }
+
+            self.publish_diagnostics_for_file(&path).await;
+        }
+    }
+
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        if !self.is_ready() {
+            return;
+        }
+
+        if let Some(path_cow) = params.text_document.uri.to_file_path() {
+            let path: PathBuf = path_cow.into_owned();
+
+            // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
+            if let Some(change) = params.content_changes.into_iter().next() {
+                if process_file_content(&path, &change.text, &self.project_index) {
+                    self.publish_diagnostics_for_file(&path).await;
+                }
+            }
+        }
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
