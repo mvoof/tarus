@@ -1,9 +1,11 @@
 #![warn(clippy::all, clippy::pedantic)]
 
+use dashmap::DashMap;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
+use tokio::time::Duration;
 use tower_lsp_server::{
     jsonrpc::Result, lsp_types::*, Client, LanguageServer, LspService, Server, UriExt,
 };
@@ -133,6 +135,7 @@ struct Backend {
     workspace_root: OnceCell<PathBuf>,
     project_index: Arc<ProjectIndex>,
     is_developer_mode_active: Arc<AtomicBool>,
+    debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
 }
 
 impl Backend {
@@ -789,9 +792,31 @@ impl LanguageServer for Backend {
 
             // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
             if let Some(change) = params.content_changes.into_iter().next() {
-                if process_file_content(&path, &change.text, &self.project_index) {
-                    self.publish_diagnostics_for_file(&path).await;
+                let content = change.text;
+
+                // Cancel existing debounce task for this file
+                if let Some((_key, old_task)) = self.debounce_tasks.remove(&path) {
+                    old_task.abort();
                 }
+
+                // Spawn new debounced task
+                let project_index = self.project_index.clone();
+                let client = self.client.clone();
+                let path_clone = path.clone();
+
+                let task = tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                    if process_file_content(&path_clone, &content, &project_index) {
+                        // Publish diagnostics
+                        if let Some(uri) = Uri::from_file_path(&path_clone) {
+                            let diagnostics = compute_file_diagnostics(&path_clone, &project_index);
+                            client.publish_diagnostics(uri, diagnostics, None).await;
+                        }
+                    }
+                });
+
+                self.debounce_tasks.insert(path, task);
             }
         }
     }
@@ -826,6 +851,7 @@ async fn main() {
         workspace_root: OnceCell::new(),
         project_index,
         is_developer_mode_active: initial_dev_mode_state.clone(),
+        debounce_tasks: Arc::new(DashMap::new()),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
