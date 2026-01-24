@@ -7,14 +7,25 @@ use crate::indexer::{FileIndex, Finding};
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::{Position, Range};
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 /// Query files embedded at compile time
 const RUST_QUERY: &str = include_str!("../queries/rust.scm");
-const TS_QUERY: &str = include_str!("../queries/typescript.scm");
-const JS_QUERY: &str = include_str!("../queries/javascript.scm");
+
+// Common ECMAScript patterns (shared by TypeScript and JavaScript)
+const COMMON_ECMA_QUERY: &str = include_str!("../queries/common-ecma.scm");
+
+// TypeScript-specific patterns (generics, await with types)
+const TS_SPECIFIC_QUERY: &str = include_str!("../queries/typescript-specific.scm");
+
+// JavaScript uses only common patterns (no generics)
+const JS_QUERY: &str = COMMON_ECMA_QUERY;
+
+// Lazy-initialized combined TypeScript query (common + TypeScript-specific)
+static TS_COMBINED_QUERY: OnceLock<String> = OnceLock::new();
 
 /// Supported language types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +57,12 @@ impl LangType {
 fn get_query_source(lang: LangType) -> &'static str {
     match lang {
         LangType::Rust => RUST_QUERY,
-        LangType::TypeScript | LangType::Vue | LangType::Svelte | LangType::Angular => TS_QUERY,
+        LangType::TypeScript | LangType::Vue | LangType::Svelte | LangType::Angular => {
+            // Combine common ECMAScript patterns with TypeScript-specific patterns
+            TS_COMBINED_QUERY.get_or_init(|| {
+                format!("{}\n\n{}", COMMON_ECMA_QUERY, TS_SPECIFIC_QUERY)
+            })
+        }
         LangType::JavaScript => JS_QUERY,
     }
 }
