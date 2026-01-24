@@ -14,6 +14,7 @@ const SUPPORTED_LANGUAGES = [
   'javascript',
   'javascriptreact',
   'vue',
+  'svelte',
   'rust',
 ] as const;
 

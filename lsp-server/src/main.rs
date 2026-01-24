@@ -9,15 +9,30 @@ use tower_lsp_server::{
 };
 
 mod indexer;
-mod parser_backend;
-mod parser_frontend;
 mod scanner;
 mod syntax;
+mod tree_parser;
 
 use crate::indexer::{DiagnosticInfo, IndexKey, LocationInfo, ProjectIndex};
 use scanner::{is_tauri_project, scan_workspace_files};
 use std::sync::atomic::{AtomicBool, Ordering};
-use syntax::{load_syntax, Behavior, CommandSyntax, EntityType};
+use syntax::{Behavior, EntityType};
+
+/// Trigger function names for autocompletion
+const COMPLETION_TRIGGERS: &[&str] = &[
+    "invoke",
+    "emit",
+    "emitTo",
+    "listen",
+    "once",
+    "emit_to",
+    "emit_str",
+    "emit_str_to",
+    "emit_filter",
+    "emit_str_filter",
+    "listen_any",
+    "once_any",
+];
 
 fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -67,14 +82,37 @@ fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec
     diagnostics
 }
 
-async fn process_file_index(
-    path: PathBuf,
-    command_syntax: &CommandSyntax,
-    project_index: &Arc<ProjectIndex>,
-) -> bool {
+/// Supported file extensions for parsing
+const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
+
+fn is_supported_file(path: &PathBuf) -> bool {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-    if !["rs", "ts", "tsx", "js", "jsx", "vue"].contains(&ext) {
+    // Check for Angular component files (.component.ts)
+    let is_angular = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.ends_with(".component.ts"))
+        .unwrap_or(false);
+
+    SUPPORTED_EXTENSIONS.contains(&ext) || is_angular
+}
+
+/// Process file content directly (for did_change - content from editor buffer)
+fn process_file_content(path: &PathBuf, content: &str, project_index: &Arc<ProjectIndex>) -> bool {
+    if !is_supported_file(path) {
+        return false;
+    }
+
+    let file_index = tree_parser::parse(path, content);
+    project_index.add_file(file_index);
+
+    true
+}
+
+/// Process file from disk (for initial scan and did_save)
+async fn process_file_index(path: PathBuf, project_index: &Arc<ProjectIndex>) -> bool {
+    if !is_supported_file(&path) {
         return false;
     }
 
@@ -83,11 +121,7 @@ async fn process_file_index(
         Err(_) => return false,
     };
 
-    let file_index = match ext {
-        "rs" => parser_backend::parse(&path, &content, &command_syntax.backend),
-        _ => parser_frontend::parse(&path, &content, &command_syntax.frontend),
-    };
-
+    let file_index = tree_parser::parse(&path, &content);
     project_index.add_file(file_index);
 
     true
@@ -96,17 +130,15 @@ async fn process_file_index(
 #[derive(Debug)]
 struct Backend {
     client: Client,
-    syntax_config_path: PathBuf,
-    command_syntax: OnceCell<CommandSyntax>,
     workspace_root: OnceCell<PathBuf>,
     project_index: Arc<ProjectIndex>,
     is_developer_mode_active: Arc<AtomicBool>,
 }
 
 impl Backend {
-    /// Helper: Checks if the server is fully initialized (Config loaded)
+    /// Helper: Checks if the server is fully initialized (workspace root set)
     fn is_ready(&self) -> bool {
-        self.command_syntax.get().is_some()
+        self.workspace_root.get().is_some()
     }
 
     async fn on_change(&self, path: PathBuf) {
@@ -114,12 +146,7 @@ impl Backend {
             return;
         }
 
-        let command_syntax = match self.command_syntax.get() {
-            Some(s) => s,
-            None => return,
-        };
-
-        if process_file_index(path.clone(), command_syntax, &self.project_index).await {
+        if process_file_index(path.clone(), &self.project_index).await {
             let report = self.project_index.file_report(&path);
             self.log_dev_info(&report).await;
         }
@@ -138,7 +165,9 @@ impl Backend {
         };
 
         let diagnostics = compute_file_diagnostics(path, &self.project_index);
-        self.client.publish_diagnostics(uri, diagnostics, None).await;
+        self.client
+            .publish_diagnostics(uri, diagnostics, None)
+            .await;
     }
 }
 
@@ -162,32 +191,14 @@ impl LanguageServer for Backend {
         if let Some(root) = root_path {
             if is_tauri_project(&root) {
                 is_tauri = true;
-
                 let _ = self.workspace_root.set(root.clone());
 
-                match load_syntax(&self.syntax_config_path) {
-                    Ok(syntax) => {
-                        let _ = self.command_syntax.set(syntax);
-
-                        self.client
-                            .log_message(
-                                MessageType::INFO,
-                                "✅ Tauri project detected. Config loaded.",
-                            )
-                            .await;
-                    }
-
-                    Err(e) => {
-                        self.client
-                            .log_message(
-                                MessageType::ERROR,
-                                format!("❌ Failed to load syntax config: {}", e),
-                            )
-                            .await;
-
-                        is_tauri = false;
-                    }
-                }
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        "✅ Tauri project detected. Tree-sitter parser ready.",
+                    )
+                    .await;
             }
         }
 
@@ -218,6 +229,7 @@ impl LanguageServer for Backend {
                     TextDocumentSyncOptions {
                         save: Some(TextDocumentSyncSaveOptions::Supported(true)),
                         open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::FULL),
                         ..Default::default()
                     },
                 )),
@@ -228,10 +240,9 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        let command_syntax = match self.command_syntax.get() {
-            Some(s) => s,
-            None => return,
-        };
+        if !self.is_ready() {
+            return;
+        }
 
         let ext_config_request = ConfigurationParams {
             items: vec![ConfigurationItem {
@@ -266,7 +277,6 @@ impl LanguageServer for Backend {
         };
 
         let root_clone = root.clone();
-        let command_syntax_clone = command_syntax.clone();
         let project_index_clone = self.project_index.clone();
         let client_clone = self.client.clone();
 
@@ -282,7 +292,7 @@ impl LanguageServer for Backend {
                 .unwrap_or_default();
 
             for path in files {
-                let _ = process_file_index(path, &command_syntax_clone, &project_index_clone).await;
+                let _ = process_file_index(path, &project_index_clone).await;
             }
 
             // Publish diagnostics for all indexed files
@@ -290,7 +300,9 @@ impl LanguageServer for Backend {
                 let path = entry.key().clone();
                 if let Some(uri) = Uri::from_file_path(&path) {
                     let diagnostics = compute_file_diagnostics(&path, &project_index_clone);
-                    client_clone.publish_diagnostics(uri, diagnostics, None).await;
+                    client_clone
+                        .publish_diagnostics(uri, diagnostics, None)
+                        .await;
                 }
             }
 
@@ -678,19 +690,33 @@ impl LanguageServer for Backend {
 
         let line = lines[line_idx];
         let col = position.character as usize;
-        let prefix = if col <= line.len() { &line[..col] } else { line };
-
-        // Check context - look for patterns from command_syntax config
-        let command_syntax = match self.command_syntax.get() {
-            Some(s) => s,
-            None => return Ok(None),
+        let prefix = if col <= line.len() {
+            &line[..col]
+        } else {
+            line
         };
 
-        // Check if prefix contains any of the trigger patterns (e.g. "invoke(", "emit(")
-        let in_context = command_syntax
-            .get_trigger_function_names()
-            .iter()
-            .any(|name| prefix.contains(&format!("{}(", name)));
+        // Check if prefix contains any of the trigger patterns (e.g. "invoke(", "emit(", "invoke<T>(")
+        let in_context = COMPLETION_TRIGGERS.iter().any(|name| {
+            // Match simple call: invoke("
+            if prefix.contains(&format!("{}(", name)) {
+                return true;
+            }
+            // Match generic call: invoke<T>(" - check for name followed by < and then (
+            if let Some(idx) = prefix.find(name) {
+                let after_name = &prefix[idx + name.len()..];
+                // Pattern: <...>(
+                if after_name.starts_with('<') {
+                    if let Some(close_idx) = after_name.find('>') {
+                        let after_generic = &after_name[close_idx + 1..];
+                        if after_generic.starts_with('(') {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        });
 
         if !in_context {
             return Ok(None);
@@ -735,6 +761,41 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(items)))
     }
 
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        if !self.is_ready() {
+            return;
+        }
+
+        if let Some(path_cow) = params.text_document.uri.to_file_path() {
+            let path: PathBuf = path_cow.into_owned();
+            let content = &params.text_document.text;
+
+            if process_file_content(&path, content, &self.project_index) {
+                let report = self.project_index.file_report(&path);
+                self.log_dev_info(&report).await;
+            }
+
+            self.publish_diagnostics_for_file(&path).await;
+        }
+    }
+
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        if !self.is_ready() {
+            return;
+        }
+
+        if let Some(path_cow) = params.text_document.uri.to_file_path() {
+            let path: PathBuf = path_cow.into_owned();
+
+            // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
+            if let Some(change) = params.content_changes.into_iter().next() {
+                if process_file_content(&path, &change.text, &self.project_index) {
+                    self.publish_diagnostics_for_file(&path).await;
+                }
+            }
+        }
+    }
+
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         if !self.is_ready() {
             return;
@@ -754,21 +815,14 @@ impl LanguageServer for Backend {
 
 #[tokio::main]
 async fn main() {
-    let exe_path = std::env::current_exe().expect("Failed to get exe path");
-    let exe_dir = exe_path.parent().expect("Failed to get exe dir");
-    let config_path = exe_dir.join("command_syntax.json");
-
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
     let project_index = Arc::new(ProjectIndex::new());
-
     let initial_dev_mode_state = Arc::new(AtomicBool::new(false));
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
-        syntax_config_path: config_path,
-        command_syntax: OnceCell::new(),
         workspace_root: OnceCell::new(),
         project_index,
         is_developer_mode_active: initial_dev_mode_state.clone(),
