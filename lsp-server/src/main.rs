@@ -570,6 +570,15 @@ impl LanguageServer for Backend {
                 return Ok(None);
             }
 
+            // Get diagnostic info for warnings
+            let info = self.project_index.get_diagnostic_info(&key);
+
+            // Count by behavior type
+            let calls_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Call)).count();
+            let emits_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Emit)).count();
+            let listens_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Listen)).count();
+            let definitions_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Definition)).count();
+
             let (definitions, references): (Vec<&LocationInfo>, Vec<&LocationInfo>) =
                 locations.iter().partition(|l| match key.entity {
                     EntityType::Command => l.behavior == Behavior::Definition,
@@ -579,9 +588,9 @@ impl LanguageServer for Backend {
             // Create Markdown Text
             let mut md_text = String::new();
 
-            // Header
+            // Header with emoji
             let icon = match key.entity {
-                EntityType::Command => "🔧",
+                EntityType::Command => "⚙️",
                 EntityType::Event => "📡",
             };
 
@@ -592,9 +601,9 @@ impl LanguageServer for Backend {
 
             // Definitions Section
             if !definitions.is_empty() {
-                md_text.push_str("Definitions:\n");
+                md_text.push_str("**Definition:**\n");
 
-                for def in definitions {
+                for def in &definitions {
                     let file_icon = if def.path.extension().map_or(false, |e| e == "rs") {
                         "🦀"
                     } else {
@@ -604,7 +613,7 @@ impl LanguageServer for Backend {
                     let filename = def.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
                     md_text.push_str(&format!(
-                        "* {} `{} : {}`\n",
+                        "- {} `{}:{}`\n",
                         file_icon,
                         filename,
                         def.range.start.line + 1
@@ -614,12 +623,34 @@ impl LanguageServer for Backend {
                 md_text.push_str("\n");
             }
 
-            // Links Section
+            // Reference count breakdown
+            let total_refs = locations.len();
+            md_text.push_str(&format!("**References ({} total)**\n", total_refs));
+
+            if key.entity == EntityType::Command {
+                if definitions_count > 0 {
+                    md_text.push_str(&format!("- 🦀 {} definition(s)\n", definitions_count));
+                }
+                if calls_count > 0 {
+                    md_text.push_str(&format!("- ⚡ {} call(s)\n", calls_count));
+                }
+            } else {
+                if emits_count > 0 {
+                    md_text.push_str(&format!("- 📤 {} emit(s)\n", emits_count));
+                }
+                if listens_count > 0 {
+                    md_text.push_str(&format!("- 👂 {} listener(s)\n", listens_count));
+                }
+            }
+
+            md_text.push_str("\n");
+
+            // Sample references (first 5)
             if !references.is_empty() {
-                md_text.push_str(&format!("**References ({})**:\n", references.len()));
+                md_text.push_str("**Sample References:**\n");
                 for (i, rf) in references.iter().enumerate() {
                     if i >= 5 {
-                        md_text.push_str(&format!("* *...and {} more*\n", references.len() - 5));
+                        md_text.push_str(&format!("- *...and {} more*\n", references.len() - 5));
                         break;
                     }
 
@@ -633,13 +664,26 @@ impl LanguageServer for Backend {
                     let behavior_badge = format!("{:?}", rf.behavior).to_uppercase();
 
                     md_text.push_str(&format!(
-                        "* {} `[{}] {} : {}`\n",
+                        "- {} `[{}] {}:{}`\n",
                         file_icon,
                         behavior_badge,
                         filename,
                         rf.range.start.line + 1
                     ));
                 }
+
+                md_text.push_str("\n");
+            }
+
+            // Add warnings/tips based on diagnostic info
+            if key.entity == EntityType::Command && !info.has_definition {
+                md_text.push_str("⚠️ *No backend implementation found*\n");
+            } else if key.entity == EntityType::Command && !info.has_calls {
+                md_text.push_str("💡 *Defined but never called in frontend*\n");
+            } else if key.entity == EntityType::Event && !info.has_emitters {
+                md_text.push_str("💡 *Event listened for but never emitted*\n");
+            } else if key.entity == EntityType::Event && !info.has_listeners {
+                md_text.push_str("💡 *Event emitted but no listeners found*\n");
             }
 
             return Ok(Some(Hover {
