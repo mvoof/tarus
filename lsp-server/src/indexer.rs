@@ -2,6 +2,7 @@ use crate::syntax::{Behavior, EntityType};
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::RwLock;
 use tower_lsp_server::lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Uri};
 use tower_lsp_server::UriExt;
 
@@ -35,10 +36,27 @@ pub struct LocationInfo {
     pub behavior: Behavior,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ProjectIndex {
     pub map: DashMap<IndexKey, Vec<LocationInfo>>,
     pub file_map: DashMap<PathBuf, Vec<IndexKey>>,
+    // Caches for get_all_names() results
+    command_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
+    event_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
+    // Cache for diagnostic info (avoids re-iterating locations)
+    diagnostic_info_cache: DashMap<IndexKey, DiagnosticInfo>,
+}
+
+impl Default for ProjectIndex {
+    fn default() -> Self {
+        Self {
+            map: DashMap::new(),
+            file_map: DashMap::new(),
+            command_names_cache: RwLock::new(None),
+            event_names_cache: RwLock::new(None),
+            diagnostic_info_cache: DashMap::new(),
+        }
+    }
 }
 
 impl ProjectIndex {
@@ -119,6 +137,11 @@ impl ProjectIndex {
         }
 
         self.file_map.insert(path_ref, keys_in_this_file);
+
+        // Invalidate caches
+        *self.command_names_cache.write().unwrap() = None;
+        *self.event_names_cache.write().unwrap() = None;
+        self.diagnostic_info_cache.clear();
     }
 
     /// Deletes all entries associated with a specific file.
@@ -136,6 +159,11 @@ impl ProjectIndex {
                     self.map.remove(&key);
                 }
             }
+
+            // Invalidate caches
+            *self.command_names_cache.write().unwrap() = None;
+            *self.event_names_cache.write().unwrap() = None;
+            self.diagnostic_info_cache.clear();
         }
     }
 
@@ -394,7 +422,22 @@ impl ProjectIndex {
 
     /// Get all known names for a specific entity type (for completion)
     pub fn get_all_names(&self, entity: EntityType) -> Vec<(String, Option<LocationInfo>)> {
-        self.map
+        // Select appropriate cache
+        let cache = match entity {
+            EntityType::Command => &self.command_names_cache,
+            EntityType::Event => &self.event_names_cache,
+        };
+
+        // Try to read from cache
+        {
+            let cache_read = cache.read().unwrap();
+            if let Some(cached) = cache_read.as_ref() {
+                return cached.clone();
+            }
+        }
+
+        // Cache miss - compute result
+        let result: Vec<(String, Option<LocationInfo>)> = self.map
             .iter()
             .filter(|e| e.key().entity == entity)
             .map(|e| {
@@ -405,22 +448,39 @@ impl ProjectIndex {
                     .cloned();
                 (e.key().name.clone(), definition)
             })
-            .collect()
+            .collect();
+
+        // Store in cache
+        *cache.write().unwrap() = Some(result.clone());
+
+        result
     }
 
     /// Get diagnostic information for a key (for diagnostics)
     pub fn get_diagnostic_info(&self, key: &IndexKey) -> DiagnosticInfo {
+        // Check cache first
+        if let Some(cached) = self.diagnostic_info_cache.get(key) {
+            return cached.clone();
+        }
+
+        // Cache miss - compute
         let locations = self.map.get(key).map(|v| v.clone()).unwrap_or_default();
-        DiagnosticInfo {
+        let info = DiagnosticInfo {
             has_definition: locations.iter().any(|l| l.behavior == Behavior::Definition),
             has_calls: locations.iter().any(|l| l.behavior == Behavior::Call),
             has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit),
             has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen),
-        }
+        };
+
+        // Store in cache
+        self.diagnostic_info_cache.insert(key.clone(), info.clone());
+
+        info
     }
 }
 
 /// Diagnostic information for a command/event
+#[derive(Clone, Debug)]
 pub struct DiagnosticInfo {
     pub has_definition: bool,
     pub has_calls: bool,
