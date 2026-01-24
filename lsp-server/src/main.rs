@@ -259,6 +259,7 @@ impl LanguageServer for Backend {
                     resolve_provider: Some(false),
                     ..Default::default()
                 }),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
 
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
@@ -694,6 +695,124 @@ impl LanguageServer for Backend {
 
                 range: Some(origin_loc.range),
             }));
+        }
+
+        Ok(None)
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
+        let path = match params.text_document.uri.to_file_path() {
+            Some(p) => p.to_path_buf(),
+            None => return Ok(None),
+        };
+
+        let position = params.range.start;
+
+        // Check if cursor is on an undefined command
+        if let Some((key, _loc)) = self.project_index.get_key_at_position(&path, position) {
+            // Only offer action for commands (not events)
+            if key.entity != EntityType::Command {
+                return Ok(None);
+            }
+
+            let info = self.project_index.get_diagnostic_info(&key);
+
+            // Only offer action for undefined commands
+            if info.has_definition {
+                return Ok(None);
+            }
+
+            // Find src-tauri/src/main.rs
+            let workspace_root = match self.workspace_root.get() {
+                Some(root) => root,
+                None => return Ok(None),
+            };
+
+            let target_file = workspace_root
+                .join("src-tauri")
+                .join("src")
+                .join("main.rs");
+
+            if !target_file.exists() {
+                return Ok(None);
+            }
+
+            // Read target file to find insertion point
+            let content = match tokio::fs::read_to_string(&target_file).await {
+                Ok(c) => c,
+                Err(_) => return Ok(None),
+            };
+
+            let lines: Vec<&str> = content.lines().collect();
+
+            // Find line before .invoke_handler() to insert command
+            let mut insert_line = 0;
+            for (i, line) in lines.iter().enumerate() {
+                if line.contains(".invoke_handler") {
+                    insert_line = i;
+                    break;
+                }
+            }
+
+            if insert_line == 0 {
+                // Fallback: insert before fn main()
+                for (i, line) in lines.iter().enumerate() {
+                    if line.contains("fn main()") {
+                        insert_line = i;
+                        break;
+                    }
+                }
+            }
+
+            // Generate command template
+            let command_template = format!(
+                "\n#[tauri::command]\nfn {}() -> Result<String, String> {{\n    Ok(\"Not implemented\".to_string())\n}}\n",
+                key.name
+            );
+
+            // Create WorkspaceEdit
+            let target_uri = match Uri::from_file_path(&target_file) {
+                Some(u) => u,
+                None => return Ok(None),
+            };
+
+            let mut changes = std::collections::HashMap::new();
+            changes.insert(
+                target_uri,
+                vec![TextEdit {
+                    range: Range {
+                        start: Position {
+                            line: insert_line as u32,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: insert_line as u32,
+                            character: 0,
+                        },
+                    },
+                    new_text: command_template,
+                }],
+            );
+
+            let workspace_edit = WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            };
+
+            // Create CodeAction
+            let action = CodeAction {
+                title: format!("Create Rust command '{}'", key.name),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(params.context.diagnostics),
+                edit: Some(workspace_edit),
+                ..Default::default()
+            };
+
+            return Ok(Some(vec![CodeActionOrCommand::CodeAction(action)]));
         }
 
         Ok(None)
