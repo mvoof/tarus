@@ -4,7 +4,7 @@
 //! using Tree-sitter queries defined in external .scm files.
 
 use crate::indexer::{FileIndex, Finding};
-use crate::syntax::{Behavior, EntityType};
+use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use std::collections::HashMap;
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
@@ -179,22 +179,21 @@ fn get_rust_event_patterns() -> HashMap<&'static str, (EntityType, Behavior)> {
 }
 
 /// Parse Rust source code
-fn parse_rust(content: &str) -> Vec<Finding> {
+fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
     let mut findings = Vec::new();
 
     let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = Parser::new();
-    if parser.set_language(&ts_lang).is_err() {
-        return findings;
-    }
+    parser
+        .set_language(&ts_lang)
+        .map_err(|e| ParseError::LanguageError(format!("Failed to set Rust language: {}", e)))?;
 
-    let Some(tree) = parser.parse(content, None) else {
-        return findings;
-    };
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
 
-    let Ok(query) = Query::new(&ts_lang, RUST_QUERY) else {
-        return findings;
-    };
+    let query = Query::new(&ts_lang, RUST_QUERY)
+        .map_err(|e| ParseError::QueryError(format!("Failed to create Rust query: {}", e)))?;
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
@@ -256,7 +255,7 @@ fn parse_rust(content: &str) -> Vec<Finding> {
         }
     }
 
-    findings
+    Ok(findings)
 }
 
 /// Function patterns with their argument position
@@ -312,7 +311,7 @@ fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
 }
 
 /// Parse TypeScript/JavaScript source code
-fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> Vec<Finding> {
+fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseResult<Vec<Finding>> {
     let mut findings = Vec::new();
 
     let ts_lang: Language = match lang {
@@ -321,18 +320,18 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> Vec<Find
     };
 
     let mut parser = Parser::new();
-    if parser.set_language(&ts_lang).is_err() {
-        return findings;
-    }
+    parser.set_language(&ts_lang).map_err(|e| {
+        ParseError::LanguageError(format!("Failed to set {:?} language: {}", lang, e))
+    })?;
 
-    let Some(tree) = parser.parse(content, None) else {
-        return findings;
-    };
+    let tree = parser.parse(content, None).ok_or_else(|| {
+        ParseError::SyntaxError(format!("Failed to parse {:?} file", lang))
+    })?;
 
     let query_src = get_query_source(lang);
-    let Ok(query) = Query::new(&ts_lang, query_src) else {
-        return findings;
-    };
+    let query = Query::new(&ts_lang, query_src).map_err(|e| {
+        ParseError::QueryError(format!("Failed to create {:?} query: {}", lang, e))
+    })?;
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
@@ -461,11 +460,11 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> Vec<Find
         }
     }
 
-    findings
+    Ok(findings)
 }
 
 /// Main parsing function - entry point for all file types
-pub fn parse(path: &Path, content: &str) -> FileIndex {
+pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
     // Check for Angular component
@@ -482,20 +481,20 @@ pub fn parse(path: &Path, content: &str) -> FileIndex {
     };
 
     let findings = match lang {
-        Some(LangType::Rust) => parse_rust(content),
+        Some(LangType::Rust) => parse_rust(content)?,
         Some(LangType::TypeScript) | Some(LangType::JavaScript) | Some(LangType::Angular) => {
-            parse_frontend(content, lang.unwrap(), 0)
+            parse_frontend(content, lang.unwrap(), 0)?
         }
         Some(LangType::Vue) => {
             if let Some((script_content, line_offset)) = extract_vue_script(content) {
-                parse_frontend(&script_content, LangType::TypeScript, line_offset)
+                parse_frontend(&script_content, LangType::TypeScript, line_offset)?
             } else {
                 Vec::new()
             }
         }
         Some(LangType::Svelte) => {
             if let Some((script_content, line_offset)) = extract_svelte_script(content) {
-                parse_frontend(&script_content, LangType::TypeScript, line_offset)
+                parse_frontend(&script_content, LangType::TypeScript, line_offset)?
             } else {
                 Vec::new()
             }
@@ -503,10 +502,10 @@ pub fn parse(path: &Path, content: &str) -> FileIndex {
         None => Vec::new(),
     };
 
-    FileIndex {
+    Ok(FileIndex {
         path: path.to_path_buf(),
         findings,
-    }
+    })
 }
 
 #[cfg(test)]

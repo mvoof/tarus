@@ -45,6 +45,8 @@ pub struct ProjectIndex {
     event_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
     // Cache for diagnostic info (avoids re-iterating locations)
     diagnostic_info_cache: DashMap<IndexKey, DiagnosticInfo>,
+    // Parse errors by file path
+    pub parse_errors: DashMap<PathBuf, String>,
 }
 
 impl Default for ProjectIndex {
@@ -55,6 +57,7 @@ impl Default for ProjectIndex {
             command_names_cache: RwLock::new(None),
             event_names_cache: RwLock::new(None),
             diagnostic_info_cache: DashMap::new(),
+            parse_errors: DashMap::new(),
         }
     }
 }
@@ -165,6 +168,24 @@ impl ProjectIndex {
             *self.event_names_cache.write().unwrap() = None;
             self.diagnostic_info_cache.clear();
         }
+
+        // Also remove parse errors for this file
+        self.parse_errors.remove(path);
+    }
+
+    /// Store a parse error for a file
+    pub fn set_parse_error(&self, path: PathBuf, error: String) {
+        self.parse_errors.insert(path, error);
+    }
+
+    /// Get parse error for a file (if any)
+    pub fn get_parse_error(&self, path: &PathBuf) -> Option<String> {
+        self.parse_errors.get(path).map(|e| e.value().clone())
+    }
+
+    /// Clear parse error for a file (called when file is successfully parsed)
+    pub fn clear_parse_error(&self, path: &PathBuf) {
+        self.parse_errors.remove(path);
     }
 
     /// Retrieves all locations associated with a specific entity

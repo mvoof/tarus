@@ -28,3 +28,29 @@ pub enum Behavior {
     /// Event listen (listen("event"))
     Listen,
 }
+
+/// Parse error types
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    /// File contains syntax errors
+    SyntaxError(String),
+    /// Query execution failed
+    QueryError(String),
+    /// Language configuration error
+    LanguageError(String),
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::SyntaxError(msg) => write!(f, "Syntax error: {}", msg),
+            ParseError::QueryError(msg) => write!(f, "Query error: {}", msg),
+            ParseError::LanguageError(msg) => write!(f, "Language error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+/// Result type for parsing operations
+pub type ParseResult<T> = Result<T, ParseError>;
