@@ -2,6 +2,7 @@
 
 use dashmap::DashMap;
 use serde_json::json;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
@@ -807,11 +808,45 @@ impl LanguageServer for Backend {
                 let task = tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(300)).await;
 
+                    // Get OLD keys before processing (will be removed)
+                    let old_keys: Vec<IndexKey> = project_index
+                        .file_map
+                        .get(&path_clone)
+                        .map(|keys| keys.value().clone())
+                        .unwrap_or_default();
+
                     if process_file_content(&path_clone, &content, &project_index) {
-                        // Publish diagnostics
-                        if let Some(uri) = Uri::from_file_path(&path_clone) {
-                            let diagnostics = compute_file_diagnostics(&path_clone, &project_index);
-                            client.publish_diagnostics(uri, diagnostics, None).await;
+                        // Get NEW keys after processing
+                        let new_keys: Vec<IndexKey> = project_index
+                            .file_map
+                            .get(&path_clone)
+                            .map(|keys| keys.value().clone())
+                            .unwrap_or_default();
+
+                        // Combine old and new keys to find all affected commands/events
+                        let mut all_keys = HashSet::new();
+                        for key in old_keys.iter().chain(new_keys.iter()) {
+                            all_keys.insert(key.clone());
+                        }
+
+                        // Collect all files that contain these commands/events
+                        let mut affected_files = HashSet::new();
+                        affected_files.insert(path_clone.clone());
+
+                        for key in &all_keys {
+                            if let Some(locations) = project_index.map.get(key) {
+                                for loc in locations.iter() {
+                                    affected_files.insert(loc.path.clone());
+                                }
+                            }
+                        }
+
+                        // Publish diagnostics for all affected files
+                        for file in affected_files {
+                            if let Some(uri) = Uri::from_file_path(&file) {
+                                let diagnostics = compute_file_diagnostics(&file, &project_index);
+                                client.publish_diagnostics(uri, diagnostics, None).await;
+                            }
                         }
                     }
                 });
