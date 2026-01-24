@@ -1,9 +1,12 @@
 #![warn(clippy::all, clippy::pedantic)]
 
+use dashmap::DashMap;
 use serde_json::json;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
+use tokio::time::Duration;
 use tower_lsp_server::{
     jsonrpc::Result, lsp_types::*, Client, LanguageServer, LspService, Server, UriExt,
 };
@@ -46,24 +49,55 @@ fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec
         let info: DiagnosticInfo = project_index.get_diagnostic_info(key);
         let locations = project_index.get_locations(key.entity, &key.name);
 
-        for loc in locations.iter().filter(|l| l.path == *path) {
+        // Filter locations to only those in current file
+        let local_locations: Vec<_> = locations
+            .iter()
+            .filter(|l| l.path == *path)
+            .collect();
+
+        // Find first occurrence of each behavior type
+        let first_call = local_locations.iter()
+            .find(|l| matches!(l.behavior, Behavior::Call))
+            .map(|l| l.range);
+        let first_emit = local_locations.iter()
+            .find(|l| matches!(l.behavior, Behavior::Emit))
+            .map(|l| l.range);
+
+        for loc in local_locations {
+            // Determine if we should show diagnostic for this location
             let msg = match loc.behavior {
-                Behavior::Call if !info.has_definition => Some((
-                    DiagnosticSeverity::WARNING,
-                    format!("Command '{}' is not defined in Rust backend", key.name),
-                )),
+                // Show on Definition if command never called
                 Behavior::Definition if !info.has_calls => Some((
                     DiagnosticSeverity::WARNING,
-                    format!("Command '{}' is defined but never invoked", key.name),
+                    format!("Command '{}' is defined but never invoked in frontend", key.name),
                 )),
+                // Show on FIRST Call only if command not defined
+                Behavior::Call if !info.has_definition => {
+                    if first_call == Some(loc.range) {
+                        Some((
+                            DiagnosticSeverity::WARNING,
+                            format!("Command '{}' is not defined in Rust backend", key.name),
+                        ))
+                    } else {
+                        None // Skip subsequent calls
+                    }
+                }
+                // Show on Listen if event never emitted
                 Behavior::Listen if !info.has_emitters => Some((
                     DiagnosticSeverity::WARNING,
                     format!("Event '{}' is listened for but never emitted", key.name),
                 )),
-                Behavior::Emit if !info.has_listeners => Some((
-                    DiagnosticSeverity::WARNING,
-                    format!("Event '{}' is emitted but never listened to", key.name),
-                )),
+                // Show on FIRST Emit only if event never listened
+                Behavior::Emit if !info.has_listeners => {
+                    if first_emit == Some(loc.range) {
+                        Some((
+                            DiagnosticSeverity::WARNING,
+                            format!("Event '{}' is emitted but no listeners found", key.name),
+                        ))
+                    } else {
+                        None // Skip subsequent emits
+                    }
+                }
                 _ => None,
             };
 
@@ -133,6 +167,7 @@ struct Backend {
     workspace_root: OnceCell<PathBuf>,
     project_index: Arc<ProjectIndex>,
     is_developer_mode_active: Arc<AtomicBool>,
+    debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
 }
 
 impl Backend {
@@ -224,6 +259,7 @@ impl LanguageServer for Backend {
                     resolve_provider: Some(false),
                     ..Default::default()
                 }),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
 
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
@@ -535,6 +571,15 @@ impl LanguageServer for Backend {
                 return Ok(None);
             }
 
+            // Get diagnostic info for warnings
+            let info = self.project_index.get_diagnostic_info(&key);
+
+            // Count by behavior type
+            let calls_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Call)).count();
+            let emits_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Emit)).count();
+            let listens_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Listen)).count();
+            let definitions_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Definition)).count();
+
             let (definitions, references): (Vec<&LocationInfo>, Vec<&LocationInfo>) =
                 locations.iter().partition(|l| match key.entity {
                     EntityType::Command => l.behavior == Behavior::Definition,
@@ -544,9 +589,9 @@ impl LanguageServer for Backend {
             // Create Markdown Text
             let mut md_text = String::new();
 
-            // Header
+            // Header with emoji
             let icon = match key.entity {
-                EntityType::Command => "🔧",
+                EntityType::Command => "⚙️",
                 EntityType::Event => "📡",
             };
 
@@ -557,9 +602,9 @@ impl LanguageServer for Backend {
 
             // Definitions Section
             if !definitions.is_empty() {
-                md_text.push_str("Definitions:\n");
+                md_text.push_str("**Definition:**\n");
 
-                for def in definitions {
+                for def in &definitions {
                     let file_icon = if def.path.extension().map_or(false, |e| e == "rs") {
                         "🦀"
                     } else {
@@ -569,7 +614,7 @@ impl LanguageServer for Backend {
                     let filename = def.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
                     md_text.push_str(&format!(
-                        "* {} `{} : {}`\n",
+                        "- {} `{}:{}`\n",
                         file_icon,
                         filename,
                         def.range.start.line + 1
@@ -579,12 +624,34 @@ impl LanguageServer for Backend {
                 md_text.push_str("\n");
             }
 
-            // Links Section
+            // Reference count breakdown
+            let total_refs = locations.len();
+            md_text.push_str(&format!("**References ({} total)**\n", total_refs));
+
+            if key.entity == EntityType::Command {
+                if definitions_count > 0 {
+                    md_text.push_str(&format!("- 🦀 {} definition(s)\n", definitions_count));
+                }
+                if calls_count > 0 {
+                    md_text.push_str(&format!("- ⚡ {} call(s)\n", calls_count));
+                }
+            } else {
+                if emits_count > 0 {
+                    md_text.push_str(&format!("- 📤 {} emit(s)\n", emits_count));
+                }
+                if listens_count > 0 {
+                    md_text.push_str(&format!("- 👂 {} listener(s)\n", listens_count));
+                }
+            }
+
+            md_text.push_str("\n");
+
+            // Sample references (first 5)
             if !references.is_empty() {
-                md_text.push_str(&format!("**References ({})**:\n", references.len()));
+                md_text.push_str("**Sample References:**\n");
                 for (i, rf) in references.iter().enumerate() {
                     if i >= 5 {
-                        md_text.push_str(&format!("* *...and {} more*\n", references.len() - 5));
+                        md_text.push_str(&format!("- *...and {} more*\n", references.len() - 5));
                         break;
                     }
 
@@ -598,13 +665,26 @@ impl LanguageServer for Backend {
                     let behavior_badge = format!("{:?}", rf.behavior).to_uppercase();
 
                     md_text.push_str(&format!(
-                        "* {} `[{}] {} : {}`\n",
+                        "- {} `[{}] {}:{}`\n",
                         file_icon,
                         behavior_badge,
                         filename,
                         rf.range.start.line + 1
                     ));
                 }
+
+                md_text.push_str("\n");
+            }
+
+            // Add warnings/tips based on diagnostic info
+            if key.entity == EntityType::Command && !info.has_definition {
+                md_text.push_str("⚠️ *No backend implementation found*\n");
+            } else if key.entity == EntityType::Command && !info.has_calls {
+                md_text.push_str("💡 *Defined but never called in frontend*\n");
+            } else if key.entity == EntityType::Event && !info.has_emitters {
+                md_text.push_str("💡 *Event listened for but never emitted*\n");
+            } else if key.entity == EntityType::Event && !info.has_listeners {
+                md_text.push_str("💡 *Event emitted but no listeners found*\n");
             }
 
             return Ok(Some(Hover {
@@ -615,6 +695,124 @@ impl LanguageServer for Backend {
 
                 range: Some(origin_loc.range),
             }));
+        }
+
+        Ok(None)
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        if !self.is_ready() {
+            return Ok(None);
+        }
+
+        let path = match params.text_document.uri.to_file_path() {
+            Some(p) => p.to_path_buf(),
+            None => return Ok(None),
+        };
+
+        let position = params.range.start;
+
+        // Check if cursor is on an undefined command
+        if let Some((key, _loc)) = self.project_index.get_key_at_position(&path, position) {
+            // Only offer action for commands (not events)
+            if key.entity != EntityType::Command {
+                return Ok(None);
+            }
+
+            let info = self.project_index.get_diagnostic_info(&key);
+
+            // Only offer action for undefined commands
+            if info.has_definition {
+                return Ok(None);
+            }
+
+            // Find src-tauri/src/main.rs
+            let workspace_root = match self.workspace_root.get() {
+                Some(root) => root,
+                None => return Ok(None),
+            };
+
+            let target_file = workspace_root
+                .join("src-tauri")
+                .join("src")
+                .join("main.rs");
+
+            if !target_file.exists() {
+                return Ok(None);
+            }
+
+            // Read target file to find insertion point
+            let content = match tokio::fs::read_to_string(&target_file).await {
+                Ok(c) => c,
+                Err(_) => return Ok(None),
+            };
+
+            let lines: Vec<&str> = content.lines().collect();
+
+            // Find line before .invoke_handler() to insert command
+            let mut insert_line = 0;
+            for (i, line) in lines.iter().enumerate() {
+                if line.contains(".invoke_handler") {
+                    insert_line = i;
+                    break;
+                }
+            }
+
+            if insert_line == 0 {
+                // Fallback: insert before fn main()
+                for (i, line) in lines.iter().enumerate() {
+                    if line.contains("fn main()") {
+                        insert_line = i;
+                        break;
+                    }
+                }
+            }
+
+            // Generate command template
+            let command_template = format!(
+                "\n#[tauri::command]\nfn {}() -> Result<String, String> {{\n    Ok(\"Not implemented\".to_string())\n}}\n",
+                key.name
+            );
+
+            // Create WorkspaceEdit
+            let target_uri = match Uri::from_file_path(&target_file) {
+                Some(u) => u,
+                None => return Ok(None),
+            };
+
+            let mut changes = std::collections::HashMap::new();
+            changes.insert(
+                target_uri,
+                vec![TextEdit {
+                    range: Range {
+                        start: Position {
+                            line: insert_line as u32,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: insert_line as u32,
+                            character: 0,
+                        },
+                    },
+                    new_text: command_template,
+                }],
+            );
+
+            let workspace_edit = WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            };
+
+            // Create CodeAction
+            let action = CodeAction {
+                title: format!("Create Rust command '{}'", key.name),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(params.context.diagnostics),
+                edit: Some(workspace_edit),
+                ..Default::default()
+            };
+
+            return Ok(Some(vec![CodeActionOrCommand::CodeAction(action)]));
         }
 
         Ok(None)
@@ -789,9 +987,65 @@ impl LanguageServer for Backend {
 
             // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
             if let Some(change) = params.content_changes.into_iter().next() {
-                if process_file_content(&path, &change.text, &self.project_index) {
-                    self.publish_diagnostics_for_file(&path).await;
+                let content = change.text;
+
+                // Cancel existing debounce task for this file
+                if let Some((_key, old_task)) = self.debounce_tasks.remove(&path) {
+                    old_task.abort();
                 }
+
+                // Spawn new debounced task
+                let project_index = self.project_index.clone();
+                let client = self.client.clone();
+                let path_clone = path.clone();
+
+                let task = tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                    // Get OLD keys before processing (will be removed)
+                    let old_keys: Vec<IndexKey> = project_index
+                        .file_map
+                        .get(&path_clone)
+                        .map(|keys| keys.value().clone())
+                        .unwrap_or_default();
+
+                    if process_file_content(&path_clone, &content, &project_index) {
+                        // Get NEW keys after processing
+                        let new_keys: Vec<IndexKey> = project_index
+                            .file_map
+                            .get(&path_clone)
+                            .map(|keys| keys.value().clone())
+                            .unwrap_or_default();
+
+                        // Combine old and new keys to find all affected commands/events
+                        let mut all_keys = HashSet::new();
+                        for key in old_keys.iter().chain(new_keys.iter()) {
+                            all_keys.insert(key.clone());
+                        }
+
+                        // Collect all files that contain these commands/events
+                        let mut affected_files = HashSet::new();
+                        affected_files.insert(path_clone.clone());
+
+                        for key in &all_keys {
+                            if let Some(locations) = project_index.map.get(key) {
+                                for loc in locations.iter() {
+                                    affected_files.insert(loc.path.clone());
+                                }
+                            }
+                        }
+
+                        // Publish diagnostics for all affected files
+                        for file in affected_files {
+                            if let Some(uri) = Uri::from_file_path(&file) {
+                                let diagnostics = compute_file_diagnostics(&file, &project_index);
+                                client.publish_diagnostics(uri, diagnostics, None).await;
+                            }
+                        }
+                    }
+                });
+
+                self.debounce_tasks.insert(path, task);
             }
         }
     }
@@ -826,6 +1080,7 @@ async fn main() {
         workspace_root: OnceCell::new(),
         project_index,
         is_developer_mode_active: initial_dev_mode_state.clone(),
+        debounce_tasks: Arc::new(DashMap::new()),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
