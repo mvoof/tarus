@@ -414,16 +414,26 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
     Ok(findings)
 }
 
+/// Check if TypeScript file contains Angular decorators
+fn is_angular_file(content: &str) -> bool {
+    // Angular decorators that indicate this is an Angular file
+    const ANGULAR_DECORATORS: &[&str] = &[
+        "@Component(",
+        "@Injectable(",
+        "@NgModule(",
+        "@Directive(",
+        "@Pipe(",
+    ];
+
+    ANGULAR_DECORATORS.iter().any(|decorator| content.contains(decorator))
+}
+
 /// Main parsing function - entry point for all file types
 pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-    // Check for Angular component
-    let is_angular = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.ends_with(".component.ts"))
-        .unwrap_or(false);
+    // Check for Angular: content-based detection for .ts files
+    let is_angular = ext == "ts" && is_angular_file(content);
 
     let lang = if is_angular {
         Some(LangType::Angular)
