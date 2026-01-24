@@ -51,89 +51,40 @@ fn get_query_source(lang: LangType) -> &'static str {
     }
 }
 
-/// Extract script content from Vue SFC
-fn extract_vue_script(content: &str) -> Option<(String, usize)> {
-    // Find <script> or <script setup> or <script lang="ts">
-    let script_start_patterns = [
-        "<script>",
-        "<script setup>",
-        "<script lang=\"ts\">",
-        "<script lang=\"typescript\">",
-        "<script setup lang=\"ts\">",
-        "<script setup lang=\"typescript\">",
-        "<script lang='ts'>",
-        "<script lang='typescript'>",
-        "<script setup lang='ts'>",
-        "<script setup lang='typescript'>",
-    ];
+/// Extract ALL script blocks from SFC (Single File Component: Vue, Svelte, etc.)
+/// Returns tuples of (script_content, line_offset) for each <script> block found
+fn extract_script_blocks(content: &str) -> Vec<(String, usize)> {
+    let mut blocks = Vec::new();
+    let mut search_pos = 0;
 
-    let mut start_idx = None;
-    let mut tag_end = 0;
+    while let Some(tag_start) = content[search_pos..].find("<script") {
+        let absolute_tag_start = search_pos + tag_start;
 
-    for pattern in &script_start_patterns {
-        if let Some(idx) = content.find(pattern) {
-            if start_idx.is_none() || idx < start_idx.unwrap() {
-                start_idx = Some(idx);
-                tag_end = idx + pattern.len();
-            }
-        }
+        // Find end of opening tag (>)
+        let Some(tag_close_offset) = content[absolute_tag_start..].find('>') else {
+            break;
+        };
+        let tag_close = absolute_tag_start + tag_close_offset + 1;
+
+        // Find closing </script>
+        let Some(end_tag_offset) = content[tag_close..].find("</script>") else {
+            break;
+        };
+        let script_end = tag_close + end_tag_offset;
+
+        // Extract script content
+        let script_content = &content[tag_close..script_end];
+
+        // Calculate line offset
+        let line_offset = content[..tag_close].lines().count().saturating_sub(1);
+
+        blocks.push((script_content.to_string(), line_offset));
+
+        // Move search position past this script block
+        search_pos = script_end + "</script>".len();
     }
 
-    start_idx?; // Ensure we found a script tag
-    let script_content_start = tag_end;
-
-    // Find </script>
-    let end = content[script_content_start..].find("</script>")?;
-    let script_content = &content[script_content_start..script_content_start + end];
-
-    // Calculate line offset
-    let line_offset = content[..script_content_start]
-        .lines()
-        .count()
-        .saturating_sub(1);
-
-    Some((script_content.to_string(), line_offset))
-}
-
-/// Extract script content from Svelte component
-fn extract_svelte_script(content: &str) -> Option<(String, usize)> {
-    // Find <script> or <script lang="ts">
-    let script_start_patterns = [
-        "<script>",
-        "<script lang=\"ts\">",
-        "<script lang=\"typescript\">",
-        "<script lang='ts'>",
-        "<script lang='typescript'>",
-        "<script context=\"module\">",
-        "<script context=\"module\" lang=\"ts\">",
-    ];
-
-    let mut start_idx = None;
-    let mut tag_end = 0;
-
-    for pattern in &script_start_patterns {
-        if let Some(idx) = content.find(pattern) {
-            if start_idx.is_none() || idx < start_idx.unwrap() {
-                start_idx = Some(idx);
-                tag_end = idx + pattern.len();
-            }
-        }
-    }
-
-    start_idx?; // Ensure we found a script tag
-    let script_content_start = tag_end;
-
-    // Find </script>
-    let end = content[script_content_start..].find("</script>")?;
-    let script_content = &content[script_content_start..script_content_start + end];
-
-    // Calculate line offset
-    let line_offset = content[..script_content_start]
-        .lines()
-        .count()
-        .saturating_sub(1);
-
-    Some((script_content.to_string(), line_offset))
+    blocks
 }
 
 /// Convert tree-sitter Point to LSP Position
@@ -485,19 +436,16 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
         Some(LangType::TypeScript) | Some(LangType::JavaScript) | Some(LangType::Angular) => {
             parse_frontend(content, lang.unwrap(), 0)?
         }
-        Some(LangType::Vue) => {
-            if let Some((script_content, line_offset)) = extract_vue_script(content) {
-                parse_frontend(&script_content, LangType::TypeScript, line_offset)?
-            } else {
-                Vec::new()
+        Some(LangType::Vue) | Some(LangType::Svelte) => {
+            let blocks = extract_script_blocks(content);
+            let mut all_findings = Vec::new();
+
+            for (script_content, line_offset) in blocks {
+                let findings = parse_frontend(&script_content, LangType::TypeScript, line_offset)?;
+                all_findings.extend(findings);
             }
-        }
-        Some(LangType::Svelte) => {
-            if let Some((script_content, line_offset)) = extract_svelte_script(content) {
-                parse_frontend(&script_content, LangType::TypeScript, line_offset)?
-            } else {
-                Vec::new()
-            }
+
+            all_findings
         }
         None => Vec::new(),
     };
