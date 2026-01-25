@@ -340,7 +340,7 @@ impl ProjectIndex {
         report_message
     }
 
-    /// Get document symbols for outline view (Ctrl+Shift+O)
+    /// Get document symbols for outline view
     pub fn get_document_symbols(&self, path: &PathBuf) -> Vec<SymbolInformation> {
         let mut symbols = Vec::new();
 

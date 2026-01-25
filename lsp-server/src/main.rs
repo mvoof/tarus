@@ -235,6 +235,157 @@ impl Backend {
     }
 }
 
+/// Rust file candidate for command insertion
+#[derive(Debug, Clone)]
+struct RustFileCandidate {
+    path: PathBuf,
+    priority: u8,  // 0-100, higher = better
+    insertion_line: usize,
+}
+
+/// Find all suitable Rust files for command creation
+/// Only includes files directly in src-tauri/src/ (no subdirectories)
+async fn find_rust_file_candidates(workspace_root: &PathBuf) -> Vec<RustFileCandidate> {
+    let src_dir = workspace_root.join("src-tauri").join("src");
+
+    if !src_dir.exists() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+
+    // Read only files directly in src/, no recursion
+    let entries = match tokio::fs::read_dir(&src_dir).await {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut entries_stream = entries;
+    while let Ok(Some(entry)) = entries_stream.next_entry().await {
+        let path = entry.path();
+
+        // Only files (not directories)
+        if !path.is_file() {
+            continue;
+        }
+
+        // Only .rs files
+        if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+            continue;
+        }
+
+        let file_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        // Exclude test and utility files
+        if file_name.starts_with("test_")
+            || file_name.ends_with("_test.rs")
+            || file_name == "build.rs" {
+            continue;
+        }
+
+        // Read content to determine priority
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let priority = calculate_file_priority(file_name, &content);
+        let insertion_line = find_insertion_line(&content);
+
+        candidates.push(RustFileCandidate {
+            path,
+            priority,
+            insertion_line,
+        });
+    }
+
+    candidates
+}
+
+/// Calculate file priority based on name and content
+fn calculate_file_priority(file_name: &str, content: &str) -> u8 {
+    // Tier 1: lib.rs and main.rs - highest priority
+    if file_name == "lib.rs" {
+        return 100;
+    }
+    if file_name == "main.rs" {
+        return 95;
+    }
+
+    // Tier 2: Files with invoke_handler - already used for command registration
+    if content.contains("invoke_handler(") {
+        return 85;
+    }
+
+    // Tier 3: Files with existing commands
+    if content.contains("#[tauri::command]") {
+        return 80;
+    }
+
+    // Tier 4: Typical command module names
+    match file_name {
+        "commands.rs" | "api.rs" | "handlers.rs" => 70,
+        "mod.rs" => 65,
+        _ => 50, // Other root .rs files
+    }
+}
+
+/// Find optimal line for command insertion
+/// Inserts after import and mod declaration blocks
+fn find_insertion_line(content: &str) -> usize {
+    let lines: Vec<&str> = content.lines().collect();
+
+    let mut last_use = 0;
+    let mut last_mod = 0;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Track use statements
+        if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
+            last_use = i + 1;
+        }
+
+        // Track mod declarations (but not mod blocks with braces)
+        if (trimmed.starts_with("mod ") || trimmed.starts_with("pub mod "))
+            && !trimmed.contains('{') {
+            last_mod = i + 1;
+        }
+    }
+
+    // Insert after the last of use or mod declarations
+    let insert_after = last_use.max(last_mod);
+
+    if insert_after > 0 {
+        return insert_after + 1; // Blank line after imports/mods
+    }
+
+    // Fallback: beginning of file (after file-level attributes like #![...])
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty()
+            && !trimmed.starts_with("//")
+            && !trimmed.starts_with("/*")
+            && !trimmed.starts_with("*")
+            && !trimmed.starts_with("#![") {
+            return i;
+        }
+    }
+
+    0
+}
+
+/// Sort by priority and limit to 5 files
+fn rank_and_limit(mut candidates: Vec<RustFileCandidate>) -> Vec<RustFileCandidate> {
+    // Sort by priority (higher = better)
+    candidates.sort_by(|a, b| b.priority.cmp(&a.priority));
+
+    // Limit according to requirements
+    candidates.into_iter().take(5).collect()
+}
+
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         let root_path = params
@@ -755,102 +906,91 @@ impl LanguageServer for Backend {
 
         // Check if cursor is on an undefined command
         if let Some((key, _loc)) = self.project_index.get_key_at_position(&path, position) {
-            // Only offer action for commands (not events)
+            // Only for commands (not events)
             if key.entity != EntityType::Command {
                 return Ok(None);
             }
 
             let info = self.project_index.get_diagnostic_info(&key);
 
-            // Only offer action for undefined commands
+            // Only for commands without definition
             if info.has_definition {
                 return Ok(None);
             }
 
-            // Find src-tauri/src/main.rs
+            // Get workspace root
             let workspace_root = match self.workspace_root.get() {
                 Some(root) => root,
                 None => return Ok(None),
             };
 
-            let target_file = workspace_root.join("src-tauri").join("src").join("main.rs");
+            // NEW: Find all suitable files
+            let candidates = find_rust_file_candidates(workspace_root).await;
 
-            if !target_file.exists() {
+            if candidates.is_empty() {
                 return Ok(None);
             }
 
-            // Read target file to find insertion point
-            let content = match tokio::fs::read_to_string(&target_file).await {
-                Ok(c) => c,
-                Err(_) => return Ok(None),
-            };
+            // Limit to 5 files
+            let ranked = rank_and_limit(candidates);
 
-            let lines: Vec<&str> = content.lines().collect();
+            // NEW: Create one CodeAction per file
+            let mut actions = Vec::new();
 
-            // Find line before .invoke_handler() to insert command
-            let mut insert_line = 0;
-            for (i, line) in lines.iter().enumerate() {
-                if line.contains(".invoke_handler") {
-                    insert_line = i;
-                    break;
-                }
+            for candidate in ranked {
+                let file_name = candidate.path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
+
+                // Generate command template
+                let command_template = format!(
+                    "\n#[tauri::command]\nfn {}() -> Result<String, String> {{\n    Ok(\"Not implemented\".to_string())\n}}\n",
+                    key.name
+                );
+
+                // Create WorkspaceEdit
+                let target_uri = match Uri::from_file_path(&candidate.path) {
+                    Some(u) => u,
+                    None => continue,
+                };
+
+                let mut changes = std::collections::HashMap::new();
+                changes.insert(
+                    target_uri,
+                    vec![TextEdit {
+                        range: Range {
+                            start: Position {
+                                line: candidate.insertion_line as u32,
+                                character: 0,
+                            },
+                            end: Position {
+                                line: candidate.insertion_line as u32,
+                                character: 0,
+                            },
+                        },
+                        new_text: command_template,
+                    }],
+                );
+
+                let workspace_edit = WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                };
+
+                // Create CodeAction with descriptive title
+                let action = CodeAction {
+                    title: format!("Create Rust command '{}' in {}", key.name, file_name),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(params.context.diagnostics.clone()),
+                    edit: Some(workspace_edit),
+                    ..Default::default()
+                };
+
+                actions.push(CodeActionOrCommand::CodeAction(action));
             }
 
-            if insert_line == 0 {
-                // Fallback: insert before fn main()
-                for (i, line) in lines.iter().enumerate() {
-                    if line.contains("fn main()") {
-                        insert_line = i;
-                        break;
-                    }
-                }
-            }
-
-            // Generate command template
-            let command_template = format!(
-                "\n#[tauri::command]\nfn {}() -> Result<String, String> {{\n    Ok(\"Not implemented\".to_string())\n}}\n",
-                key.name
-            );
-
-            // Create WorkspaceEdit
-            let target_uri = match Uri::from_file_path(&target_file) {
-                Some(u) => u,
-                None => return Ok(None),
-            };
-
-            let mut changes = std::collections::HashMap::new();
-            changes.insert(
-                target_uri,
-                vec![TextEdit {
-                    range: Range {
-                        start: Position {
-                            line: insert_line as u32,
-                            character: 0,
-                        },
-                        end: Position {
-                            line: insert_line as u32,
-                            character: 0,
-                        },
-                    },
-                    new_text: command_template,
-                }],
-            );
-
-            let workspace_edit = WorkspaceEdit {
-                changes: Some(changes),
-                ..Default::default()
-            };
-
-            // Create CodeAction
-            let action = CodeAction {
-                title: format!("Create Rust command '{}'", key.name),
-                kind: Some(CodeActionKind::QUICKFIX),
-                diagnostics: Some(params.context.diagnostics),
-                edit: Some(workspace_edit),
-                ..Default::default()
-            };
-
-            return Ok(Some(vec![CodeActionOrCommand::CodeAction(action)]));
+            return Ok(Some(actions));
         }
 
         Ok(None)
