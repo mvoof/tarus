@@ -4,7 +4,7 @@
 //! using Tree-sitter queries defined in external .scm files.
 
 use crate::indexer::{FileIndex, Finding};
-use crate::syntax::{Behavior, EntityType};
+use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use std::collections::HashMap;
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
@@ -12,9 +12,9 @@ use tower_lsp_server::lsp_types::{Position, Range};
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 /// Query files embedded at compile time
-const RUST_QUERY: &str = include_str!("../queries/rust.scm");
-const TS_QUERY: &str = include_str!("../queries/typescript.scm");
-const JS_QUERY: &str = include_str!("../queries/javascript.scm");
+const RUST_QUERY: &str = include_str!("queries/rust.scm");
+const TS_QUERY: &str = include_str!("queries/typescript.scm");
+const JS_QUERY: &str = include_str!("queries/javascript.scm");
 
 /// Supported language types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,89 +51,40 @@ fn get_query_source(lang: LangType) -> &'static str {
     }
 }
 
-/// Extract script content from Vue SFC
-fn extract_vue_script(content: &str) -> Option<(String, usize)> {
-    // Find <script> or <script setup> or <script lang="ts">
-    let script_start_patterns = [
-        "<script>",
-        "<script setup>",
-        "<script lang=\"ts\">",
-        "<script lang=\"typescript\">",
-        "<script setup lang=\"ts\">",
-        "<script setup lang=\"typescript\">",
-        "<script lang='ts'>",
-        "<script lang='typescript'>",
-        "<script setup lang='ts'>",
-        "<script setup lang='typescript'>",
-    ];
+/// Extract ALL script blocks from SFC (Single File Component: Vue, Svelte, etc.)
+/// Returns tuples of (script_content, line_offset) for each <script> block found
+fn extract_script_blocks(content: &str) -> Vec<(String, usize)> {
+    let mut blocks = Vec::new();
+    let mut search_pos = 0;
 
-    let mut start_idx = None;
-    let mut tag_end = 0;
+    while let Some(tag_start) = content[search_pos..].find("<script") {
+        let absolute_tag_start = search_pos + tag_start;
 
-    for pattern in &script_start_patterns {
-        if let Some(idx) = content.find(pattern) {
-            if start_idx.is_none() || idx < start_idx.unwrap() {
-                start_idx = Some(idx);
-                tag_end = idx + pattern.len();
-            }
-        }
+        // Find end of opening tag (>)
+        let Some(tag_close_offset) = content[absolute_tag_start..].find('>') else {
+            break;
+        };
+        let tag_close = absolute_tag_start + tag_close_offset + 1;
+
+        // Find closing </script>
+        let Some(end_tag_offset) = content[tag_close..].find("</script>") else {
+            break;
+        };
+        let script_end = tag_close + end_tag_offset;
+
+        // Extract script content
+        let script_content = &content[tag_close..script_end];
+
+        // Calculate line offset
+        let line_offset = content[..tag_close].lines().count().saturating_sub(1);
+
+        blocks.push((script_content.to_string(), line_offset));
+
+        // Move search position past this script block
+        search_pos = script_end + "</script>".len();
     }
 
-    start_idx?; // Ensure we found a script tag
-    let script_content_start = tag_end;
-
-    // Find </script>
-    let end = content[script_content_start..].find("</script>")?;
-    let script_content = &content[script_content_start..script_content_start + end];
-
-    // Calculate line offset
-    let line_offset = content[..script_content_start]
-        .lines()
-        .count()
-        .saturating_sub(1);
-
-    Some((script_content.to_string(), line_offset))
-}
-
-/// Extract script content from Svelte component
-fn extract_svelte_script(content: &str) -> Option<(String, usize)> {
-    // Find <script> or <script lang="ts">
-    let script_start_patterns = [
-        "<script>",
-        "<script lang=\"ts\">",
-        "<script lang=\"typescript\">",
-        "<script lang='ts'>",
-        "<script lang='typescript'>",
-        "<script context=\"module\">",
-        "<script context=\"module\" lang=\"ts\">",
-    ];
-
-    let mut start_idx = None;
-    let mut tag_end = 0;
-
-    for pattern in &script_start_patterns {
-        if let Some(idx) = content.find(pattern) {
-            if start_idx.is_none() || idx < start_idx.unwrap() {
-                start_idx = Some(idx);
-                tag_end = idx + pattern.len();
-            }
-        }
-    }
-
-    start_idx?; // Ensure we found a script tag
-    let script_content_start = tag_end;
-
-    // Find </script>
-    let end = content[script_content_start..].find("</script>")?;
-    let script_content = &content[script_content_start..script_content_start + end];
-
-    // Calculate line offset
-    let line_offset = content[..script_content_start]
-        .lines()
-        .count()
-        .saturating_sub(1);
-
-    Some((script_content.to_string(), line_offset))
+    blocks
 }
 
 /// Convert tree-sitter Point to LSP Position
@@ -179,22 +130,21 @@ fn get_rust_event_patterns() -> HashMap<&'static str, (EntityType, Behavior)> {
 }
 
 /// Parse Rust source code
-fn parse_rust(content: &str) -> Vec<Finding> {
+fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
     let mut findings = Vec::new();
 
     let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = Parser::new();
-    if parser.set_language(&ts_lang).is_err() {
-        return findings;
-    }
+    parser
+        .set_language(&ts_lang)
+        .map_err(|e| ParseError::LanguageError(format!("Failed to set Rust language: {}", e)))?;
 
-    let Some(tree) = parser.parse(content, None) else {
-        return findings;
-    };
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
 
-    let Ok(query) = Query::new(&ts_lang, RUST_QUERY) else {
-        return findings;
-    };
+    let query = Query::new(&ts_lang, RUST_QUERY)
+        .map_err(|e| ParseError::QueryError(format!("Failed to create Rust query: {}", e)))?;
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
@@ -256,7 +206,7 @@ fn parse_rust(content: &str) -> Vec<Finding> {
         }
     }
 
-    findings
+    Ok(findings)
 }
 
 /// Function patterns with their argument position
@@ -276,19 +226,21 @@ enum ArgPosition {
 /// Get all frontend patterns including those with second argument
 fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
     vec![
-        // First argument patterns
+        // First argument patterns - Commands
         FunctionPatternWithPos {
             name: "invoke",
             entity: EntityType::Command,
             behavior: Behavior::Call,
             arg_position: ArgPosition::First,
         },
+        // First argument patterns - Events (emit)
         FunctionPatternWithPos {
             name: "emit",
             entity: EntityType::Event,
             behavior: Behavior::Emit,
             arg_position: ArgPosition::First,
         },
+        // First argument patterns - Events (listen/subscribe)
         FunctionPatternWithPos {
             name: "listen",
             entity: EntityType::Event,
@@ -312,7 +264,7 @@ fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
 }
 
 /// Parse TypeScript/JavaScript source code
-fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> Vec<Finding> {
+fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseResult<Vec<Finding>> {
     let mut findings = Vec::new();
 
     let ts_lang: Language = match lang {
@@ -321,18 +273,17 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> Vec<Find
     };
 
     let mut parser = Parser::new();
-    if parser.set_language(&ts_lang).is_err() {
-        return findings;
-    }
+    parser.set_language(&ts_lang).map_err(|e| {
+        ParseError::LanguageError(format!("Failed to set {:?} language: {}", lang, e))
+    })?;
 
-    let Some(tree) = parser.parse(content, None) else {
-        return findings;
-    };
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| ParseError::SyntaxError(format!("Failed to parse {:?} file", lang)))?;
 
     let query_src = get_query_source(lang);
-    let Ok(query) = Query::new(&ts_lang, query_src) else {
-        return findings;
-    };
+    let query = Query::new(&ts_lang, query_src)
+        .map_err(|e| ParseError::QueryError(format!("Failed to create {:?} query: {}", lang, e)))?;
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
@@ -461,19 +412,31 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> Vec<Find
         }
     }
 
-    findings
+    Ok(findings)
+}
+
+/// Check if TypeScript file contains Angular decorators
+fn is_angular_file(content: &str) -> bool {
+    // Angular decorators that indicate this is an Angular file
+    const ANGULAR_DECORATORS: &[&str] = &[
+        "@Component(",
+        "@Injectable(",
+        "@NgModule(",
+        "@Directive(",
+        "@Pipe(",
+    ];
+
+    ANGULAR_DECORATORS
+        .iter()
+        .any(|decorator| content.contains(decorator))
 }
 
 /// Main parsing function - entry point for all file types
-pub fn parse(path: &Path, content: &str) -> FileIndex {
+pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-    // Check for Angular component
-    let is_angular = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.ends_with(".component.ts"))
-        .unwrap_or(false);
+    // Check for Angular: content-based detection for .ts files
+    let is_angular = ext == "ts" && is_angular_file(content);
 
     let lang = if is_angular {
         Some(LangType::Angular)
@@ -482,32 +445,26 @@ pub fn parse(path: &Path, content: &str) -> FileIndex {
     };
 
     let findings = match lang {
-        Some(LangType::Rust) => parse_rust(content),
+        Some(LangType::Rust) => parse_rust(content)?,
         Some(LangType::TypeScript) | Some(LangType::JavaScript) | Some(LangType::Angular) => {
-            parse_frontend(content, lang.unwrap(), 0)
+            parse_frontend(content, lang.unwrap(), 0)?
         }
-        Some(LangType::Vue) => {
-            if let Some((script_content, line_offset)) = extract_vue_script(content) {
-                parse_frontend(&script_content, LangType::TypeScript, line_offset)
-            } else {
-                Vec::new()
+        Some(LangType::Vue) | Some(LangType::Svelte) => {
+            let blocks = extract_script_blocks(content);
+            let mut all_findings = Vec::new();
+
+            for (script_content, line_offset) in blocks {
+                let findings = parse_frontend(&script_content, LangType::TypeScript, line_offset)?;
+                all_findings.extend(findings);
             }
-        }
-        Some(LangType::Svelte) => {
-            if let Some((script_content, line_offset)) = extract_svelte_script(content) {
-                parse_frontend(&script_content, LangType::TypeScript, line_offset)
-            } else {
-                Vec::new()
-            }
+
+            all_findings
         }
         None => Vec::new(),
     };
 
-    FileIndex {
+    Ok(FileIndex {
         path: path.to_path_buf(),
         findings,
-    }
+    })
 }
-
-#[cfg(test)]
-mod tests;

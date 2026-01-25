@@ -40,6 +40,13 @@ const COMPLETION_TRIGGERS: &[&str] = &[
 fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
+    // If file has parse errors, skip diagnostic generation
+    // (errors are logged in developer mode only, not shown to user)
+    // TS/Rust analyzer already shows syntax errors
+    if project_index.get_parse_error(path).is_some() {
+        return diagnostics;
+    }
+
     let keys: Vec<IndexKey> = match project_index.file_map.get(path) {
         Some(k) => k.value().clone(),
         None => return diagnostics,
@@ -50,16 +57,15 @@ fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec
         let locations = project_index.get_locations(key.entity, &key.name);
 
         // Filter locations to only those in current file
-        let local_locations: Vec<_> = locations
-            .iter()
-            .filter(|l| l.path == *path)
-            .collect();
+        let local_locations: Vec<_> = locations.iter().filter(|l| l.path == *path).collect();
 
         // Find first occurrence of each behavior type
-        let first_call = local_locations.iter()
+        let first_call = local_locations
+            .iter()
             .find(|l| matches!(l.behavior, Behavior::Call))
             .map(|l| l.range);
-        let first_emit = local_locations.iter()
+        let first_emit = local_locations
+            .iter()
             .find(|l| matches!(l.behavior, Behavior::Emit))
             .map(|l| l.range);
 
@@ -69,7 +75,10 @@ fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec
                 // Show on Definition if command never called
                 Behavior::Definition if !info.has_calls => Some((
                     DiagnosticSeverity::WARNING,
-                    format!("Command '{}' is defined but never invoked in frontend", key.name),
+                    format!(
+                        "Command '{}' is defined but never invoked in frontend",
+                        key.name
+                    ),
                 )),
                 // Show on FIRST Call only if command not defined
                 Behavior::Call if !info.has_definition => {
@@ -138,10 +147,20 @@ fn process_file_content(path: &PathBuf, content: &str, project_index: &Arc<Proje
         return false;
     }
 
-    let file_index = tree_parser::parse(path, content);
-    project_index.add_file(file_index);
-
-    true
+    match tree_parser::parse(path, content) {
+        Ok(file_index) => {
+            // Parse succeeded - clear any previous errors and add file
+            project_index.clear_parse_error(path);
+            project_index.add_file(file_index);
+            true
+        }
+        Err(parse_error) => {
+            // Parse failed - store error and remove file from index
+            project_index.set_parse_error(path.clone(), parse_error.to_string());
+            project_index.remove_file(path);
+            true // Still return true to indicate we processed it (with error)
+        }
+    }
 }
 
 /// Process file from disk (for initial scan and did_save)
@@ -155,10 +174,20 @@ async fn process_file_index(path: PathBuf, project_index: &Arc<ProjectIndex>) ->
         Err(_) => return false,
     };
 
-    let file_index = tree_parser::parse(&path, &content);
-    project_index.add_file(file_index);
-
-    true
+    match tree_parser::parse(&path, &content) {
+        Ok(file_index) => {
+            // Parse succeeded - clear any previous errors and add file
+            project_index.clear_parse_error(&path);
+            project_index.add_file(file_index);
+            true
+        }
+        Err(parse_error) => {
+            // Parse failed - store error and remove file from index
+            project_index.set_parse_error(path.clone(), parse_error.to_string());
+            project_index.remove_file(&path);
+            true // Still return true to indicate we processed it (with error)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -575,10 +604,22 @@ impl LanguageServer for Backend {
             let info = self.project_index.get_diagnostic_info(&key);
 
             // Count by behavior type
-            let calls_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Call)).count();
-            let emits_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Emit)).count();
-            let listens_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Listen)).count();
-            let definitions_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Definition)).count();
+            let calls_count = locations
+                .iter()
+                .filter(|l| matches!(l.behavior, Behavior::Call))
+                .count();
+            let emits_count = locations
+                .iter()
+                .filter(|l| matches!(l.behavior, Behavior::Emit))
+                .count();
+            let listens_count = locations
+                .iter()
+                .filter(|l| matches!(l.behavior, Behavior::Listen))
+                .count();
+            let definitions_count = locations
+                .iter()
+                .filter(|l| matches!(l.behavior, Behavior::Definition))
+                .count();
 
             let (definitions, references): (Vec<&LocationInfo>, Vec<&LocationInfo>) =
                 locations.iter().partition(|l| match key.entity {
@@ -732,10 +773,7 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
 
-            let target_file = workspace_root
-                .join("src-tauri")
-                .join("src")
-                .join("main.rs");
+            let target_file = workspace_root.join("src-tauri").join("src").join("main.rs");
 
             if !target_file.exists() {
                 return Ok(None);
@@ -998,6 +1036,7 @@ impl LanguageServer for Backend {
                 let project_index = self.project_index.clone();
                 let client = self.client.clone();
                 let path_clone = path.clone();
+                let is_dev_mode = self.is_developer_mode_active.clone();
 
                 let task = tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1010,6 +1049,21 @@ impl LanguageServer for Backend {
                         .unwrap_or_default();
 
                     if process_file_content(&path_clone, &content, &project_index) {
+                        // Log parse errors in developer mode (check AFTER processing)
+                        if is_dev_mode.load(Ordering::Relaxed) {
+                            if let Some(error_msg) = project_index.get_parse_error(&path_clone) {
+                                let filename = path_clone
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("unknown");
+                                client
+                                    .log_message(
+                                        MessageType::ERROR,
+                                        format!("Parse error in {}: {}", filename, error_msg),
+                                    )
+                                    .await;
+                            }
+                        }
                         // Get NEW keys after processing
                         let new_keys: Vec<IndexKey> = project_index
                             .file_map
