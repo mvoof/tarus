@@ -8,6 +8,9 @@ import {
   TransportKind,
 } from 'vscode-languageclient/node';
 
+// Import shared platform utilities
+const { getTargetBinaryName } = require('../scripts/platform-utils');
+
 const SUPPORTED_LANGUAGES = [
   'typescript',
   'typescriptreact',
@@ -21,30 +24,7 @@ const SUPPORTED_LANGUAGES = [
 let client: LanguageClient;
 
 const getServerCommand = (context: ExtensionContext): string => {
-  const serverName = 'lsp-server'; // bin file name
-  let platform: string = process.platform;
-  let arch: string = process.arch;
-
-  // We collect the file name depending on the OS
-  let binaryName: string;
-
-  if (platform === 'win32') {
-    // Windows
-    binaryName = `${serverName}-win-x64.exe`;
-  } else if (platform === 'darwin') {
-    // macOS
-    if (arch === 'arm64') {
-      // Apple Silicon M1/M2/M3
-      binaryName = `${serverName}-macos-arm64`;
-    } else {
-      // Intel Mac
-      binaryName = `${serverName}-macos-x64`;
-    }
-  } else {
-    // Linux
-    binaryName = `${serverName}-linux-x64`;
-  }
-
+  const binaryName = getTargetBinaryName();
   return context.asAbsolutePath(path.join('bin', binaryName));
 };
 
