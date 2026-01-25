@@ -458,7 +458,8 @@ impl ProjectIndex {
         }
 
         // Cache miss - compute result
-        let result: Vec<(String, Option<LocationInfo>)> = self.map
+        let result: Vec<(String, Option<LocationInfo>)> = self
+            .map
             .iter()
             .filter(|e| e.key().entity == entity)
             .map(|e| {

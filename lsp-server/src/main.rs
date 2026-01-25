@@ -57,16 +57,15 @@ fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec
         let locations = project_index.get_locations(key.entity, &key.name);
 
         // Filter locations to only those in current file
-        let local_locations: Vec<_> = locations
-            .iter()
-            .filter(|l| l.path == *path)
-            .collect();
+        let local_locations: Vec<_> = locations.iter().filter(|l| l.path == *path).collect();
 
         // Find first occurrence of each behavior type
-        let first_call = local_locations.iter()
+        let first_call = local_locations
+            .iter()
             .find(|l| matches!(l.behavior, Behavior::Call))
             .map(|l| l.range);
-        let first_emit = local_locations.iter()
+        let first_emit = local_locations
+            .iter()
             .find(|l| matches!(l.behavior, Behavior::Emit))
             .map(|l| l.range);
 
@@ -76,7 +75,10 @@ fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec
                 // Show on Definition if command never called
                 Behavior::Definition if !info.has_calls => Some((
                     DiagnosticSeverity::WARNING,
-                    format!("Command '{}' is defined but never invoked in frontend", key.name),
+                    format!(
+                        "Command '{}' is defined but never invoked in frontend",
+                        key.name
+                    ),
                 )),
                 // Show on FIRST Call only if command not defined
                 Behavior::Call if !info.has_definition => {
@@ -602,10 +604,22 @@ impl LanguageServer for Backend {
             let info = self.project_index.get_diagnostic_info(&key);
 
             // Count by behavior type
-            let calls_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Call)).count();
-            let emits_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Emit)).count();
-            let listens_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Listen)).count();
-            let definitions_count = locations.iter().filter(|l| matches!(l.behavior, Behavior::Definition)).count();
+            let calls_count = locations
+                .iter()
+                .filter(|l| matches!(l.behavior, Behavior::Call))
+                .count();
+            let emits_count = locations
+                .iter()
+                .filter(|l| matches!(l.behavior, Behavior::Emit))
+                .count();
+            let listens_count = locations
+                .iter()
+                .filter(|l| matches!(l.behavior, Behavior::Listen))
+                .count();
+            let definitions_count = locations
+                .iter()
+                .filter(|l| matches!(l.behavior, Behavior::Definition))
+                .count();
 
             let (definitions, references): (Vec<&LocationInfo>, Vec<&LocationInfo>) =
                 locations.iter().partition(|l| match key.entity {
@@ -759,10 +773,7 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
 
-            let target_file = workspace_root
-                .join("src-tauri")
-                .join("src")
-                .join("main.rs");
+            let target_file = workspace_root.join("src-tauri").join("src").join("main.rs");
 
             if !target_file.exists() {
                 return Ok(None);

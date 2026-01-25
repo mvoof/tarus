@@ -7,25 +7,14 @@ use crate::indexer::{FileIndex, Finding};
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::OnceLock;
 use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::{Position, Range};
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 /// Query files embedded at compile time
-const RUST_QUERY: &str = include_str!("../queries/rust.scm");
-
-// Common ECMAScript patterns (shared by TypeScript and JavaScript)
-const COMMON_ECMA_QUERY: &str = include_str!("../queries/common-ecma.scm");
-
-// TypeScript-specific patterns (generics, await with types)
-const TS_SPECIFIC_QUERY: &str = include_str!("../queries/typescript-specific.scm");
-
-// JavaScript uses only common patterns (no generics)
-const JS_QUERY: &str = COMMON_ECMA_QUERY;
-
-// Lazy-initialized combined TypeScript query (common + TypeScript-specific)
-static TS_COMBINED_QUERY: OnceLock<String> = OnceLock::new();
+const RUST_QUERY: &str = include_str!("queries/rust.scm");
+const TS_QUERY: &str = include_str!("queries/typescript.scm");
+const JS_QUERY: &str = include_str!("queries/javascript.scm");
 
 /// Supported language types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,12 +46,7 @@ impl LangType {
 fn get_query_source(lang: LangType) -> &'static str {
     match lang {
         LangType::Rust => RUST_QUERY,
-        LangType::TypeScript | LangType::Vue | LangType::Svelte | LangType::Angular => {
-            // Combine common ECMAScript patterns with TypeScript-specific patterns
-            TS_COMBINED_QUERY.get_or_init(|| {
-                format!("{}\n\n{}", COMMON_ECMA_QUERY, TS_SPECIFIC_QUERY)
-            })
-        }
+        LangType::TypeScript | LangType::Vue | LangType::Svelte | LangType::Angular => TS_QUERY,
         LangType::JavaScript => JS_QUERY,
     }
 }
@@ -242,19 +226,21 @@ enum ArgPosition {
 /// Get all frontend patterns including those with second argument
 fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
     vec![
-        // First argument patterns
+        // First argument patterns - Commands
         FunctionPatternWithPos {
             name: "invoke",
             entity: EntityType::Command,
             behavior: Behavior::Call,
             arg_position: ArgPosition::First,
         },
+        // First argument patterns - Events (emit)
         FunctionPatternWithPos {
             name: "emit",
             entity: EntityType::Event,
             behavior: Behavior::Emit,
             arg_position: ArgPosition::First,
         },
+        // First argument patterns - Events (listen/subscribe)
         FunctionPatternWithPos {
             name: "listen",
             entity: EntityType::Event,
@@ -291,14 +277,13 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
         ParseError::LanguageError(format!("Failed to set {:?} language: {}", lang, e))
     })?;
 
-    let tree = parser.parse(content, None).ok_or_else(|| {
-        ParseError::SyntaxError(format!("Failed to parse {:?} file", lang))
-    })?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| ParseError::SyntaxError(format!("Failed to parse {:?} file", lang)))?;
 
     let query_src = get_query_source(lang);
-    let query = Query::new(&ts_lang, query_src).map_err(|e| {
-        ParseError::QueryError(format!("Failed to create {:?} query: {}", lang, e))
-    })?;
+    let query = Query::new(&ts_lang, query_src)
+        .map_err(|e| ParseError::QueryError(format!("Failed to create {:?} query: {}", lang, e)))?;
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
@@ -441,7 +426,9 @@ fn is_angular_file(content: &str) -> bool {
         "@Pipe(",
     ];
 
-    ANGULAR_DECORATORS.iter().any(|decorator| content.contains(decorator))
+    ANGULAR_DECORATORS
+        .iter()
+        .any(|decorator| content.contains(decorator))
 }
 
 /// Main parsing function - entry point for all file types
@@ -481,6 +468,3 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
         findings,
     })
 }
-
-#[cfg(test)]
-mod tests;
