@@ -17,7 +17,7 @@ mod syntax;
 mod tree_parser;
 
 use crate::indexer::{DiagnosticInfo, IndexKey, LocationInfo, ProjectIndex};
-use scanner::{is_tauri_project, scan_workspace_files};
+use scanner::{find_src_tauri_dir, is_tauri_project, scan_workspace_files};
 use std::sync::atomic::{AtomicBool, Ordering};
 use syntax::{Behavior, EntityType};
 
@@ -246,7 +246,13 @@ struct RustFileCandidate {
 /// Find all suitable Rust files for command creation
 /// Only includes files directly in src-tauri/src/ (no subdirectories)
 async fn find_rust_file_candidates(workspace_root: &PathBuf) -> Vec<RustFileCandidate> {
-    let src_dir = workspace_root.join("src-tauri").join("src");
+    let root_clone = workspace_root.clone();
+    let src_tauri_dir = match tokio::task::spawn_blocking(move || find_src_tauri_dir(&root_clone)).await {
+        Ok(Some(path)) => path,
+        _ => return Vec::new(),
+    };
+
+    let src_dir = src_tauri_dir.join("src");
 
     if !src_dir.exists() {
         return Vec::new();

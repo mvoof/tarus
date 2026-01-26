@@ -38,7 +38,7 @@ fn should_skip(entry: &DirEntry) -> bool {
             .iter()
             .any(|suffix| name_lc.ends_with(suffix));
 
-        is_excluded_file || is_excluded_suffix
+    is_excluded_file || is_excluded_suffix
     }
 }
 
@@ -59,6 +59,27 @@ pub fn is_tauri_project(root: &Path) -> bool {
                 .map(|name| name.to_lowercase().starts_with("tauri")) // https://v2.tauri.app/reference/config/#file-formats
                 .unwrap_or(false)
         })
+}
+
+/// Find the src-tauri directory (recursively, respecting ignores)
+/// Returns the parent directory of the found tauri configuration file
+pub fn find_src_tauri_dir(root: &Path) -> Option<PathBuf> {
+    WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !should_skip(e))
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            if !e.file_type().is_file() {
+                return false;
+            }
+
+            e.file_name()
+                .to_str()
+                .map(|name| name.to_lowercase().starts_with("tauri"))
+                .unwrap_or(false)
+        })
+        .and_then(|e| e.path().parent().map(|p| p.to_path_buf()))
 }
 
 /// Basic scan of files in the working directory
