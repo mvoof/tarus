@@ -42,44 +42,34 @@ fn should_skip(entry: &DirEntry) -> bool {
     }
 }
 
-/// Make sure it is a Tauri project by searching for the configuration file
-pub fn is_tauri_project(root: &Path) -> bool {
-    WalkDir::new(root)
-        .follow_links(false) // Avoid symlinks for security and speed
-        .into_iter()
-        .filter_entry(|e| !should_skip(e))
-        .filter_map(|e| e.ok()) // Ignoring file access errors
-        .any(|e| {
-            if !e.file_type().is_file() {
-                return false;
-            }
-
-            e.file_name()
-                .to_str()
-                .map(|name| name.to_lowercase().starts_with("tauri")) // https://v2.tauri.app/reference/config/#file-formats
-                .unwrap_or(false)
-        })
+/// Helper: Check if a path points to a Tauri configuration file
+fn is_tauri_config_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| name.to_lowercase().starts_with("tauri"))
+        .unwrap_or(false)
 }
 
-/// Find the src-tauri directory (recursively, respecting ignores)
-/// Returns the parent directory of the found tauri configuration file
-pub fn find_src_tauri_dir(root: &Path) -> Option<PathBuf> {
+/// Helper: Find the first Tauri configuration file in the directory tree
+fn find_tauri_config(root: &Path) -> Option<PathBuf> {
     WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| !should_skip(e))
         .filter_map(|e| e.ok())
-        .find(|e| {
-            if !e.file_type().is_file() {
-                return false;
-            }
+        .find(|e| e.file_type().is_file() && is_tauri_config_path(e.path()))
+        .map(|e| e.into_path())
+}
 
-            e.file_name()
-                .to_str()
-                .map(|name| name.to_lowercase().starts_with("tauri"))
-                .unwrap_or(false)
-        })
-        .and_then(|e| e.path().parent().map(|p| p.to_path_buf()))
+/// Make sure it is a Tauri project by searching for the configuration file
+pub fn is_tauri_project(root: &Path) -> bool {
+    find_tauri_config(root).is_some()
+}
+
+/// Find the src-tauri directory (recursively, respecting ignores)
+/// Returns the parent directory of the found tauri configuration file
+pub fn find_src_tauri_dir(root: &Path) -> Option<PathBuf> {
+    find_tauri_config(root).and_then(|p| p.parent().map(|p| p.to_path_buf()))
 }
 
 /// Basic scan of files in the working directory
