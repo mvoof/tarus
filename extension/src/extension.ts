@@ -30,6 +30,7 @@ const getServerCommand = (context: ExtensionContext): string => {
 };
 
 const activate = (context: ExtensionContext) => {
+  console.log('[TARUS] Extension activating...');
   // This path specifies where the binary will be located AFTER compilation.
   // We assume you'll copy the binary to the 'bin' folder within the client.
   const serverCommand = getServerCommand(context);
