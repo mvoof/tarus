@@ -2,7 +2,9 @@
 
 use crate::indexer::ProjectIndex;
 use crate::syntax::EntityType;
+use dashmap::DashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tower_lsp_server::lsp_types::{
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse,
 };
@@ -17,13 +19,17 @@ const COMPLETION_TRIGGERS: &[&str] = &[
 pub fn handle_completion(
     params: &CompletionParams,
     project_index: &ProjectIndex,
+    document_cache: &Arc<DashMap<PathBuf, String>>,
 ) -> Option<CompletionResponse> {
     let uri = &params.text_document_position.text_document.uri;
     let path_cow = uri.to_file_path()?;
     let path: PathBuf = path_cow.to_path_buf();
 
-    // Read file to check context
-    let content = std::fs::read_to_string(&path).ok()?;
+    // Try to get content from cache first, fallback to reading from disk
+    let content = document_cache
+        .get(&path)
+        .map(|entry| entry.value().clone())
+        .or_else(|| std::fs::read_to_string(&path).ok())?;
 
     let lines: Vec<&str> = content.lines().collect();
     let line_idx = params.text_document_position.position.line as usize;

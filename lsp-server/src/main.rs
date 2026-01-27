@@ -41,6 +41,8 @@ struct Backend {
     project_index: Arc<ProjectIndex>,
     is_developer_mode_active: Arc<AtomicBool>,
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
+    /// Cache of open document contents for completion and other features
+    document_cache: Arc<DashMap<PathBuf, String>>,
 }
 
 impl Backend {
@@ -378,7 +380,7 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         self.log_dev_info("➡️ Request: Completion").await;
 
-        let result = capabilities::completion::handle_completion(&params, &self.project_index);
+        let result = capabilities::completion::handle_completion(&params, &self.project_index, &self.document_cache);
 
         if let Some(ref response) = result {
             match response {
@@ -416,9 +418,12 @@ impl LanguageServer for Backend {
 
         if let Some(path_cow) = params.text_document.uri.to_file_path() {
             let path: PathBuf = path_cow.into_owned();
-            let content = &params.text_document.text;
+            let content = params.text_document.text.clone();
 
-            if file_processor::process_file_content(&path, content, &self.project_index) {
+            // Cache document content for completion
+            self.document_cache.insert(path.clone(), content.clone());
+
+            if file_processor::process_file_content(&path, &content, &self.project_index) {
                 let report = self.project_index.file_report(&path);
                 self.log_dev_info(&report).await;
             }
@@ -438,6 +443,9 @@ impl LanguageServer for Backend {
             // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
             if let Some(change) = params.content_changes.into_iter().next() {
                 let content = change.text;
+
+                // Cache document content immediately for completion (before debounce)
+                self.document_cache.insert(path.clone(), content.clone());
 
                 // Cancel existing debounce task for this file
                 if let Some((_key, old_task)) = self.debounce_tasks.remove(&path) {
@@ -548,6 +556,7 @@ async fn main() {
         project_index,
         is_developer_mode_active: initial_dev_mode_state.clone(),
         debounce_tasks: Arc::new(DashMap::new()),
+        document_cache: Arc::new(DashMap::new()),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
