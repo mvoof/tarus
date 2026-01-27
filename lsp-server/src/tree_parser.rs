@@ -29,7 +29,7 @@ pub enum LangType {
 
 impl LangType {
     /// Get language type from file extension
-    pub fn from_extension(ext: &str) -> Option<Self> {
+    #[must_use] pub fn from_extension(ext: &str) -> Option<Self> {
         match ext {
             "rs" => Some(Self::Rust),
             "ts" | "tsx" => Some(Self::TypeScript),
@@ -52,7 +52,7 @@ fn get_query_source(lang: LangType) -> &'static str {
 }
 
 /// Extract ALL script blocks from SFC (Single File Component: Vue, Svelte, etc.)
-/// Returns tuples of (script_content, line_offset) for each <script> block found
+/// Returns tuples of (`script_content`, `line_offset`) for each <script> block found
 fn extract_script_blocks(content: &str) -> Vec<(String, usize)> {
     let mut blocks = Vec::new();
     let mut search_pos = 0;
@@ -88,6 +88,7 @@ fn extract_script_blocks(content: &str) -> Vec<(String, usize)> {
 }
 
 /// Convert tree-sitter Point to LSP Position
+#[allow(clippy::cast_possible_truncation)]
 fn point_to_position(point: tree_sitter::Point) -> Position {
     Position {
         line: point.row as u32,
@@ -96,6 +97,7 @@ fn point_to_position(point: tree_sitter::Point) -> Position {
 }
 
 /// Adjust position by line offset (for Vue/Svelte script extraction)
+#[allow(clippy::cast_possible_truncation)]
 fn adjust_position(pos: Position, line_offset: usize) -> Position {
     Position {
         line: pos.line + line_offset as u32,
@@ -137,14 +139,14 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
     let mut parser = Parser::new();
     parser
         .set_language(&ts_lang)
-        .map_err(|e| ParseError::LanguageError(format!("Failed to set Rust language: {}", e)))?;
+        .map_err(|e| ParseError::LanguageError(format!("Failed to set Rust language: {e}")))?;
 
     let tree = parser
         .parse(content, None)
         .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
 
     let query = Query::new(&ts_lang, RUST_QUERY)
-        .map_err(|e| ParseError::QueryError(format!("Failed to create Rust query: {}", e)))?;
+        .map_err(|e| ParseError::QueryError(format!("Failed to create Rust query: {e}")))?;
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
@@ -264,6 +266,7 @@ fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
 }
 
 /// Parse TypeScript/JavaScript source code
+#[allow(clippy::too_many_lines)]
 fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseResult<Vec<Finding>> {
     let mut findings = Vec::new();
 
@@ -274,16 +277,16 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
 
     let mut parser = Parser::new();
     parser.set_language(&ts_lang).map_err(|e| {
-        ParseError::LanguageError(format!("Failed to set {:?} language: {}", lang, e))
+        ParseError::LanguageError(format!("Failed to set {lang:?} language: {e}"))
     })?;
 
     let tree = parser
         .parse(content, None)
-        .ok_or_else(|| ParseError::SyntaxError(format!("Failed to parse {:?} file", lang)))?;
+        .ok_or_else(|| ParseError::SyntaxError(format!("Failed to parse {lang:?} file")))?;
 
     let query_src = get_query_source(lang);
     let query = Query::new(&ts_lang, query_src)
-        .map_err(|e| ParseError::QueryError(format!("Failed to create {:?} query: {}", lang, e)))?;
+        .map_err(|e| ParseError::QueryError(format!("Failed to create {lang:?} query: {e}")))?;
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
@@ -347,8 +350,7 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                 // Resolve alias to original name
                 let original_name = aliases
                     .get(func_name)
-                    .map(|s| s.as_str())
-                    .unwrap_or(func_name);
+                    .map_or(func_name, std::string::String::as_str);
 
                 // Find matching pattern (first argument)
                 if let Some(pattern) = all_patterns
@@ -388,8 +390,7 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                 // Resolve alias to original name
                 let original_name = aliases
                     .get(func_name)
-                    .map(|s| s.as_str())
-                    .unwrap_or(func_name);
+                    .map_or(func_name, std::string::String::as_str);
 
                 // Find matching pattern (second argument)
                 if let Some(pattern) = all_patterns
@@ -432,6 +433,14 @@ fn is_angular_file(content: &str) -> bool {
 }
 
 /// Main parsing function - entry point for all file types
+///
+/// # Errors
+///
+/// Returns error if tree-sitter fails to parse the file or query execution fails
+///
+/// # Panics
+///
+/// Panics if language detection succeeds but lang is None (should never happen due to match guards)
 pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
@@ -446,10 +455,10 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
 
     let findings = match lang {
         Some(LangType::Rust) => parse_rust(content)?,
-        Some(LangType::TypeScript) | Some(LangType::JavaScript) | Some(LangType::Angular) => {
+        Some(LangType::TypeScript | LangType::JavaScript | LangType::Angular) => {
             parse_frontend(content, lang.unwrap(), 0)?
         }
-        Some(LangType::Vue) | Some(LangType::Svelte) => {
+        Some(LangType::Vue | LangType::Svelte) => {
             let blocks = extract_script_blocks(content);
             let mut all_findings = Vec::new();
 

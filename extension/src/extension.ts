@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ExtensionContext } from 'vscode';
@@ -7,6 +8,9 @@ import {
   ServerOptions,
   TransportKind,
 } from 'vscode-languageclient/node';
+
+// Import shared platform utilities
+const { getTargetBinaryName } = require('../scripts/platform-utils');
 
 const SUPPORTED_LANGUAGES = [
   'typescript',
@@ -21,37 +25,23 @@ const SUPPORTED_LANGUAGES = [
 let client: LanguageClient;
 
 const getServerCommand = (context: ExtensionContext): string => {
-  const serverName = 'lsp-server'; // bin file name
-  let platform: string = process.platform;
-  let arch: string = process.arch;
-
-  // We collect the file name depending on the OS
-  let binaryName: string;
-
-  if (platform === 'win32') {
-    // Windows
-    binaryName = `${serverName}-win-x64.exe`;
-  } else if (platform === 'darwin') {
-    // macOS
-    if (arch === 'arm64') {
-      // Apple Silicon M1/M2/M3
-      binaryName = `${serverName}-macos-arm64`;
-    } else {
-      // Intel Mac
-      binaryName = `${serverName}-macos-x64`;
-    }
-  } else {
-    // Linux
-    binaryName = `${serverName}-linux-x64`;
-  }
-
+  const binaryName = getTargetBinaryName();
   return context.asAbsolutePath(path.join('bin', binaryName));
 };
 
 const activate = (context: ExtensionContext) => {
+  console.log('[TARUS] Extension activating...');
   // This path specifies where the binary will be located AFTER compilation.
   // We assume you'll copy the binary to the 'bin' folder within the client.
   const serverCommand = getServerCommand(context);
+
+  // Validate that LSP server binary exists
+  if (!fs.existsSync(serverCommand)) {
+    const errorMessage = `TARUS LSP Server binary not found at: ${serverCommand}\n\nPlease run "npm run vscode:prepublish" to build the extension.`;
+    vscode.window.showErrorMessage(errorMessage);
+    console.error('[TARUS] Binary not found:', serverCommand);
+    return;
+  }
 
   const serverOptions: ServerOptions = {
     run: { command: serverCommand, transport: TransportKind.stdio },
@@ -72,7 +62,23 @@ const activate = (context: ExtensionContext) => {
     clientOptions
   );
 
-  client.start();
+  // Start the client with error handling
+  try {
+    client.start();
+  } catch (error) {
+    const errorMessage = `Failed to start TARUS LSP Server: ${error instanceof Error ? error.message : String(error)}`;
+    vscode.window.showErrorMessage(errorMessage);
+    console.error('[TARUS] Start error:', error);
+    return;
+  }
+
+  // Handle client initialization errors
+  client.onDidChangeState((event) => {
+    if (event.newState === 3) {
+      // State.Stopped
+      console.error('[TARUS] LSP Server stopped unexpectedly');
+    }
+  });
 
   context.subscriptions.push(
     vscode.commands.registerCommand(

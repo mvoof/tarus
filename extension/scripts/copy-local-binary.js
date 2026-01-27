@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { getBinaryNames } = require('./platform-utils');
 
 const serverTargetDir = path.join(
   __dirname,
@@ -12,24 +13,8 @@ const serverTargetDir = path.join(
 
 const clientBinDir = path.join(__dirname, '..', 'bin');
 
-let binaryName;
-let targetName;
-
-const platform = process.platform;
-const arch = process.arch;
-
-if (platform === 'win32') {
-  binaryName = 'lsp-server.exe';
-  targetName = 'lsp-server-win-x64.exe';
-} else if (platform === 'darwin') {
-  binaryName = 'lsp-server';
-  targetName =
-    arch === 'arm64' ? 'lsp-server-macos-arm64' : 'lsp-server-macos-x64';
-} else {
-  // Linux
-  binaryName = 'lsp-server';
-  targetName = 'lsp-server-linux-x64';
-}
+// Get platform-specific binary names using shared utility
+const { source: binaryName, target: targetName } = getBinaryNames();
 
 const binSrc = path.join(serverTargetDir, binaryName);
 const binDest = path.join(clientBinDir, targetName);
@@ -63,7 +48,8 @@ try {
   fs.copyFileSync(binSrc, binDest);
   console.log('✅ LSP binary copied successfully.');
 
-  if (platform !== 'win32') {
+  // Set executable permissions on Unix-like systems
+  if (process.platform !== 'win32') {
     fs.chmodSync(binDest, '755');
   }
 } catch (err) {

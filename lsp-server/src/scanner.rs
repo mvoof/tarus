@@ -38,36 +38,46 @@ fn should_skip(entry: &DirEntry) -> bool {
             .iter()
             .any(|suffix| name_lc.ends_with(suffix));
 
-        is_excluded_file || is_excluded_suffix
+    is_excluded_file || is_excluded_suffix
     }
 }
 
-/// Make sure it is a Tauri project by searching for the configuration file
-pub fn is_tauri_project(root: &Path) -> bool {
+/// Helper: Check if a path points to a Tauri configuration file
+fn is_tauri_config_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name.to_lowercase().starts_with("tauri"))
+}
+
+/// Helper: Find the first Tauri configuration file in the directory tree
+fn find_tauri_config(root: &Path) -> Option<PathBuf> {
     WalkDir::new(root)
-        .follow_links(false) // Avoid symlinks for security and speed
+        .follow_links(false)
         .into_iter()
         .filter_entry(|e| !should_skip(e))
-        .filter_map(|e| e.ok()) // Ignoring file access errors
-        .any(|e| {
-            if !e.file_type().is_file() {
-                return false;
-            }
+        .filter_map(std::result::Result::ok)
+        .find(|e| e.file_type().is_file() && is_tauri_config_path(e.path()))
+        .map(walkdir::DirEntry::into_path)
+}
 
-            e.file_name()
-                .to_str()
-                .map(|name| name.to_lowercase().starts_with("tauri")) // https://v2.tauri.app/reference/config/#file-formats
-                .unwrap_or(false)
-        })
+/// Make sure it is a Tauri project by searching for the configuration file
+#[must_use] pub fn is_tauri_project(root: &Path) -> bool {
+    find_tauri_config(root).is_some()
+}
+
+/// Find the src-tauri directory (recursively, respecting ignores)
+/// Returns the parent directory of the found tauri configuration file
+#[must_use] pub fn find_src_tauri_dir(root: &Path) -> Option<PathBuf> {
+    find_tauri_config(root).and_then(|p| p.parent().map(std::path::Path::to_path_buf))
 }
 
 /// Basic scan of files in the working directory
 /// Returns a list of all files to be indexed
-pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
+#[must_use] pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
     WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| !should_skip(e))
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             if !e.file_type().is_file() {
                 return false;
@@ -76,9 +86,8 @@ pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
             e.path()
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| TARGET_EXTENSIONS.contains(&ext))
-                .unwrap_or(false)
+                .is_some_and(|ext| TARGET_EXTENSIONS.contains(&ext))
         })
-        .map(|e| e.into_path())
+        .map(walkdir::DirEntry::into_path)
         .collect()
 }
