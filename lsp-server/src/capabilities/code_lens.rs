@@ -1,8 +1,9 @@
 //! Code Lens capability - shows reference counts above symbols
 
 use crate::indexer::ProjectIndex;
+use serde_json::json;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{CodeLens, CodeLensParams};
+use tower_lsp_server::lsp_types::{CodeLens, CodeLensParams, Uri};
 use tower_lsp_server::UriExt;
 
 /// Handle code lens request (pure function)
@@ -22,16 +23,57 @@ pub fn handle_code_lens(
 
     let lenses: Vec<CodeLens> = lens_data
         .into_iter()
-        .map(|(range, title, _targets)| CodeLens {
-            range,
-            command: Some(tower_lsp_server::lsp_types::Command {
-                title,
-                command: "tarus.show_references".to_string(),
-                arguments: None,
-            }),
-            data: None,
+        .filter_map(|(range, title, targets)| {
+            // Convert targets to locations format expected by VS Code
+            let locations: Vec<_> = targets
+                .iter()
+                .filter_map(|target| {
+                    let target_uri = Uri::from_file_path(&target.path)?;
+                    Some(json!({
+                        "uri": target_uri.to_string(),
+                        "range": {
+                            "start": {
+                                "line": target.range.start.line,
+                                "character": target.range.start.character
+                            },
+                            "end": {
+                                "line": target.range.end.line,
+                                "character": target.range.end.character
+                            }
+                        }
+                    }))
+                })
+                .collect();
+
+            if locations.is_empty() {
+                return None;
+            }
+
+            // Create command arguments: (uriStr, pos, locs)
+            let arguments = Some(vec![
+                json!(uri.to_string()),
+                json!({
+                    "line": range.start.line,
+                    "character": range.start.character
+                }),
+                json!(locations),
+            ]);
+
+            Some(CodeLens {
+                range,
+                command: Some(tower_lsp_server::lsp_types::Command {
+                    title,
+                    command: "tarus.show_references".to_string(),
+                    arguments,
+                }),
+                data: None,
+            })
         })
         .collect();
+
+    if lenses.is_empty() {
+        return None;
+    }
 
     Some(lenses)
 }
