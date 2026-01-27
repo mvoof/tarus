@@ -42,7 +42,15 @@ pub fn handle_completion(
     let prefix = if col <= line.len() { &line[..col] } else { line };
 
     // Check if in completion context
-    let in_context = COMPLETION_TRIGGERS.iter().any(|name| prefix.contains(&format!("{name}(")));
+    // Support both direct calls: invoke("...") and generic calls: invoke<Type>("...")
+    let in_context = COMPLETION_TRIGGERS.iter().any(|name| {
+        if let Some(pos) = prefix.rfind(name) {
+            let rest = &prefix[pos + name.len()..];
+            rest.starts_with('(') || rest.starts_with('<')
+        } else {
+            false
+        }
+    });
 
     if !in_context {
         return None;
