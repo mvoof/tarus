@@ -1,8 +1,10 @@
 //! Parser tests for all supported languages
 
-mod common;
+mod common_fixtures;
+mod common_paths;
 
-use common::{load_fixture, test_path};
+use common_fixtures::load_fixture;
+use common_paths::test_path;
 
 #[cfg(test)]
 mod rust_parser_tests {

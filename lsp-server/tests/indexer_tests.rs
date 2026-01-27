@@ -1,8 +1,8 @@
 //! Indexer functionality tests
 
-mod common;
+mod common_paths;
 
-use common::test_path;
+use common_paths::test_path;
 use lsp_server::indexer::{FileIndex, Finding, IndexKey, ProjectIndex};
 use lsp_server::syntax::{Behavior, EntityType};
 use tower_lsp_server::lsp_types::{Position, Range};

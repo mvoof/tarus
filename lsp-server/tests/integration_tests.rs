@@ -1,8 +1,10 @@
 //! Integration tests for full workflow
 
-mod common;
+mod common_fixtures;
+mod common_paths;
 
-use common::{load_fixture, test_path};
+use common_fixtures::load_fixture;
+use common_paths::test_path;
 use lsp_server::indexer::ProjectIndex;
 use lsp_server::tree_parser;
 
