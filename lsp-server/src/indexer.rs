@@ -1,6 +1,7 @@
 use crate::syntax::{Behavior, EntityType};
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::RwLock;
 use tower_lsp_server::lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Uri};
@@ -41,7 +42,9 @@ pub struct ProjectIndex {
     pub map: DashMap<IndexKey, Vec<LocationInfo>>,
     pub file_map: DashMap<PathBuf, Vec<IndexKey>>,
     // Caches for get_all_names() results
+    #[allow(clippy::type_complexity)]
     command_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
+    #[allow(clippy::type_complexity)]
     event_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
     // Cache for diagnostic info (avoids re-iterating locations)
     diagnostic_info_cache: DashMap<IndexKey, DiagnosticInfo>,
@@ -63,7 +66,7 @@ impl Default for ProjectIndex {
 }
 
 impl ProjectIndex {
-    pub fn new() -> Self {
+    #[must_use] pub fn new() -> Self {
         Self::default()
     }
 
@@ -78,11 +81,10 @@ impl ProjectIndex {
         for key in keys_in_file.value() {
             if let Some(locations) = self.map.get(key) {
                 for loc in locations.value() {
-                    if loc.path == *path {
-                        if self.is_position_in_range(position, loc.range) {
+                    if loc.path == *path
+                        && Self::is_position_in_range(position, loc.range) {
                             return Some((key.clone(), loc.clone()));
                         }
-                    }
                 }
             }
         }
@@ -91,7 +93,7 @@ impl ProjectIndex {
     }
 
     /// Helper for checking if the cursor is inside a range
-    fn is_position_in_range(&self, pos: Position, range: Range) -> bool {
+    fn is_position_in_range(pos: Position, range: Range) -> bool {
         // LSP Range inclusive start, exclusive end
         if pos.line < range.start.line || pos.line > range.end.line {
             return false;
@@ -115,6 +117,10 @@ impl ProjectIndex {
     }
 
     /// Appends (or overwrites) the parsing results of a single file
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cache lock is poisoned (only occurs if another thread panicked while holding the lock)
     pub fn add_file(&self, file_index: FileIndex) {
         // Clear old data about this file so that there are no duplicates
         self.remove_file(&file_index.path);
@@ -148,6 +154,10 @@ impl ProjectIndex {
     }
 
     /// Deletes all entries associated with a specific file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cache lock is poisoned (only occurs if another thread panicked while holding the lock)
     pub fn remove_file(&self, path: &PathBuf) {
         // If the file has already been indexed...
         if let Some((_, keys)) = self.file_map.remove(path) {
@@ -158,7 +168,7 @@ impl ProjectIndex {
 
                 // If the list becomes empty, you can remove the key from the map,
                 // to avoid storing garbage
-                if self.map.get(&key).map_or(false, |locs| locs.is_empty()) {
+                if self.map.get(&key).is_some_and(|locs| locs.is_empty()) {
                     self.map.remove(&key);
                 }
             }
@@ -183,11 +193,6 @@ impl ProjectIndex {
         self.parse_errors.get(path).map(|e| e.value().clone())
     }
 
-    /// Clear parse error for a file (called when file is successfully parsed)
-    pub fn clear_parse_error(&self, path: &PathBuf) {
-        self.parse_errors.remove(path);
-    }
-
     /// Retrieves all locations associated with a specific entity
     pub fn get_locations(&self, entity: EntityType, name: &str) -> Vec<LocationInfo> {
         let key = IndexKey {
@@ -198,14 +203,13 @@ impl ProjectIndex {
         self.map.get(&key).map(|v| v.clone()).unwrap_or_default()
     }
 
-    /// Preparing data for CodeLens
+    /// Preparing data for `CodeLens`
     pub fn get_lens_data(&self, path: &PathBuf) -> Vec<(Range, String, Vec<LocationInfo>)> {
         let mut result = Vec::new();
 
         // Collect keys
-        let keys = match self.file_map.get(path) {
-            Some(k) => k,
-            None => return result,
+        let Some(keys) = self.file_map.get(path) else {
+            return result;
         };
 
         let mut processed_keys: HashSet<&IndexKey> = HashSet::new(); //  tracking already processed keys
@@ -216,9 +220,8 @@ impl ProjectIndex {
             }
 
             // Get ALL locations for key
-            let all_locations = match self.map.get(key) {
-                Some(l) => l,
-                None => continue,
+            let Some(all_locations) = self.map.get(key) else {
+                continue;
             };
 
             // Find where exactly in the CURRENT file this key is located
@@ -271,13 +274,10 @@ impl ProjectIndex {
 
         let mut report_message = String::new();
 
-        report_message.push_str(&format!("\n📝 === UPDATE REPORT: {} ===\n", filename));
+        let _ = writeln!(report_message, "\n📝 === UPDATE REPORT: {filename} ===");
 
-        let keys = match self.file_map.get(path) {
-            Some(k) => k,
-            None => {
-                return format!("📝 File update: {:?} (No Tarus keys found)", filename);
-            }
+        let Some(keys) = self.file_map.get(path) else {
+            return format!("📝 File update: {filename:?} (No Tarus keys found)");
         };
 
         let keys_clone: Vec<IndexKey> = keys.value().clone();
@@ -300,7 +300,7 @@ impl ProjectIndex {
         if delta_map.is_empty() {
             report_message.push_str("   (Map subset is empty)\n");
         } else {
-            report_message.push_str(&format!("{:#?}\n", delta_map));
+            let _ = writeln!(report_message, "{delta_map:#?}");
         }
 
         report_message.push_str("\n📄 === 2. REVERSE FILE MAP (Delta Subset) ===\n");
@@ -308,7 +308,7 @@ impl ProjectIndex {
         let mut delta_file_map: HashMap<PathBuf, Vec<IndexKey>> = HashMap::new();
         delta_file_map.insert(path.clone(), keys_clone);
 
-        report_message.push_str(&format!("{:#?}\n", delta_file_map));
+        let _ = writeln!(report_message, "{delta_file_map:#?}");
 
         report_message
     }
@@ -326,7 +326,7 @@ impl ProjectIndex {
         report_message.push_str("\n\n🔑 === 1. MAIN KEY INDEX (map) ===\n");
         report_message.push_str("   [Key -> List of ALL Locations]\n");
 
-        report_message.push_str(&format!("{:#?}\n", self.map));
+        let _ = writeln!(report_message, "{:#?}", self.map);
 
         report_message.push_str("\n\n📄 === 2. REVERSE FILE MAP (file_map) ===\n");
         report_message.push_str("   [FilePath -> List of ALL Keys in that file]\n");
@@ -334,7 +334,7 @@ impl ProjectIndex {
         if self.file_map.is_empty() {
             report_message.push_str("   (File Map is Empty)\n");
         } else {
-            report_message.push_str(&format!("{:#?}\n", self.file_map));
+            let _ = writeln!(report_message, "{:#?}", self.file_map);
         }
 
         report_message
@@ -344,14 +344,12 @@ impl ProjectIndex {
     pub fn get_document_symbols(&self, path: &PathBuf) -> Vec<SymbolInformation> {
         let mut symbols = Vec::new();
 
-        let keys = match self.file_map.get(path) {
-            Some(k) => k,
-            None => return symbols,
+        let Some(keys) = self.file_map.get(path) else {
+            return symbols;
         };
 
-        let uri = match Uri::from_file_path(path) {
-            Some(u) => u,
-            None => return symbols,
+        let Some(uri) = Uri::from_file_path(path) else {
+            return symbols;
         };
 
         for key in keys.value() {
@@ -395,7 +393,7 @@ impl ProjectIndex {
         let mut symbols = Vec::new();
         let query_lower = query.to_lowercase();
 
-        for entry in self.map.iter() {
+        for entry in &self.map {
             let key = entry.key();
 
             // Filter by query (substring match)
@@ -403,10 +401,9 @@ impl ProjectIndex {
                 continue;
             }
 
-            for loc in entry.value().iter() {
-                let uri = match Uri::from_file_path(&loc.path) {
-                    Some(u) => u,
-                    None => continue,
+            for loc in entry.value() {
+                let Some(uri) = Uri::from_file_path(&loc.path) else {
+                    continue;
                 };
 
                 let kind = match key.entity {
@@ -442,6 +439,10 @@ impl ProjectIndex {
     }
 
     /// Get all known names for a specific entity type (for completion)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cache lock is poisoned (only occurs if another thread panicked while holding the lock)
     pub fn get_all_names(&self, entity: EntityType) -> Vec<(String, Option<LocationInfo>)> {
         // Select appropriate cache
         let cache = match entity {
@@ -503,6 +504,7 @@ impl ProjectIndex {
 
 /// Diagnostic information for a command/event
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct DiagnosticInfo {
     pub has_definition: bool,
     pub has_calls: bool,

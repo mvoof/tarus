@@ -19,7 +19,7 @@ pub enum EntityType {
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash, Copy)]
 #[serde(rename_all = "camelCase")]
 pub enum Behavior {
-    /// Command definition (Rust: #[tauri::command] fn name())
+    /// Command definition (Rust: #[`tauri::command`] fn `name()`)
     Definition,
     /// Command call (Frontend: invoke("name"))
     Call,
@@ -43,9 +43,9 @@ pub enum ParseError {
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::SyntaxError(msg) => write!(f, "Syntax error: {}", msg),
-            ParseError::QueryError(msg) => write!(f, "Query error: {}", msg),
-            ParseError::LanguageError(msg) => write!(f, "Language error: {}", msg),
+            ParseError::SyntaxError(msg) => write!(f, "Syntax error: {msg}"),
+            ParseError::QueryError(msg) => write!(f, "Query error: {msg}"),
+            ParseError::LanguageError(msg) => write!(f, "Language error: {msg}"),
         }
     }
 }

@@ -46,8 +46,7 @@ fn should_skip(entry: &DirEntry) -> bool {
 fn is_tauri_config_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .map(|name| name.to_lowercase().starts_with("tauri"))
-        .unwrap_or(false)
+        .is_some_and(|name| name.to_lowercase().starts_with("tauri"))
 }
 
 /// Helper: Find the first Tauri configuration file in the directory tree
@@ -56,29 +55,29 @@ fn find_tauri_config(root: &Path) -> Option<PathBuf> {
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| !should_skip(e))
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .find(|e| e.file_type().is_file() && is_tauri_config_path(e.path()))
-        .map(|e| e.into_path())
+        .map(walkdir::DirEntry::into_path)
 }
 
 /// Make sure it is a Tauri project by searching for the configuration file
-pub fn is_tauri_project(root: &Path) -> bool {
+#[must_use] pub fn is_tauri_project(root: &Path) -> bool {
     find_tauri_config(root).is_some()
 }
 
 /// Find the src-tauri directory (recursively, respecting ignores)
 /// Returns the parent directory of the found tauri configuration file
-pub fn find_src_tauri_dir(root: &Path) -> Option<PathBuf> {
-    find_tauri_config(root).and_then(|p| p.parent().map(|p| p.to_path_buf()))
+#[must_use] pub fn find_src_tauri_dir(root: &Path) -> Option<PathBuf> {
+    find_tauri_config(root).and_then(|p| p.parent().map(std::path::Path::to_path_buf))
 }
 
 /// Basic scan of files in the working directory
 /// Returns a list of all files to be indexed
-pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
+#[must_use] pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
     WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| !should_skip(e))
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             if !e.file_type().is_file() {
                 return false;
@@ -87,9 +86,8 @@ pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
             e.path()
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| TARGET_EXTENSIONS.contains(&ext))
-                .unwrap_or(false)
+                .is_some_and(|ext| TARGET_EXTENSIONS.contains(&ext))
         })
-        .map(|e| e.into_path())
+        .map(walkdir::DirEntry::into_path)
         .collect()
 }
