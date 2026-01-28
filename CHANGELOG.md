@@ -1,5 +1,13 @@
 ## Change Log
 
+### [0.4.0]
+
+- **Migration to `Tree-sitter`:** Replaced previous parsers with a unified tree-sitter-based approach for improved accuracy, error handling, and multi-language support (Angular, Vue 3, Svelte, Rust).
+- **Performance Improvements:** Introduced debouncing and a dual-layer caching system for a faster and more responsive experience.
+- **UX Enhancements:** Added smart diagnostics to reduce noise, enhanced hover information with more context, and implemented a multi-file quick fix for creating Rust commands.
+- **Developer Experience:** Added support for import aliases and generic type parameters in `invoke`.
+- **Code Quality:** Major refactoring to a modular architecture, improving maintainability and enabling comprehensive testing.
+
 ### [0.3.1]
 - **Completion:** Autocomplete for command and event names inside Tauri API calls. Triggers only in context (uses `command_syntax.json`).
 - **Diagnostics:** For all command/event mismatch diagnostic messages, use the WARNING status.

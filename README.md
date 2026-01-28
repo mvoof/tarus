@@ -3,7 +3,7 @@
    <h1>TARUS</h1>
 
    <p>
-    A <a href="https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension">VS Code extension</a> — full-featured development toolkit for TAURI® apps.<br>
+    A <a href="https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension">VS Code extension</a> — development toolkit for TAURI® apps.<br>
     Navigation, autocomplete, diagnostics, and symbols for commands and events.
    </p>
 
@@ -19,73 +19,94 @@
 
 ## Features
 
-### Navigation
+<table>
+<tr>
+<td width="50%">
 
-#### Go to Definition (F12)
+**Navigation**
 
-Instantly jump from a frontend `invoke` or `emit` call directly to the corresponding Rust command handler or event listener.
+**Go to Definition (F12)** — Jump from frontend `invoke`/`emit` to Rust handlers.
 
-- **Frontend → Backend:** Ctrl+Click on `invoke('my_command')` opens the Rust file at `fn my_command`.
-- **Backend → Frontend:** Ctrl+Click on `app.emit("my-event")` shows where this event is listened to in React/Vue/Svelte.
+- Frontend → Backend: Ctrl+Click on `invoke('cmd')` opens Rust `fn cmd`
+- Backend → Frontend: Ctrl+Click on `app.emit("event")` shows listeners
 
-#### Find References (Shift+F12)
+**Find References (Shift+F12)** — See all usages across TS and Rust files.
 
-See all places where a specific command or event is used across both TypeScript and Rust files.
+**Smart CodeLens** — Contextual buttons above commands/events for quick navigation.
 
-#### Smart CodeLens
+</td>
+<td align="center">
 
-Contextual buttons appear above your commands and events to show usage stats or provide quick navigation.
+https://github.com/user-attachments/assets/433d32bc-5e61-474c-bd24-929dc3930f9a
 
-| Context           | CodeLens Preview | Action                                       |
-| :---------------- | :--------------- | :------------------------------------------- |
-| **Rust Command**  | `Go to Frontend` | Jumps to the TS file calling this command.   |
-| **Frontend Call** | `Go to Rust`     | Jumps to the Rust implementation.            |
-| **Multiple Uses** | `3 References`   | Opens a peek view to choose the destination. |
+</td>
+</tr>
+<tr>
+<td>
 
-### Autocomplete
+**Autocomplete**
 
-Start typing inside `invoke("`, `emit("`, or `listen("` and get suggestions for all known commands and events in your project.
+Start typing inside `invoke("`, `emit("`, or `listen("` to get suggestions for all known commands and events in your project.
 
-### Diagnostics
+</td>
+<td align="center">
+
+https://github.com/user-attachments/assets/3d441c79-6222-4433-8cd4-1aeebc2e1419
+
+</td>
+</tr>
+<tr>
+<td>
+
+**Diagnostics**
 
 Real-time warnings for mismatched commands and events:
 
-- **Warning:** Command invoked but not defined in Rust backend
-- **Warning:** Event listened for but never emitted
-- **Hint:** Command defined but never invoked
-- **Hint:** Event emitted but never listened to
+- Command invoked but not defined in Rust
+- Event listened for but never emitted
+- Command defined but never invoked
+- Event emitted but never listened to
+
+</td>
+<td align="center">
+
+https://github.com/user-attachments/assets/cce70622-e214-4fd9-a796-b2dac428003e
+
+</td>
+</tr>
+<tr>
+<td>
+
+**Code Actions**
+
+Quick fixes for undefined commands:
+
+- Press `Ctrl+.` on an undefined command to see code actions
+- Choose which file to create the Rust command in: `lib.rs`, `main.rs`, or other modules
+- Command template is automatically inserted at the optimal location
+
+**Note:** Code actions are only available for commands
+
+</td>
+
+<td align="center">
+
+https://github.com/user-attachments/assets/5b94de95-6341-4e97-bb73-5cdb1393a43e
+
+</td>
+</tr>
+</table>
 
 ### Symbols
 
-#### Document Symbols (Ctrl+Shift+O)
-
-Quick outline of all commands and events in the current file.
-
-#### Workspace Symbols (Ctrl+T)
-
-Search for any command or event across your entire project.
-
-![Demo](https://raw.githubusercontent.com/mvoof/tarus/main/assets/demo.gif)
-
-## Supported Languages
-
-TARUS supports the following languages and frameworks:
-
-| Language   | Extensions               | Features                                      |
-| :--------- | :----------------------- | :-------------------------------------------- |
-| **Rust**   | `.rs`                    | Command definitions (`#[tauri::command]`), event emit/listen |
-| **TypeScript** | `.ts`, `.tsx`        | `invoke()`, `emit()`, `listen()`, generic calls (`invoke<T>()`) |
-| **JavaScript** | `.js`, `.jsx`        | Same as TypeScript |
-| **Vue**    | `.vue`                   | Script sections with TypeScript/JavaScript |
-| **Svelte** | `.svelte`                | Script sections with TypeScript/JavaScript |
-| **Angular** | `.component.ts`         | TypeScript in Angular components |
+Workspace Symbols (Ctrl+T) — Search commands/events across entire project.
 
 ### Import Aliases
 
 TARUS fully supports import aliases, a common JavaScript/TypeScript pattern:
 
 ```typescript
-import { invoke as myInvoke, emit as sendEvent } from '@tauri-apps/api/core';
+import { invoke as myInvoke, emit as sendEvent } from "@tauri-apps/api/core";
 
 // These will be correctly recognized
 await myInvoke("my_command");
@@ -103,15 +124,28 @@ await invoke<Session>("get_session", { id: 1 });
 emit<void>("event_name");
 ```
 
+## Supported Languages
+
+TARUS supports the following languages and frameworks:
+
+| Language       | Extensions      | Features                                                        |
+| :------------- | :-------------- | :-------------------------------------------------------------- |
+| **Rust**       | `.rs`           | Command definitions (`#[tauri::command]`), event emit/listen    |
+| **TypeScript** | `.ts`, `.tsx`   | `invoke()`, `emit()`, `listen()`, generic calls (`invoke<T>()`) |
+| **JavaScript** | `.js`, `.jsx`   | Same as TypeScript                                              |
+| **Vue**        | `.vue`          | Script sections with TypeScript/JavaScript                      |
+| **Svelte**     | `.svelte`       | Script sections with TypeScript/JavaScript                      |
+| **Angular**    | `.component.ts` | TypeScript in Angular components                                |
+
 ## Advanced: Tree-sitter Queries
 
 TARUS uses [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) for parsing source code. The parsing patterns are defined in `.scm` query files located in `lsp-server/src/queries/`:
 
-| File              | Description                                      |
-| :---------------- | :----------------------------------------------- |
-| `rust.scm`        | Patterns for Rust commands and events            |
-| `typescript.scm`  | Patterns for TypeScript/JavaScript calls         |
-| `javascript.scm`  | Patterns for JavaScript (same as TypeScript)     |
+| File             | Description                 |
+| :--------------- | :-------------------------- |
+| `rust.scm`       | Rust commands and events    |
+| `typescript.scm` | TypeScript/JavaScript calls |
+| `javascript.scm` | JavaScript calls            |
 
 ### Query File Structure
 
