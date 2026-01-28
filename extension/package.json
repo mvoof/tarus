@@ -10,8 +10,8 @@
     "url": "https://github.com/mvoof/tarus"
   },
   "publisher": "mvoof",
-  "description": "Full-featured development toolkit for Tauri apps: navigation, autocomplete, diagnostics, and symbols for commands and events",
-  "version": "0.3.1",
+  "description": "Development toolkit for TAURI® apps. Navigation, autocomplete, diagnostics for commands and events.",
+  "version": "0.4.0",
   "engines": {
     "vscode": "^1.90.0"
   },
