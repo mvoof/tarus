@@ -13,7 +13,7 @@
   "description": "Development toolkit for TAURI® apps. Navigation, autocomplete, diagnostics for commands and events.",
   "version": "0.4.0",
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.105.0"
   },
   "categories": [
     "Other"
