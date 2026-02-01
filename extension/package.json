@@ -11,7 +11,7 @@
   },
   "publisher": "mvoof",
   "description": "Coding assistant for TAURI® apps. Navigation, autocomplete, diagnostics for commands and events.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "engines": {
     "vscode": "^1.105.0"
   },
