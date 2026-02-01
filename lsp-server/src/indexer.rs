@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
 use tower_lsp_server::lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Uri};
 use tower_lsp_server::UriExt;
@@ -50,6 +51,8 @@ pub struct ProjectIndex {
     diagnostic_info_cache: DashMap<IndexKey, DiagnosticInfo>,
     // Parse errors by file path
     pub parse_errors: DashMap<PathBuf, String>,
+    // Configuration: Max number of individual file links to show in CodeLens before summarizing
+    pub reference_limit: AtomicUsize,
 }
 
 impl Default for ProjectIndex {
@@ -61,6 +64,7 @@ impl Default for ProjectIndex {
             event_names_cache: RwLock::new(None),
             diagnostic_info_cache: DashMap::new(),
             parse_errors: DashMap::new(),
+            reference_limit: AtomicUsize::new(3),
         }
     }
 }
@@ -264,8 +268,10 @@ impl ProjectIndex {
                         files_map.entry(t.path.clone()).or_default().push(t.clone());
                     }
 
-                    if files_map.len() <= 3 {
-                        // If <= 3 files, show distinct link for EACH file
+                    let limit = self.reference_limit.load(Ordering::Relaxed);
+
+                    if files_map.len() <= limit {
+                        // If <= limit files, show distinct link for EACH file
                         let mut sorted_files: Vec<_> = files_map.into_iter().collect();
                         // Sort for consistency
                         sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -280,7 +286,7 @@ impl ProjectIndex {
                             result.push((my_loc.range, format!("Go to {}", fname), locs));
                         }
                     } else {
-                        // If > 3 files, show summary
+                        // If > limit files, show summary
                         result.push((
                             my_loc.range,
                             format!("{} references", frontend_targets.len()),
@@ -289,6 +295,8 @@ impl ProjectIndex {
                     }
                 } else {
                     // Frontend Logic: "Go to Rust" + "Go to others"
+
+                    let limit = self.reference_limit.load(Ordering::Relaxed);
 
                     // 1. Link to Rust (if exists)
 
@@ -299,8 +307,8 @@ impl ProjectIndex {
                             files_map.entry(t.path.clone()).or_default().push(t.clone());
                         }
 
-                        if files_map.len() <= 3 {
-                            // If <= 3 files, show distinct link for EACH file
+                        if files_map.len() <= limit {
+                            // If <= limit files, show distinct link for EACH file
                             let mut sorted_files: Vec<_> = files_map.into_iter().collect();
                             sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -314,7 +322,7 @@ impl ProjectIndex {
                                 result.push((my_loc.range, format!("Go to {}", fname), locs));
                             }
                         } else {
-                            // If > 3 files, show summary
+                            // If > limit files, show summary
                             result.push((
                                 my_loc.range,
                                 format!("{} rust refs", rust_targets.len()),
@@ -331,8 +339,8 @@ impl ProjectIndex {
                         files_map.entry(t.path.clone()).or_default().push(t.clone());
                     }
 
-                    if files_map.len() <= 3 {
-                        // If <= 3 files, show distinct link for EACH file
+                    if files_map.len() <= limit {
+                        // If <= limit files, show distinct link for EACH file
                         let mut sorted_files: Vec<_> = files_map.into_iter().collect();
                         sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -346,7 +354,7 @@ impl ProjectIndex {
                             result.push((my_loc.range, format!("Go to {}", fname), locs));
                         }
                     } else {
-                        // If > 3 files, show summary
+                        // If > limit files, show summary
                         result.push((
                             my_loc.range,
                             format!("{} references", frontend_targets.len()),

@@ -131,18 +131,23 @@ impl LanguageServer for Backend {
         }
 
         let ext_config_request = ConfigurationParams {
-            items: vec![ConfigurationItem {
-                scope_uri: None,
-                section: Some("tarus.developerMode".to_string()),
-            }],
+            items: vec![
+                ConfigurationItem {
+                    scope_uri: None,
+                    section: Some("tarus.developerMode".to_string()),
+                },
+                ConfigurationItem {
+                    scope_uri: None,
+                    section: Some("tarus.referenceLimit".to_string()),
+                },
+            ],
         };
 
-        if let Ok(response) = self
-            .client
-            .configuration(vec![ext_config_request.items[0].clone()])
-            .await
-        {
-            if let Some(settings) = response.into_iter().next() {
+        if let Ok(response) = self.client.configuration(ext_config_request.items).await {
+            let mut iter = response.into_iter();
+
+            // Handle developerMode
+            if let Some(settings) = iter.next() {
                 if let Some(is_enabled) = settings.as_bool() {
                     self.is_developer_mode_active
                         .store(is_enabled, Ordering::Relaxed);
@@ -151,6 +156,22 @@ impl LanguageServer for Backend {
                         .log_message(
                             MessageType::INFO,
                             &format!("Developer Mode initialized to: {is_enabled}"),
+                        )
+                        .await;
+                }
+            }
+
+            // Handle referenceLimit
+            if let Some(settings) = iter.next() {
+                if let Some(limit) = settings.as_u64() {
+                    self.project_index
+                        .reference_limit
+                        .store(limit as usize, Ordering::Relaxed);
+
+                    self.client
+                        .log_message(
+                            MessageType::INFO,
+                            &format!("Reference Limit initialized to: {limit}"),
                         )
                         .await;
                 }

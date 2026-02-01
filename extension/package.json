@@ -39,6 +39,12 @@
           "default": false,
           "description": "Enables detailed logging and internal diagnostics (for extension developers). Requires VS Code restart.",
           "scope": "resource"
+        },
+        "tarus.referenceLimit": {
+          "type": "integer",
+          "default": 3,
+          "description": "The maximum number of individual file links to show in CodeLens before summarizing them (e.g., '5 references').",
+          "scope": "resource"
         }
       }
     }
