@@ -28,7 +28,7 @@
     "onLanguage:vue",
     "onLanguage:svelte"
   ],
-  "main": "./out/extension.js",
+  "main": "./out/src/extension.js",
   "icon": "images/icon.png",
   "contributes": {
     "configuration": {
@@ -52,7 +52,7 @@
     "compile-client": "tsc -p ./",
     "compile-server": "npm run build-rust && npm run copy-local-files",
     "build-rust": "cargo build --release --manifest-path ../lsp-server/Cargo.toml",
-    "copy-local-files": "node ./scripts/copy-local-binary.js",
+    "copy-local-files": "node ./out/scripts/copy-local-binary.js",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",

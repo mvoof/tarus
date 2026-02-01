@@ -9,8 +9,7 @@ import {
   TransportKind,
 } from 'vscode-languageclient/node';
 
-// Import shared platform utilities
-const { getTargetBinaryName } = require('../scripts/platform-utils');
+import { getTargetBinaryName } from './utils/platform-utils';
 
 const SUPPORTED_LANGUAGES = [
   'typescript',

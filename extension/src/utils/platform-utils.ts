@@ -6,14 +6,25 @@
 const SERVER_NAME = 'lsp-server';
 
 /**
- * Get platform-specific binary names
- * @param {string} [platform=process.platform] - Platform identifier (win32, darwin, linux)
- * @param {string} [arch=process.arch] - Architecture identifier (x64, arm64)
- * @returns {{source: string, target: string}} Binary names for source (Cargo output) and target (extension bin folder)
+ * Binary names for source (Cargo output) and target (extension bin folder)
  */
-function getBinaryNames(platform = process.platform, arch = process.arch) {
-  let sourceName;
-  let targetName;
+export interface BinaryNames {
+  source: string;
+  target: string;
+}
+
+/**
+ * Get platform-specific binary names
+ * @param platform - Platform identifier (win32, darwin, linux)
+ * @param arch - Architecture identifier (x64, arm64)
+ * @returns Binary names for source (Cargo output) and target (extension bin folder)
+ */
+export function getBinaryNames(
+  platform: string = process.platform,
+  arch: string = process.arch
+): BinaryNames {
+  let sourceName: string;
+  let targetName: string;
 
   if (platform === 'win32') {
     sourceName = `${SERVER_NAME}.exe`;
@@ -38,25 +49,24 @@ function getBinaryNames(platform = process.platform, arch = process.arch) {
 
 /**
  * Get the target binary name for the extension (used in bin/ folder)
- * @param {string} [platform=process.platform] - Platform identifier
- * @param {string} [arch=process.arch] - Architecture identifier
- * @returns {string} Target binary name
+ * @param platform - Platform identifier
+ * @param arch - Architecture identifier
+ * @returns Target binary name
  */
-function getTargetBinaryName(platform = process.platform, arch = process.arch) {
+export function getTargetBinaryName(
+  platform: string = process.platform,
+  arch: string = process.arch
+): string {
   return getBinaryNames(platform, arch).target;
 }
 
 /**
  * Get the source binary name (Cargo build output)
- * @param {string} [platform=process.platform] - Platform identifier
- * @returns {string} Source binary name
+ * @param platform - Platform identifier
+ * @returns Source binary name
  */
-function getSourceBinaryName(platform = process.platform) {
+export function getSourceBinaryName(
+  platform: string = process.platform
+): string {
   return getBinaryNames(platform).source;
 }
-
-module.exports = {
-  getBinaryNames,
-  getTargetBinaryName,
-  getSourceBinaryName,
-};
