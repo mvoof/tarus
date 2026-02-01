@@ -3,11 +3,11 @@
    <h1>TARUS</h1>
 
    <p>
-    A <a href="https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension">VS Code extension</a> — development toolkit for TAURI® apps.<br>
+    A <a href="https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension">VS Code extension</a> — coding assistant for TAURI® apps.<br>
     Navigation, autocomplete, diagnostics, and symbols for commands and events.
    </p>
 
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Version](https://img.shields.io/visual-studio-marketplace/v/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![License](https://img.shields.io/github/license/mvoof/tarus)](LICENSE)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Version](https://img.shields.io/visual-studio-marketplace/v/mvoof.tarus-vscode-extension)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Tauri v2.0](https://img.shields.io/badge/Tauri-v2.0-blue)](https://tauri.app) [![License](https://img.shields.io/github/license/mvoof/tarus)](LICENSE)
 
 </div>
 
@@ -123,6 +123,13 @@ await invoke<number>("get_count");
 await invoke<Session>("get_session", { id: 1 });
 emit<void>("event_name");
 ```
+
+### Extension Settings
+
+This extension contributes the following settings:
+
+*   `tarus.developerMode` (boolean): Enables detailed logging and internal diagnostics (for extension developers). Requires VS Code restart. Default: `false`.
+*   `tarus.referenceLimit` (number): The maximum number of individual file links to show in CodeLens before summarizing them (e.g., '5 references'). Minimum value is 0. Default: `3`.
 
 ## Supported Languages
 
