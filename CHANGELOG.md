@@ -1,5 +1,12 @@
 ## Change Log
 
+### [0.5.0]
+
+- **Improved CodeLens Navigation:** Replaced generic "Go to Rust" labels with specific filenames (e.g., `Go to lib.rs`). Multiple references now appear as distinct, clickable links.
+- **Smart Summarization:** References are automatically summarized (e.g., `5 references`) when exceeding the configured limit to keep the UI clean.
+- **Settings Validation:** Enforced a minimum value of `0` for `tarus.referenceLimit` to prevent invalid inputs.
+- **Stability:** Fixed a panic issue when processing source files containing non-ASCII characters (e.g., Cyrillic).
+
 ### [0.4.0]
 
 - **Migration to `Tree-sitter`:** Replaced previous parsers with a unified tree-sitter-based approach for improved accuracy, error handling, and multi-language support (Angular, Vue 3, Svelte, Rust).
