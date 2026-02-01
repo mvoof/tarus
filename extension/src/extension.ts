@@ -9,8 +9,7 @@ import {
   TransportKind,
 } from 'vscode-languageclient/node';
 
-// Import shared platform utilities
-const { getTargetBinaryName } = require('../scripts/platform-utils');
+import { getTargetBinaryName } from './utils/platform-utils';
 
 const SUPPORTED_LANGUAGES = [
   'typescript',
@@ -26,6 +25,7 @@ let client: LanguageClient;
 
 const getServerCommand = (context: ExtensionContext): string => {
   const binaryName = getTargetBinaryName();
+
   return context.asAbsolutePath(path.join('bin', binaryName));
 };
 
@@ -38,8 +38,11 @@ const activate = (context: ExtensionContext) => {
   // Validate that LSP server binary exists
   if (!fs.existsSync(serverCommand)) {
     const errorMessage = `TARUS LSP Server binary not found at: ${serverCommand}\n\nPlease run "npm run vscode:prepublish" to build the extension.`;
+
     vscode.window.showErrorMessage(errorMessage);
+
     console.error('[TARUS] Binary not found:', serverCommand);
+
     return;
   }
 
@@ -67,8 +70,11 @@ const activate = (context: ExtensionContext) => {
     client.start();
   } catch (error) {
     const errorMessage = `Failed to start TARUS LSP Server: ${error instanceof Error ? error.message : String(error)}`;
+
     vscode.window.showErrorMessage(errorMessage);
+
     console.error('[TARUS] Start error:', error);
+
     return;
   }
 

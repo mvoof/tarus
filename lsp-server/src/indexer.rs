@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
 use tower_lsp_server::lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Uri};
 use tower_lsp_server::UriExt;
@@ -50,6 +51,8 @@ pub struct ProjectIndex {
     diagnostic_info_cache: DashMap<IndexKey, DiagnosticInfo>,
     // Parse errors by file path
     pub parse_errors: DashMap<PathBuf, String>,
+    // Configuration: Max number of individual file links to show in CodeLens before summarizing
+    pub reference_limit: AtomicUsize,
 }
 
 impl Default for ProjectIndex {
@@ -61,12 +64,14 @@ impl Default for ProjectIndex {
             event_names_cache: RwLock::new(None),
             diagnostic_info_cache: DashMap::new(),
             parse_errors: DashMap::new(),
+            reference_limit: AtomicUsize::new(3),
         }
     }
 }
 
 impl ProjectIndex {
-    #[must_use] pub fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self::default()
     }
 
@@ -81,10 +86,9 @@ impl ProjectIndex {
         for key in keys_in_file.value() {
             if let Some(locations) = self.map.get(key) {
                 for loc in locations.value() {
-                    if loc.path == *path
-                        && Self::is_position_in_range(position, loc.range) {
-                            return Some((key.clone(), loc.clone()));
-                        }
+                    if loc.path == *path && Self::is_position_in_range(position, loc.range) {
+                        return Some((key.clone(), loc.clone()));
+                    }
                 }
             }
         }
@@ -242,24 +246,122 @@ impl ProjectIndex {
 
             // Generate a Lens for each occurrence in the current file
             for my_loc in current_file_locations {
-                let title = if targets.len() == 1 {
-                    let target = &targets[0];
+                let is_current_rust = path.extension().and_then(|s| s.to_str()) == Some("rs");
 
-                    let ext = target
-                        .path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("");
+                let mut rust_targets = Vec::new();
+                let mut frontend_targets = Vec::new();
 
-                    match ext {
-                        "rs" => "Go to Rust".to_string(),
-                        _ => "Go to Frontend".to_string(),
+                for t in &targets {
+                    if t.path.extension().and_then(|s| s.to_str()) == Some("rs") {
+                        rust_targets.push(t.clone());
+                    } else {
+                        frontend_targets.push(t.clone());
+                    }
+                }
+
+                if is_current_rust {
+                    // Rust Logic: Show frontend files separately
+
+                    // Group by file path
+                    let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
+                    for t in frontend_targets.iter() {
+                        files_map.entry(t.path.clone()).or_default().push(t.clone());
+                    }
+
+                    let limit = self.reference_limit.load(Ordering::Relaxed);
+
+                    if files_map.len() <= limit {
+                        // If <= limit files, show distinct link for EACH file
+                        let mut sorted_files: Vec<_> = files_map.into_iter().collect();
+                        // Sort for consistency
+                        sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+                        for (fpath, locs) in sorted_files {
+                            let fname = fpath
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+
+                            result.push((my_loc.range, format!("Go to {}", fname), locs));
+                        }
+                    } else {
+                        // If > limit files, show summary
+                        result.push((
+                            my_loc.range,
+                            format!("{} references", frontend_targets.len()),
+                            frontend_targets.clone(),
+                        ));
                     }
                 } else {
-                    format!("{} References", targets.len())
-                };
+                    // Frontend Logic: "Go to Rust" + "Go to others"
 
-                result.push((my_loc.range, title.clone(), targets.clone()));
+                    let limit = self.reference_limit.load(Ordering::Relaxed);
+
+                    // 1. Link to Rust (if exists)
+
+                    if !rust_targets.is_empty() {
+                        // Group by file path
+                        let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
+                        for t in rust_targets.iter() {
+                            files_map.entry(t.path.clone()).or_default().push(t.clone());
+                        }
+
+                        if files_map.len() <= limit {
+                            // If <= limit files, show distinct link for EACH file
+                            let mut sorted_files: Vec<_> = files_map.into_iter().collect();
+                            sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+                            for (fpath, locs) in sorted_files {
+                                let fname = fpath
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("unknown")
+                                    .to_string();
+
+                                result.push((my_loc.range, format!("Go to {}", fname), locs));
+                            }
+                        } else {
+                            // If > limit files, show summary
+                            result.push((
+                                my_loc.range,
+                                format!("{} rust refs", rust_targets.len()),
+                                rust_targets,
+                            ));
+                        }
+                    }
+
+                    // 2. Links to other frontend files
+                    // Group by file path
+                    let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
+
+                    for t in frontend_targets.iter() {
+                        files_map.entry(t.path.clone()).or_default().push(t.clone());
+                    }
+
+                    if files_map.len() <= limit {
+                        // If <= limit files, show distinct link for EACH file
+                        let mut sorted_files: Vec<_> = files_map.into_iter().collect();
+                        sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+                        for (fpath, locs) in sorted_files {
+                            let fname = fpath
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+
+                            result.push((my_loc.range, format!("Go to {}", fname), locs));
+                        }
+                    } else {
+                        // If > limit files, show summary
+                        result.push((
+                            my_loc.range,
+                            format!("{} references", frontend_targets.len()),
+                            frontend_targets,
+                        ));
+                    }
+                }
             }
         }
         result
