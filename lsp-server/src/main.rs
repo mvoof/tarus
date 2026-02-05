@@ -27,6 +27,7 @@ mod indexer;
 mod scanner;
 mod syntax;
 mod tree_parser;
+mod typegen;
 
 use capabilities::{build_server_capabilities, diagnostics};
 use indexer::{IndexKey, ProjectIndex};
@@ -56,9 +57,21 @@ impl Backend {
             return;
         }
 
+        let is_rust_file = path.extension().is_some_and(|ext| ext == "rs");
+
         if file_processor::process_file_index(path.clone(), &self.project_index) {
             let report = self.project_index.file_report(&path);
             self.log_dev_info(&report).await;
+
+            // Regenerate type definitions when Rust files change
+            if is_rust_file {
+                if let Some(root) = self.workspace_root.get() {
+                    if let Err(e) = typegen::write_types_file(&self.project_index, root) {
+                        self.log_dev_info(&format!("Failed to regenerate types: {e}"))
+                            .await;
+                    }
+                }
+            }
         }
     }
 
@@ -184,6 +197,7 @@ impl LanguageServer for Backend {
         };
 
         let root_clone = root.clone();
+        let root_for_typegen = root.clone();
         let project_index_clone = self.project_index.clone();
         let client_clone = self.client.clone();
 
@@ -202,7 +216,21 @@ impl LanguageServer for Backend {
                 file_processor::process_file_index(path, &project_index_clone);
             }
 
-            // Publish diagnostics for all indexed files
+            // Generate TypeScript type definitions
+            if let Err(e) = typegen::write_types_file(&project_index_clone, &root_for_typegen) {
+                client_clone
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("Failed to generate type definitions: {e}"),
+                    )
+                    .await;
+            } else {
+                client_clone
+                    .log_message(MessageType::INFO, "📝 Generated tauri-commands.d.ts")
+                    .await;
+            }
+
+    // Publish diagnostics for all indexed files
             for entry in &project_index_clone.file_map {
                 let path = entry.key().clone();
                 if let Some(uri) = Uri::from_file_path(&path) {
