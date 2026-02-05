@@ -17,6 +17,12 @@
    <i>This extension is not officially supported by the Tauri team and is provided as-is. It is maintained by a third party and may not receive updates or bug fixes in a timely manner. Use at your own risk.</i>
 </div>
 
+## Introduction
+
+In Tauri projects, it’s often difficult to quickly navigate between the frontend and the Rust backend and understand where a command is defined or called.
+This extension is designed to make that navigation fast and effortless, allowing you to jump between the frontend and backend parts of the project in both directions.
+As secondary features, the extension can also detect unused commands and help autocomplete command names while typing.
+
 ## Features
 
 <table>
