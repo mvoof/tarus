@@ -4,17 +4,12 @@ use crate::indexer::{LocationInfo, ProjectIndex};
 use crate::syntax::{Behavior, EntityType};
 use std::fmt::Write as _;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{
-    Hover, HoverContents, HoverParams, MarkupContent, MarkupKind,
-};
+use tower_lsp_server::lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 use tower_lsp_server::UriExt;
 
 #[allow(clippy::too_many_lines)]
 /// Handle hover request (pure function)
-pub fn handle_hover(
-    params: HoverParams,
-    project_index: &ProjectIndex,
-) -> Option<Hover> {
+pub fn handle_hover(params: HoverParams, project_index: &ProjectIndex) -> Option<Hover> {
     let uri = params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
@@ -36,14 +31,17 @@ pub fn handle_hover(
             .iter()
             .filter(|l| matches!(l.behavior, Behavior::Call))
             .count();
+
         let emits_count = locations
             .iter()
             .filter(|l| matches!(l.behavior, Behavior::Emit))
             .count();
+
         let listens_count = locations
             .iter()
             .filter(|l| matches!(l.behavior, Behavior::Listen))
             .count();
+
         let definitions_count = locations
             .iter()
             .filter(|l| matches!(l.behavior, Behavior::Definition))
@@ -51,8 +49,11 @@ pub fn handle_hover(
 
         let (definitions, references): (Vec<&LocationInfo>, Vec<&LocationInfo>) =
             locations.iter().partition(|l| match key.entity {
-                EntityType::Command => l.behavior == Behavior::Definition,
                 EntityType::Event => l.behavior == Behavior::Listen,
+                EntityType::Command
+                | EntityType::Struct
+                | EntityType::Enum
+                | EntityType::Interface => l.behavior == Behavior::Definition,
             });
 
         // Create Markdown Text
@@ -62,6 +63,9 @@ pub fn handle_hover(
         let icon = match key.entity {
             EntityType::Command => "⚙️",
             EntityType::Event => "📡",
+            EntityType::Struct => "📦",
+            EntityType::Enum => "🔢",
+            EntityType::Interface => "📄",
         };
 
         let _ = write!(md_text, "### {} {:?}: `{}`\n\n", icon, key.entity, key.name);
@@ -99,6 +103,7 @@ pub fn handle_hover(
             if definitions_count > 0 {
                 let _ = writeln!(md_text, "- 🦀 {definitions_count} definition(s)");
             }
+
             if calls_count > 0 {
                 let _ = writeln!(md_text, "- ⚡ {calls_count} call(s)");
             }
@@ -106,6 +111,7 @@ pub fn handle_hover(
             if emits_count > 0 {
                 let _ = writeln!(md_text, "- 📤 {emits_count} emit(s)");
             }
+
             if listens_count > 0 {
                 let _ = writeln!(md_text, "- 👂 {listens_count} listener(s)");
             }
@@ -116,6 +122,7 @@ pub fn handle_hover(
         // Sample references (first 5)
         if !references.is_empty() {
             md_text.push_str("**Sample References:**\n");
+
             for (i, rf) in references.iter().enumerate() {
                 if i >= 5 {
                     let _ = writeln!(md_text, "- *...and {} more*", references.len() - 5);

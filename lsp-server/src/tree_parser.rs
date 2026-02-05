@@ -3,18 +3,209 @@
 //! This module provides a single entry point for parsing all supported file types
 //! using Tree-sitter queries defined in external .scm files.
 
-use crate::indexer::{FileIndex, Finding};
+use crate::indexer::{FileIndex, Finding, Parameter};
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use std::collections::HashMap;
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::{Position, Range};
-use tree_sitter::{Language, Parser, Query, QueryCursor};
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
 /// Query files embedded at compile time
 const RUST_QUERY: &str = include_str!("queries/rust.scm");
 const TS_QUERY: &str = include_str!("queries/typescript.scm");
 const JS_QUERY: &str = include_str!("queries/javascript.scm");
+
+/// Extract Rust function parameters
+fn extract_rust_params(node: Node, content: &str) -> Vec<Parameter> {
+    let mut params = Vec::new();
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            let name_node = child.child_by_field_name("pattern");
+            let type_node = child.child_by_field_name("type");
+
+            if let (Some(n), Some(t)) = (name_node, type_node) {
+                params.push(Parameter {
+                    name: n
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or_default()
+                        .to_string(),
+                    type_name: t
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or_default()
+                        .to_string(),
+                });
+            }
+        }
+    }
+    params
+}
+
+/// Extract Rust struct fields
+fn extract_rust_struct_fields(node: Node, content: &str) -> Vec<Parameter> {
+    let mut fields = Vec::new();
+    let mut cursor = node.walk();
+
+    // Navigate to field_declaration_list
+    for child in node.children(&mut cursor) {
+        if child.kind() == "field_declaration_list" {
+            let mut field_cursor = child.walk();
+
+            for field in child.children(&mut field_cursor) {
+                if field.kind() == "field_declaration" {
+                    let name_node = field.child_by_field_name("name");
+                    let type_node = field.child_by_field_name("type");
+
+                    if let (Some(n), Some(t)) = (name_node, type_node) {
+                        fields.push(Parameter {
+                            name: n
+                                .utf8_text(content.as_bytes())
+                                .unwrap_or_default()
+                                .to_string(),
+                            type_name: t
+                                .utf8_text(content.as_bytes())
+                                .unwrap_or_default()
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fields
+}
+
+/// Extract Rust enum variants
+fn extract_rust_enum_variants(node: Node, content: &str) -> Vec<Parameter> {
+    let mut variants = Vec::new();
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        if child.kind() == "enum_variant_list" {
+            let mut variant_cursor = child.walk();
+
+            for variant in child.children(&mut variant_cursor) {
+                if variant.kind() == "enum_variant" {
+                    let name_node = variant.child_by_field_name("name");
+
+                    if let Some(n) = name_node {
+                        variants.push(Parameter {
+                            name: n
+                                .utf8_text(content.as_bytes())
+                                .unwrap_or_default()
+                                .to_string(),
+                            type_name: "enum_variant".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    variants
+}
+
+/// Extract TypeScript interface fields
+fn extract_ts_interface_fields(node: Node, content: &str) -> Vec<Parameter> {
+    let mut fields = Vec::new();
+    let mut cursor = node.walk();
+
+    // Navigate to interface_body
+    for child in node.children(&mut cursor) {
+        if child.kind() == "interface_body" {
+            let mut field_cursor = child.walk();
+
+            for field in child.children(&mut field_cursor) {
+                if field.kind() == "property_signature" {
+                    let name_node = field.child_by_field_name("name");
+                    let type_ann_node = field.child_by_field_name("type");
+
+                    if let (Some(n), Some(ta)) = (name_node, type_ann_node) {
+                        // type_annotation has a child which is the actual type
+                        let mut ta_cursor = ta.walk();
+
+                        let type_node = ta
+                            .children(&mut ta_cursor)
+                            .find(|c| c.kind() != ":" && c.kind() != "comment");
+
+                        if let Some(tn) = type_node {
+                            fields.push(Parameter {
+                                name: n
+                                    .utf8_text(content.as_bytes())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                type_name: tn
+                                    .utf8_text(content.as_bytes())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fields
+}
+
+/// Extract TypeScript parameters from an object literal (invoke arguments)
+fn extract_ts_params(node: Node, content: &str) -> Vec<Parameter> {
+    let mut params = Vec::new();
+
+    if node.kind() == "object" {
+        let mut cursor = node.walk();
+
+        for child in node.children(&mut cursor) {
+            // Handle { key: value } syntax
+            if child.kind() == "pair" {
+                let key_node = child.child_by_field_name("key");
+                let value_node = child.child_by_field_name("value");
+
+                if let Some(k) = key_node {
+                    let name = k
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or_default()
+                        .to_string();
+                    let mut type_name = "any".to_string();
+
+                    if let Some(v) = value_node {
+                        // Very basic type inference from literal values
+                        type_name = match v.kind() {
+                            "string" => "string",
+                            "number" => "number",
+                            "true" | "false" => "boolean",
+                            "array" => "any[]",
+                            "object" => "object",
+                            _ => "any",
+                        }
+                        .to_string();
+                    }
+
+                    params.push(Parameter { name, type_name });
+                }
+            }
+            // Handle { name } shorthand syntax (shorthand_property_identifier)
+            else if child.kind() == "shorthand_property_identifier"
+                || child.kind() == "shorthand_property_identifier_pattern"
+            {
+                let name = child
+                    .utf8_text(content.as_bytes())
+                    .unwrap_or_default()
+                    .to_string();
+
+                // For shorthand, we can't infer type from literal - it's a variable reference
+                params.push(Parameter {
+                    name,
+                    type_name: "any".to_string(),
+                });
+            }
+        }
+    }
+    params
+}
 
 /// Supported language types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +220,8 @@ pub enum LangType {
 
 impl LangType {
     /// Get language type from file extension
-    #[must_use] pub fn from_extension(ext: &str) -> Option<Self> {
+    #[must_use]
+    pub fn from_extension(ext: &str) -> Option<Self> {
         match ext {
             "rs" => Some(Self::Rust),
             "ts" | "tsx" => Some(Self::TypeScript),
@@ -64,12 +256,14 @@ fn extract_script_blocks(content: &str) -> Vec<(String, usize)> {
         let Some(tag_close_offset) = content[absolute_tag_start..].find('>') else {
             break;
         };
+
         let tag_close = absolute_tag_start + tag_close_offset + 1;
 
         // Find closing </script>
         let Some(end_tag_offset) = content[tag_close..].find("</script>") else {
             break;
         };
+
         let script_end = tag_close + end_tag_offset;
 
         // Extract script content
@@ -131,12 +325,14 @@ fn get_rust_event_patterns() -> HashMap<&'static str, (EntityType, Behavior)> {
     patterns
 }
 
+#[allow(clippy::too_many_lines)]
 /// Parse Rust source code
 fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
     let mut findings = Vec::new();
 
     let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = Parser::new();
+
     parser
         .set_language(&ts_lang)
         .map_err(|e| ParseError::LanguageError(format!("Failed to set Rust language: {e}")))?;
@@ -153,18 +349,144 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
 
     // Get capture indices
     let command_name_idx = query.capture_index_for_name("command_name");
+    let command_params_idx = query.capture_index_for_name("command_params");
+    let command_return_type_idx = query.capture_index_for_name("command_return_type");
+    let struct_def_idx = query.capture_index_for_name("struct_def");
+    let struct_name_idx = query.capture_index_for_name("struct_name");
+    let struct_attr_idx = query.capture_index_for_name("struct_attr");
+    let enum_def_idx = query.capture_index_for_name("enum_def");
+    let enum_name_idx = query.capture_index_for_name("enum_name");
+    let enum_attr_idx = query.capture_index_for_name("enum_attr");
     let method_name_idx = query.capture_index_for_name("method_name");
     let event_name_idx = query.capture_index_for_name("event_name");
 
     let rust_event_patterns = get_rust_event_patterns();
 
     let mut matches = cursor.matches(&query, root, content.as_bytes());
+
     while let Some(m) = matches.next() {
+        // Process struct definitions
+        if let Some(struct_idx) = struct_def_idx {
+            if let Some(struct_cap) = m.captures.iter().find(|c| c.index == struct_idx) {
+                // Find name within this match
+                if let Some(name_idx) = struct_name_idx {
+                    if let Some(name_cap) = m.captures.iter().find(|c| c.index == name_idx) {
+                        let name = name_cap
+                            .node
+                            .utf8_text(content.as_bytes())
+                            .unwrap_or_default();
+                        let fields = extract_rust_struct_fields(struct_cap.node, content);
+
+                        let mut attributes = Vec::new();
+
+                        if let Some(attr_idx) = struct_attr_idx {
+                            for attr_cap in m.captures.iter().filter(|c| c.index == attr_idx) {
+                                attributes.push(
+                                    attr_cap
+                                        .node
+                                        .utf8_text(content.as_bytes())
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                );
+                            }
+                        }
+
+                        findings.push(Finding {
+                            key: name.to_string(),
+                            entity: EntityType::Struct,
+                            behavior: Behavior::Definition,
+                            range: Range {
+                                start: point_to_position(name_cap.node.start_position()),
+                                end: point_to_position(name_cap.node.end_position()),
+                            },
+                            parameters: None,
+                            return_type: None,
+                            fields: Some(fields),
+                            attributes: if attributes.is_empty() {
+                                None
+                            } else {
+                                Some(attributes)
+                            },
+                        });
+                    }
+                }
+            }
+        }
+
+        // Process enum definitions
+        if let Some(enum_idx) = enum_def_idx {
+            if let Some(enum_cap) = m.captures.iter().find(|c| c.index == enum_idx) {
+                if let Some(name_idx) = enum_name_idx {
+                    if let Some(name_cap) = m.captures.iter().find(|c| c.index == name_idx) {
+                        let name = name_cap
+                            .node
+                            .utf8_text(content.as_bytes())
+                            .unwrap_or_default();
+                        let variants = extract_rust_enum_variants(enum_cap.node, content);
+
+                        let mut attributes = Vec::new();
+
+                        if let Some(attr_idx) = enum_attr_idx {
+                            for attr_cap in m.captures.iter().filter(|c| c.index == attr_idx) {
+                                attributes.push(
+                                    attr_cap
+                                        .node
+                                        .utf8_text(content.as_bytes())
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                );
+                            }
+                        }
+
+                        findings.push(Finding {
+                            key: name.to_string(),
+                            entity: EntityType::Enum,
+                            behavior: Behavior::Definition,
+                            range: Range {
+                                start: point_to_position(name_cap.node.start_position()),
+                                end: point_to_position(name_cap.node.end_position()),
+                            },
+                            parameters: None,
+                            return_type: None,
+                            fields: Some(variants),
+                            attributes: if attributes.is_empty() {
+                                None
+                            } else {
+                                Some(attributes)
+                            },
+                        });
+                    }
+                }
+            }
+        }
+
         // Process command definitions
         if let Some(cmd_idx) = command_name_idx {
             for capture in m.captures.iter().filter(|c| c.index == cmd_idx) {
                 let node = capture.node;
                 let name = node.utf8_text(content.as_bytes()).unwrap_or_default();
+
+                // Extract parameters and return type
+                let mut parameters = None;
+                let mut return_type = None;
+
+                if let Some(params_idx) = command_params_idx {
+                    if let Some(params_cap) = m.captures.iter().find(|c| c.index == params_idx) {
+                        parameters = Some(extract_rust_params(params_cap.node, content));
+                    }
+                }
+
+                if let Some(ret_idx) = command_return_type_idx {
+                    if let Some(ret_cap) = m.captures.iter().find(|c| c.index == ret_idx) {
+                        return_type = Some(
+                            ret_cap
+                                .node
+                                .utf8_text(content.as_bytes())
+                                .unwrap_or_default()
+                                .to_string(),
+                        );
+                    }
+                }
 
                 findings.push(Finding {
                     key: name.to_string(),
@@ -174,6 +496,10 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                         start: point_to_position(node.start_position()),
                         end: point_to_position(node.end_position()),
                     },
+                    parameters,
+                    return_type,
+                    fields: None,
+                    attributes: None,
                 });
             }
         }
@@ -202,6 +528,10 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                             start: point_to_position(event_cap.node.start_position()),
                             end: point_to_position(event_cap.node.end_position()),
                         },
+                        parameters: None,
+                        return_type: None,
+                        fields: None,
+                        attributes: None,
                     });
                 }
             }
@@ -276,9 +606,9 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
     };
 
     let mut parser = Parser::new();
-    parser.set_language(&ts_lang).map_err(|e| {
-        ParseError::LanguageError(format!("Failed to set {lang:?} language: {e}"))
-    })?;
+    parser
+        .set_language(&ts_lang)
+        .map_err(|e| ParseError::LanguageError(format!("Failed to set {lang:?} language: {e}")))?;
 
     let tree = parser
         .parse(content, None)
@@ -303,12 +633,19 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
     // Get capture indices for imports
     let imported_name_idx = query.capture_index_for_name("imported_name");
     let local_alias_idx = query.capture_index_for_name("local_alias");
+    // New captures
+    let type_args_idx = query.capture_index_for_name("type_args");
+    let invoke_args_idx = query.capture_index_for_name("invoke_args");
+    let interface_def_idx = query.capture_index_for_name("interface_def");
+    let interface_name_idx = query.capture_index_for_name("interface_name");
 
     let all_patterns = get_all_frontend_patterns();
 
-    // First pass: collect aliases
+    // First pass: collect aliases and interface definitions
     let mut matches = cursor.matches(&query, root, content.as_bytes());
+
     while let Some(m) = matches.next() {
+        // Collect aliases
         if let (Some(imp_idx), Some(alias_idx)) = (imported_name_idx, local_alias_idx) {
             let imported = m.captures.iter().find(|c| c.index == imp_idx);
             let local = m.captures.iter().find(|c| c.index == alias_idx);
@@ -318,6 +655,7 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                     .node
                     .utf8_text(content.as_bytes())
                     .unwrap_or_default();
+
                 let local_name = local_cap
                     .node
                     .utf8_text(content.as_bytes())
@@ -326,11 +664,45 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                 aliases.insert(local_name.to_string(), imported_name.to_string());
             }
         }
+
+        // Collect interfaces
+        if let Some(iface_idx) = interface_def_idx {
+            if let Some(iface_cap) = m.captures.iter().find(|c| c.index == iface_idx) {
+                if let Some(name_idx) = interface_name_idx {
+                    if let Some(name_cap) = m.captures.iter().find(|c| c.index == name_idx) {
+                        let name = name_cap
+                            .node
+                            .utf8_text(content.as_bytes())
+                            .unwrap_or_default();
+
+                        let fields = extract_ts_interface_fields(iface_cap.node, content);
+
+                        findings.push(Finding {
+                            key: name.to_string(),
+                            entity: EntityType::Interface,
+                            behavior: Behavior::Definition,
+                            range: adjust_range(
+                                Range {
+                                    start: point_to_position(name_cap.node.start_position()),
+                                    end: point_to_position(name_cap.node.end_position()),
+                                },
+                                line_offset,
+                            ),
+                            parameters: None,
+                            return_type: None,
+                            fields: Some(fields),
+                            attributes: None,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     // Second pass: collect function calls
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, content.as_bytes());
+
     while let Some(m) = matches.next() {
         // Try first argument pattern (func_name + arg_value)
         if let (Some(func_idx), Some(arg_idx)) = (func_name_idx, arg_value_idx) {
@@ -342,6 +714,7 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                     .node
                     .utf8_text(content.as_bytes())
                     .unwrap_or_default();
+
                 let arg_value = arg_cap
                     .node
                     .utf8_text(content.as_bytes())
@@ -362,11 +735,36 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         end: point_to_position(arg_cap.node.end_position()),
                     };
 
+                    let mut parameters = None;
+                    let mut return_type = None;
+
+                    if let Some(args_idx) = invoke_args_idx {
+                        if let Some(args_cap) = m.captures.iter().find(|c| c.index == args_idx) {
+                            parameters = Some(extract_ts_params(args_cap.node, content));
+                        }
+                    }
+
+                    if let Some(t_idx) = type_args_idx {
+                        if let Some(t_cap) = m.captures.iter().find(|c| c.index == t_idx) {
+                            return_type = Some(
+                                t_cap
+                                    .node
+                                    .utf8_text(content.as_bytes())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            );
+                        }
+                    }
+
                     findings.push(Finding {
                         key: arg_value.to_string(),
                         entity: pattern.entity,
                         behavior: pattern.behavior,
                         range: adjust_range(range, line_offset),
+                        parameters,
+                        return_type,
+                        fields: None,
+                        attributes: None,
                     });
                 }
             }
@@ -402,11 +800,36 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         end: point_to_position(arg_cap.node.end_position()),
                     };
 
+                    let mut parameters = None;
+                    let mut return_type = None;
+
+                    if let Some(args_idx) = invoke_args_idx {
+                        if let Some(args_cap) = m.captures.iter().find(|c| c.index == args_idx) {
+                            parameters = Some(extract_ts_params(args_cap.node, content));
+                        }
+                    }
+
+                    if let Some(t_idx) = type_args_idx {
+                        if let Some(t_cap) = m.captures.iter().find(|c| c.index == t_idx) {
+                            return_type = Some(
+                                t_cap
+                                    .node
+                                    .utf8_text(content.as_bytes())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            );
+                        }
+                    }
+
                     findings.push(Finding {
                         key: arg_value.to_string(),
                         entity: pattern.entity,
                         behavior: pattern.behavior,
                         range: adjust_range(range, line_offset),
+                        parameters,
+                        return_type,
+                        fields: None,
+                        attributes: None,
                     });
                 }
             }

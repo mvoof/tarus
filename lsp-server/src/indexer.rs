@@ -10,11 +10,21 @@ use tower_lsp_server::UriExt;
 
 /// A single occurrence in a file (parser result)
 #[derive(Debug, Clone)]
+pub struct Parameter {
+    pub name: String,
+    pub type_name: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Finding {
     pub key: String,        // Name ("save_file")
     pub entity: EntityType, // Command or Event
     pub behavior: Behavior, // Call, Emit, Listen
     pub range: Range,       // Coordinates
+    pub parameters: Option<Vec<Parameter>>,
+    pub return_type: Option<String>,
+    pub fields: Option<Vec<Parameter>>,
+    pub attributes: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -36,6 +46,10 @@ pub struct LocationInfo {
     pub path: PathBuf,
     pub range: Range,
     pub behavior: Behavior,
+    pub parameters: Option<Vec<Parameter>>,
+    pub return_type: Option<String>,
+    pub fields: Option<Vec<Parameter>>,
+    pub attributes: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -73,6 +87,13 @@ impl ProjectIndex {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Iterate over all entries in the index
+    pub fn iter_all(
+        &self,
+    ) -> dashmap::iter::Iter<'_, IndexKey, Vec<LocationInfo>, std::hash::RandomState> {
+        self.map.iter()
     }
 
     /// Search for a key by cursor position (Reverse Lookup)
@@ -142,6 +163,10 @@ impl ProjectIndex {
                 path: path_ref.clone(),
                 range: finding.range,
                 behavior: finding.behavior,
+                parameters: finding.parameters,
+                return_type: finding.return_type,
+                fields: finding.fields,
+                attributes: finding.attributes,
             };
 
             self.map.entry(key.clone()).or_default().push(info);
@@ -207,6 +232,7 @@ impl ProjectIndex {
         self.map.get(&key).map(|v| v.clone()).unwrap_or_default()
     }
 
+    #[allow(clippy::too_many_lines)]
     /// Preparing data for `CodeLens`
     pub fn get_lens_data(&self, path: &PathBuf) -> Vec<(Range, String, Vec<LocationInfo>)> {
         let mut result = Vec::new();
@@ -264,7 +290,8 @@ impl ProjectIndex {
 
                     // Group by file path
                     let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-                    for t in frontend_targets.iter() {
+
+                    for t in &frontend_targets {
                         files_map.entry(t.path.clone()).or_default().push(t.clone());
                     }
 
@@ -283,7 +310,7 @@ impl ProjectIndex {
                                 .unwrap_or("unknown")
                                 .to_string();
 
-                            result.push((my_loc.range, format!("Go to {}", fname), locs));
+                            result.push((my_loc.range, format!("Go to {fname}"), locs));
                         }
                     } else {
                         // If > limit files, show summary
@@ -303,7 +330,8 @@ impl ProjectIndex {
                     if !rust_targets.is_empty() {
                         // Group by file path
                         let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-                        for t in rust_targets.iter() {
+
+                        for t in &rust_targets {
                             files_map.entry(t.path.clone()).or_default().push(t.clone());
                         }
 
@@ -319,7 +347,7 @@ impl ProjectIndex {
                                     .unwrap_or("unknown")
                                     .to_string();
 
-                                result.push((my_loc.range, format!("Go to {}", fname), locs));
+                                result.push((my_loc.range, format!("Go to {fname}"), locs));
                             }
                         } else {
                             // If > limit files, show summary
@@ -335,7 +363,7 @@ impl ProjectIndex {
                     // Group by file path
                     let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
 
-                    for t in frontend_targets.iter() {
+                    for t in &frontend_targets {
                         files_map.entry(t.path.clone()).or_default().push(t.clone());
                     }
 
@@ -351,7 +379,7 @@ impl ProjectIndex {
                                 .unwrap_or("unknown")
                                 .to_string();
 
-                            result.push((my_loc.range, format!("Go to {}", fname), locs));
+                            result.push((my_loc.range, format!("Go to {fname}"), locs));
                         }
                     } else {
                         // If > limit files, show summary
@@ -364,6 +392,7 @@ impl ProjectIndex {
                 }
             }
         }
+
         result
     }
 
@@ -460,6 +489,9 @@ impl ProjectIndex {
                     let kind = match key.entity {
                         EntityType::Command => SymbolKind::FUNCTION,
                         EntityType::Event => SymbolKind::EVENT,
+                        EntityType::Struct => SymbolKind::STRUCT,
+                        EntityType::Enum => SymbolKind::ENUM,
+                        EntityType::Interface => SymbolKind::INTERFACE,
                     };
 
                     // Use behavior terms
@@ -511,6 +543,9 @@ impl ProjectIndex {
                 let kind = match key.entity {
                     EntityType::Command => SymbolKind::FUNCTION,
                     EntityType::Event => SymbolKind::EVENT,
+                    EntityType::Struct => SymbolKind::STRUCT,
+                    EntityType::Enum => SymbolKind::ENUM,
+                    EntityType::Interface => SymbolKind::INTERFACE,
                 };
 
                 let behavior_label = match loc.behavior {
@@ -550,6 +585,7 @@ impl ProjectIndex {
         let cache = match entity {
             EntityType::Command => &self.command_names_cache,
             EntityType::Event => &self.event_names_cache,
+            _ => return Vec::new(),
         };
 
         // Try to read from cache

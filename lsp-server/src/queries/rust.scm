@@ -9,7 +9,10 @@
         name: (identifier) @_attr_name)))
   .
   (function_item
-    name: (identifier) @command_name)
+    name: (identifier) @command_name
+    parameters: (parameters) @command_params
+    return_type: (_) @command_return_type
+  )
   (#eq? @_attr_path "tauri")
   (#eq? @_attr_name "command")
 )
@@ -21,9 +24,39 @@
       (identifier) @_attr_simple))
   .
   (function_item
-    name: (identifier) @command_name)
+    name: (identifier) @command_name
+    parameters: (parameters) @command_params
+    return_type: (_) @command_return_type
+  )
   (#eq? @_attr_simple "command")
 )
+
+; Struct definitions with attributes
+(
+  (attribute_item)* @struct_attr
+  (struct_item
+    name: (type_identifier) @struct_name
+    body: (field_declaration_list
+      (field_declaration
+        name: (field_identifier) @field_name
+        type: (_) @field_type
+      )*
+    )
+  )
+) @struct_def
+
+; Enum definitions with attributes
+(
+  (attribute_item)* @enum_attr
+  (enum_item
+    name: (type_identifier) @enum_name
+    body: (enum_variant_list
+      (enum_variant
+        name: (identifier) @variant_name
+      )*
+    )
+  )
+) @enum_def
 
 ; Method calls: .emit("event"), .listen("event"), etc.
 ; First argument is the event name
