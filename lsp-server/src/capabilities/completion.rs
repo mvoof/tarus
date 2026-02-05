@@ -1,7 +1,7 @@
 //! Completion capability - autocomplete commands and events
 
 use crate::indexer::ProjectIndex;
-use crate::syntax::EntityType;
+use crate::syntax::{map_rust_type_to_ts, snake_to_camel, Behavior, EntityType};
 use dashmap::DashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,6 +25,7 @@ const COMPLETION_TRIGGERS: &[&str] = &[
     "once_any",
 ];
 
+#[allow(clippy::too_many_lines)]
 /// Handle completion request (pure function)
 pub fn handle_completion(
     params: &CompletionParams,
@@ -43,6 +44,7 @@ pub fn handle_completion(
 
     let lines: Vec<&str> = content.lines().collect();
     let line_idx = params.text_document_position.position.line as usize;
+
     if line_idx >= lines.len() {
         return None;
     }
@@ -52,11 +54,122 @@ pub fn handle_completion(
     let byte_index = lsp_character_to_byte_index(line, col);
     let prefix = &line[..byte_index];
 
+    // Check if we are inside the generic arguments of invoke
+    // e.g., invoke<|> ("my_cmd")
+    if let Some(invoke_pos) = prefix.rfind("invoke") {
+        let after_invoke = &line[invoke_pos + 6..];
+
+        if after_invoke.starts_with('<') {
+            let prefix_after_invoke = &prefix[invoke_pos + 6..];
+
+            if !prefix_after_invoke.contains('>') {
+                // Find command name in the rest of the line
+                let rest_of_line = &line[byte_index..];
+
+                if let Some(quote_start) =
+                    rest_of_line.find('\"').or_else(|| rest_of_line.find('\''))
+                {
+                    let after_quote = &rest_of_line[quote_start + 1..];
+
+                    if let Some(quote_end) =
+                        after_quote.find('\"').or_else(|| after_quote.find('\''))
+                    {
+                        let cmd_name = &after_quote[..quote_end];
+
+                        let mut items = Vec::new();
+                        let locations = project_index.get_locations(EntityType::Command, cmd_name);
+
+                        if let Some(def) = locations
+                            .iter()
+                            .find(|l| l.behavior == Behavior::Definition)
+                        {
+                            if let Some(rust_ret) = &def.return_type {
+                                let ts_type = map_rust_type_to_ts(rust_ret);
+
+                                items.push(CompletionItem {
+                                    label: ts_type,
+                                    kind: Some(CompletionItemKind::TYPE_PARAMETER),
+                                    detail: Some(format!("Return type of {cmd_name}")),
+                                    ..Default::default()
+                                });
+
+                                return Some(CompletionResponse::Array(items));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check if we are inside the arguments object of invoke
+    // e.g., invoke("my_cmd", { | })
+    if let Some(invoke_pos) = prefix.rfind("invoke") {
+        let rest = &prefix[invoke_pos + 6..];
+
+        if let Some(_open_brace_pos) = rest.rfind('{') {
+            // Very basic check: ensure the open brace is after the command name
+            let after_invoke = &rest;
+
+            if let Some(quote_start) = after_invoke.find('\"').or_else(|| after_invoke.find('\'')) {
+                let after_quote = &after_invoke[quote_start + 1..];
+
+                if let Some(quote_end) = after_quote.find('\"').or_else(|| after_quote.find('\'')) {
+                    let cmd_name = &after_quote[..quote_end];
+
+                    // Check if open brace is after the command name quote
+                    let after_cmd_name = &after_quote[quote_end + 1..];
+
+                    if after_cmd_name.contains('{') {
+                        let mut items = Vec::new();
+                        let locations = project_index.get_locations(EntityType::Command, cmd_name);
+
+                        if let Some(def) = locations
+                            .iter()
+                            .find(|l| l.behavior == Behavior::Definition)
+                        {
+                            if let Some(rust_params) = &def.parameters {
+                                let filtered_rust_params: Vec<_> = rust_params
+                                    .iter()
+                                    .filter(|p| {
+                                        !["State", "AppHandle", "Window"]
+                                            .iter()
+                                            .any(|&s| p.type_name.contains(s))
+                                    })
+                                    .collect();
+
+                                for rp in filtered_rust_params {
+                                    let camel_name = snake_to_camel(&rp.name);
+
+                                    items.push(CompletionItem {
+                                        label: camel_name.clone(),
+                                        kind: Some(CompletionItemKind::PROPERTY),
+                                        detail: Some(format!(
+                                            ": {}",
+                                            map_rust_type_to_ts(&rp.type_name)
+                                        )),
+                                        insert_text: Some(format!("{camel_name}: ")),
+                                        ..Default::default()
+                                    });
+                                }
+
+                                if !items.is_empty() {
+                                    return Some(CompletionResponse::Array(items));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Check if in completion context
     // Support both direct calls: invoke("...") and generic calls: invoke<Type>("...")
     let in_context = COMPLETION_TRIGGERS.iter().any(|name| {
         if let Some(pos) = prefix.rfind(name) {
             let rest = &prefix[pos + name.len()..];
+
             rest.starts_with('(') || rest.starts_with('<')
         } else {
             false
@@ -105,6 +218,7 @@ pub fn handle_completion(
     Some(CompletionResponse::Array(items))
 }
 
+#[must_use]
 pub fn lsp_character_to_byte_index(line: &str, character: usize) -> usize {
     let mut byte_index = 0;
     let mut char_count = 0;
