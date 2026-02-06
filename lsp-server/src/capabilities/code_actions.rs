@@ -1,3 +1,4 @@
+use crate::indexer::IndexKey;
 use crate::indexer::ProjectIndex;
 use crate::scanner::find_src_tauri_dir;
 use crate::syntax::{
@@ -26,98 +27,148 @@ pub fn handle_code_action(
     project_index: &ProjectIndex,
     workspace_root: Option<&PathBuf>,
 ) -> Option<CodeActionResponse> {
-    let path_cow = params.text_document.uri.to_file_path()?;
-    let path = path_cow.to_path_buf();
-    let position = params.range.start;
+    let path = params.text_document.uri.to_file_path()?.to_path_buf();
     let root = workspace_root?;
+    let (key, loc) = project_index.get_key_at_position(&path, params.range.start)?;
 
     let mut actions = Vec::new();
 
-    if let Some((key, loc)) = project_index.get_key_at_position(&path, position) {
-        // --- 1. UNDEFINED COMMAND CALL (FRONTEND) -> Create Rust command ---
-        if key.entity == EntityType::Command && loc.behavior == Behavior::Call {
-            let info = project_index.get_diagnostic_info(&key);
-            if !info.has_definition {
-                let candidates = find_rust_file_candidates(root);
-                for candidate in rank_and_limit(candidates) {
-                    actions.push(create_rust_command_action(
-                        &key.name,
-                        &candidate,
-                        &params.context.diagnostics,
-                    ));
-                }
-            }
+    // Handle each entity type with dedicated functions
+    match (key.entity, loc.behavior) {
+        (EntityType::Command, Behavior::Call) => {
+            handle_undefined_command(&key, root, params, project_index, &mut actions);
         }
-
-        // --- 2. STRUCT DEFINITION (RUST) -> Create interface in tauri-commands.d.ts ---
-        if key.entity == EntityType::Struct && loc.behavior == Behavior::Definition {
-            if let Some(fields) = &loc.fields {
-                if let Some(action) =
-                    create_sync_to_dts_action(&key.name, fields, root, &params.context.diagnostics)
-                {
-                    actions.push(action);
-                }
-            }
+        (EntityType::Struct, Behavior::Definition) => {
+            handle_struct_definition(&key, &loc, root, params, &mut actions);
         }
-
-        // --- 3. ENUM DEFINITION (RUST) -> Create type in tauri-commands.d.ts ---
-        if key.entity == EntityType::Enum && loc.behavior == Behavior::Definition {
-            if let Some(variants) = &loc.fields {
-                if let Some(action) = create_sync_enum_to_dts_action(
-                    &key.name,
-                    variants,
-                    root,
-                    &params.context.diagnostics,
-                ) {
-                    actions.push(action);
-                }
-            }
+        (EntityType::Enum, Behavior::Definition) => {
+            handle_enum_definition(&key, &loc, root, params, &mut actions);
         }
+        (EntityType::Interface, Behavior::Definition) => {
+            handle_interface_definition(
+                &key,
+                &loc,
+                &path,
+                root,
+                params,
+                project_index,
+                &mut actions,
+            );
+        }
+        _ => {} // No actions for other combinations
+    }
 
-        // --- 4. INTERFACE DEFINITION (TS) -> Sync to tauri-commands.d.ts + Create Rust struct ---
-        if key.entity == EntityType::Interface && loc.behavior == Behavior::Definition {
-            if let Some(fields) = &loc.fields {
-                // A. Copy to tauri-commands.d.ts (if not already there)
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    (!actions.is_empty()).then_some(actions)
+}
 
-                if file_name != "tauri-commands.d.ts" {
-                    if let Some(action) = create_copy_interface_to_dts_action(
-                        &key.name,
-                        fields,
-                        root,
-                        &params.context.diagnostics,
-                    ) {
-                        actions.push(action);
-                    }
-                }
+/// Handle undefined command call - offer to create Rust command
+fn handle_undefined_command(
+    key: &IndexKey,
+    root: &PathBuf,
+    params: &CodeActionParams,
+    project_index: &ProjectIndex,
+    actions: &mut Vec<CodeActionOrCommand>,
+) {
+    let info = project_index.get_diagnostic_info(key);
 
-                // B. Create Rust struct (if doesn't exist in Rust)
-                let rust_struct_exists = !project_index
-                    .get_locations(EntityType::Struct, &key.name)
-                    .is_empty();
+    if info.has_definition {
+        return;
+    }
 
-                if !rust_struct_exists {
-                    let candidates = find_rust_file_candidates(root);
+    let candidates = find_rust_file_candidates(root);
 
-                    for candidate in rank_and_limit(candidates) {
-                        if let Some(action) = create_rust_struct_action(
-                            &key.name,
-                            fields,
-                            &candidate,
-                            &params.context.diagnostics,
-                        ) {
-                            actions.push(action);
-                        }
-                    }
-                }
-            }
+    for candidate in rank_and_limit(candidates) {
+        actions.push(create_rust_command_action(
+            &key.name,
+            &candidate,
+            &params.context.diagnostics,
+        ));
+    }
+}
+
+/// Handle struct definition - offer to sync to .d.ts
+fn handle_struct_definition(
+    key: &IndexKey,
+    loc: &crate::indexer::LocationInfo,
+    root: &PathBuf,
+    params: &CodeActionParams,
+    actions: &mut Vec<CodeActionOrCommand>,
+) {
+    let Some(fields) = &loc.fields else {
+        return;
+    };
+
+    if let Some(action) =
+        create_sync_to_dts_action(&key.name, fields, root, &params.context.diagnostics)
+    {
+        actions.push(action);
+    }
+}
+
+/// Handle enum definition - offer to sync to .d.ts
+fn handle_enum_definition(
+    key: &IndexKey,
+    loc: &crate::indexer::LocationInfo,
+    root: &PathBuf,
+    params: &CodeActionParams,
+    actions: &mut Vec<CodeActionOrCommand>,
+) {
+    let Some(variants) = &loc.fields else {
+        return;
+    };
+
+    if let Some(action) =
+        create_sync_enum_to_dts_action(&key.name, variants, root, &params.context.diagnostics)
+    {
+        actions.push(action);
+    }
+}
+
+/// Handle interface definition - offer to sync to .d.ts and create Rust struct
+fn handle_interface_definition(
+    key: &IndexKey,
+    loc: &crate::indexer::LocationInfo,
+    path: &PathBuf,
+    root: &PathBuf,
+    params: &CodeActionParams,
+    project_index: &ProjectIndex,
+    actions: &mut Vec<CodeActionOrCommand>,
+) {
+    let Some(fields) = &loc.fields else {
+        return;
+    };
+
+    // A. Copy to tauri-commands.d.ts (if not already there)
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    if file_name != "tauri-commands.d.ts" {
+        if let Some(action) = create_copy_interface_to_dts_action(
+            &key.name,
+            fields,
+            root,
+            &params.context.diagnostics,
+        ) {
+            actions.push(action);
         }
     }
 
-    if actions.is_empty() {
-        None
-    } else {
-        Some(actions)
+    // B. Create Rust struct (if doesn't exist in Rust)
+    let rust_struct_exists = !project_index
+        .get_locations(EntityType::Struct, &key.name)
+        .is_empty();
+
+    if rust_struct_exists {
+        return;
+    }
+
+    let candidates = find_rust_file_candidates(root);
+
+    for candidate in rank_and_limit(candidates) {
+        if let Some(action) =
+            create_rust_struct_action(&key.name, fields, &candidate, &params.context.diagnostics)
+        {
+            actions.push(action);
+        }
     }
 }
 
@@ -308,6 +359,7 @@ fn create_rust_struct_action(
 ) -> Option<CodeActionOrCommand> {
     let mut rust_struct =
         format!("\n#[derive(serde::Deserialize, serde::Serialize)]\npub struct {name} {{\n");
+
     for field in fields {
         let rust_type = map_ts_type_to_rust(&field.type_name);
         let rust_name = camel_to_snake(&field.name);
