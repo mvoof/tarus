@@ -3,8 +3,7 @@
 use crate::indexer::ProjectIndex;
 use std::path::PathBuf;
 use tower_lsp_server::lsp_types::{
-    DocumentSymbolParams, DocumentSymbolResponse, OneOf, SymbolInformation,
-    WorkspaceSymbolParams,
+    DocumentSymbolParams, DocumentSymbolResponse, OneOf, SymbolInformation, WorkspaceSymbolParams,
 };
 use tower_lsp_server::UriExt;
 

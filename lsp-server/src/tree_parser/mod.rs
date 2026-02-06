@@ -55,7 +55,7 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
             }
         }
         Some(LangType::JavaScript) => parse_frontend(path, content, LangType::JavaScript, 0)?,
-        Some(LangType::Vue) | Some(LangType::Svelte) => {
+        Some(LangType::Vue | LangType::Svelte) => {
             // Extract script blocks and parse each one
             let script_blocks = extract_script_blocks(content);
             let mut all_findings = Vec::new();

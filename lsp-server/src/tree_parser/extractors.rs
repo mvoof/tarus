@@ -184,7 +184,8 @@ pub struct FindingBuilder {
 }
 
 impl FindingBuilder {
-    /// Create a new FindingBuilder with required fields
+    /// Create a new `FindingBuilder` with required fields
+    #[must_use]
     pub fn new(
         key: String,
         entity: crate::syntax::EntityType,

@@ -1,25 +1,26 @@
 //! LSP Server Capabilities
-//! 
+//!
 //! This module contains all LSP capability implementations.
 //! Each capability is in its own module with full implementation.
 
-pub mod diagnostics;
-pub mod definition;
-pub mod references;
-pub mod hover;
-pub mod code_lens;
-pub mod symbols;
-pub mod completion;
 pub mod code_actions;
+pub mod code_lens;
+pub mod completion;
+pub mod definition;
+pub mod diagnostics;
+pub mod hover;
+pub mod references;
+pub mod symbols;
 
 use tower_lsp_server::lsp_types::{
-    CodeActionProviderCapability, CodeLensOptions, CompletionOptions,
-    HoverProviderCapability, OneOf, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions,
+    CodeActionProviderCapability, CodeLensOptions, CompletionOptions, HoverProviderCapability,
+    OneOf, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions,
 };
 
 /// Build the LSP server capabilities configuration
-#[must_use] pub fn build_server_capabilities() -> ServerCapabilities {
+#[must_use]
+pub fn build_server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
         definition_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),

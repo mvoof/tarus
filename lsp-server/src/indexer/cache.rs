@@ -6,27 +6,27 @@ use std::path::PathBuf;
 use std::sync::RwLock;
 use tower_lsp_server::lsp_types::Range;
 
+type CommandNamesCache = RwLock<Option<Vec<(String, Option<LocationInfo>)>>>;
+type LensDataCache = DashMap<PathBuf, Vec<(Range, String, Vec<LocationInfo>)>>;
+type PositionIndexCache = DashMap<PathBuf, Vec<(Range, IndexKey)>>;
+
 /// Cache manager for all index-related caches
 #[derive(Debug)]
 pub struct CacheManager {
-    /// Cache for get_all_names() results (command names)
-    #[allow(clippy::type_complexity)]
-    pub command_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
+    /// Cache for `get_all_names()` results (command names)
+    pub command_names: CommandNamesCache,
 
-    /// Cache for get_all_names() results (event names)
-    #[allow(clippy::type_complexity)]
-    pub event_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
+    /// Cache for `get_all_names()` results (event names)
+    pub event_names: CommandNamesCache,
 
     /// Cache for diagnostic info (avoids re-iterating locations)
-    pub diagnostic_info_cache: DashMap<IndexKey, DiagnosticInfo>,
+    pub diagnostic_info: DashMap<IndexKey, DiagnosticInfo>,
 
-    /// Cache for CodeLens data by file path
-    #[allow(clippy::type_complexity)]
-    pub lens_data_cache: DashMap<PathBuf, Vec<(Range, String, Vec<LocationInfo>)>>,
+    /// Cache for `CodeLens` data by file path
+    pub lens_data: LensDataCache,
 
     /// Spatial index for fast position lookups (sorted by start position)
-    #[allow(clippy::type_complexity)]
-    pub position_index_cache: DashMap<PathBuf, Vec<(Range, IndexKey)>>,
+    pub position_index: PositionIndexCache,
 }
 
 impl Default for CacheManager {
@@ -40,11 +40,11 @@ impl CacheManager {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            command_names_cache: RwLock::new(None),
-            event_names_cache: RwLock::new(None),
-            diagnostic_info_cache: DashMap::new(),
-            lens_data_cache: DashMap::new(),
-            position_index_cache: DashMap::new(),
+            command_names: RwLock::new(None),
+            event_names: RwLock::new(None),
+            diagnostic_info: DashMap::new(),
+            lens_data: DashMap::new(),
+            position_index: DashMap::new(),
         }
     }
 
@@ -55,14 +55,14 @@ impl CacheManager {
     /// Panics if the cache lock is poisoned (only occurs if another thread panicked while holding the lock)
     pub fn invalidate_all(&self) {
         *self
-            .command_names_cache
+            .command_names
             .write()
             .expect("Command names cache lock poisoned") = None;
         *self
-            .event_names_cache
+            .event_names
             .write()
             .expect("Event names cache lock poisoned") = None;
-        self.diagnostic_info_cache.clear();
+        self.diagnostic_info.clear();
     }
 
     /// Invalidate caches for a specific file
@@ -72,17 +72,50 @@ impl CacheManager {
     /// Panics if the cache lock is poisoned (only occurs if another thread panicked while holding the lock)
     pub fn invalidate_file(&self, path: &PathBuf) {
         self.invalidate_all();
-        self.lens_data_cache.remove(path);
-        self.position_index_cache.remove(path);
+        self.lens_data.remove(path);
+        self.position_index.remove(path);
     }
 }
 
-/// Diagnostic information for a command/event
-#[derive(Clone, Debug)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct DiagnosticInfo {
+/// Status of a command
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandStatus {
     pub has_definition: bool,
     pub has_calls: bool,
+}
+
+/// Status of an event
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventStatus {
     pub has_emitters: bool,
     pub has_listeners: bool,
+}
+
+/// Diagnostic information for a command/event
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiagnosticInfo {
+    pub command: CommandStatus,
+    pub event: EventStatus,
+}
+
+impl DiagnosticInfo {
+    #[must_use]
+    pub fn has_definition(&self) -> bool {
+        self.command.has_definition
+    }
+
+    #[must_use]
+    pub fn has_calls(&self) -> bool {
+        self.command.has_calls
+    }
+
+    #[must_use]
+    pub fn has_emitters(&self) -> bool {
+        self.event.has_emitters
+    }
+
+    #[must_use]
+    pub fn has_listeners(&self) -> bool {
+        self.event.has_listeners
+    }
 }

@@ -17,6 +17,7 @@ use super::utils::{get_query_source, point_to_position, LangType, NodeTextExt};
 // Local pattern definition removed - using patterns::get_rust_event_patterns
 
 /// Process struct definition match
+#[must_use]
 pub fn process_struct_match(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
@@ -51,6 +52,7 @@ pub fn process_struct_match(
 }
 
 /// Process enum definition match
+#[must_use]
 pub fn process_enum_match(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
@@ -85,6 +87,7 @@ pub fn process_enum_match(
 }
 
 /// Process command definition matches
+#[must_use]
 pub fn process_command_matches(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
@@ -124,11 +127,12 @@ pub fn process_command_matches(
 }
 
 /// Process event method call match
-pub fn process_event_match(
+#[must_use]
+pub fn process_event_match<S: std::hash::BuildHasher>(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
     content: &str,
-    patterns: &HashMap<&str, (EntityType, Behavior)>,
+    patterns: &HashMap<&str, (EntityType, Behavior), S>,
 ) -> Option<Finding> {
     let method_cap = indices.find_capture(m.captures, "method_name")?;
     let event_cap = indices.find_capture(m.captures, "event_name")?;
@@ -154,6 +158,13 @@ pub fn process_event_match(
 
 #[allow(clippy::too_many_lines)]
 /// Parse Rust source code
+///
+/// # Errors
+///
+/// Returns `ParseError` if:
+/// *   The Rust language could not be set for the parser.
+/// *   The content could not be parsed.
+/// *   The tree-sitter query could not be created.
 pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Finding>> {
     let mut findings = Vec::new();
 
@@ -161,14 +172,14 @@ pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Find
     let mut parser = Parser::new();
 
     parser.set_language(&ts_lang).map_err(|e| {
-        ParseError::LanguageError(
+        ParseError::Language(
             format!("Failed to set Rust language: {e}"),
             Some(path.to_string_lossy().to_string()),
         )
     })?;
 
     let tree = parser.parse(content, None).ok_or_else(|| {
-        ParseError::SyntaxError(
+        ParseError::Syntax(
             "Failed to parse Rust file".to_string(),
             Some(path.to_string_lossy().to_string()),
         )
@@ -176,7 +187,7 @@ pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Find
 
     let query_src = get_query_source(LangType::Rust);
     let query = Query::new(&ts_lang, query_src).map_err(|e| {
-        ParseError::QueryError(
+        ParseError::Query(
             format!("Failed to create Rust query: {e}"),
             Some(path.to_string_lossy().to_string()),
         )
@@ -208,17 +219,17 @@ pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Find
     let mut matches = cursor.matches(&query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
-        if let Some(finding) = process_struct_match(&m, &indices, content) {
+        if let Some(finding) = process_struct_match(m, &indices, content) {
             findings.push(finding);
         }
 
-        if let Some(finding) = process_enum_match(&m, &indices, content) {
+        if let Some(finding) = process_enum_match(m, &indices, content) {
             findings.push(finding);
         }
 
-        findings.extend(process_command_matches(&m, &indices, content));
+        findings.extend(process_command_matches(m, &indices, content));
 
-        if let Some(finding) = process_event_match(&m, &indices, content, &rust_event_patterns) {
+        if let Some(finding) = process_event_match(m, &indices, content, &rust_event_patterns) {
             findings.push(finding);
         }
     }

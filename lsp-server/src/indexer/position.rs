@@ -55,8 +55,9 @@ pub fn binary_search_position(
 
     // Check candidates around the found position
     // We need to check a few entries because ranges can overlap
-    for i in idx.saturating_sub(2)..std::cmp::min(idx + 2, index.len()) {
-        let (range, key) = &index[i];
+    let start = idx.saturating_sub(2);
+    let end = std::cmp::min(idx + 2, index.len());
+    for (range, key) in &index[start..end] {
         if is_position_in_range(position, *range) {
             // Found the range, now get the full location info
             if let Some(locations) = map.get(key) {

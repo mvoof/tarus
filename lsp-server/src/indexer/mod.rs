@@ -4,7 +4,7 @@ mod cache;
 mod position;
 mod symbols;
 
-pub use cache::DiagnosticInfo;
+pub use cache::{CommandStatus, DiagnosticInfo, EventStatus};
 
 use crate::syntax::{Behavior, EntityType};
 use cache::CacheManager;
@@ -101,7 +101,7 @@ impl ProjectIndex {
         pos: Position,
     ) -> Option<(IndexKey, LocationInfo)> {
         // Check if we have a cached position index for this file
-        if let Some(index) = self.cache.position_index_cache.get(path) {
+        if let Some(index) = self.cache.position_index.get(path) {
             // Use binary search on cached sorted index
             return position::binary_search_position(&index, pos, &self.map, path);
         }
@@ -112,7 +112,7 @@ impl ProjectIndex {
         // Cache the index for future lookups
         let result = position::binary_search_position(&position_index, pos, &self.map, path);
         self.cache
-            .position_index_cache
+            .position_index
             .insert(path.clone(), position_index);
         result
     }
@@ -249,7 +249,7 @@ impl ProjectIndex {
     /// Preparing data for `CodeLens`
     pub fn get_lens_data(&self, path: &PathBuf) -> Vec<(Range, String, Vec<LocationInfo>)> {
         // Check cache first
-        if let Some(cached) = self.cache.lens_data_cache.get(path) {
+        if let Some(cached) = self.cache.lens_data.get(path) {
             return cached.clone();
         }
 
@@ -339,9 +339,7 @@ impl ProjectIndex {
         }
 
         // Store in cache before returning
-        self.cache
-            .lens_data_cache
-            .insert(path.clone(), result.clone());
+        self.cache.lens_data.insert(path.clone(), result.clone());
 
         result
     }
@@ -374,8 +372,8 @@ impl ProjectIndex {
     pub fn get_all_names(&self, entity: EntityType) -> Vec<(String, Option<LocationInfo>)> {
         // Select appropriate cache
         let cache = match entity {
-            EntityType::Command => &self.cache.command_names_cache,
-            EntityType::Event => &self.cache.event_names_cache,
+            EntityType::Command => &self.cache.command_names,
+            EntityType::Event => &self.cache.event_names,
             _ => return Vec::new(),
         };
 
@@ -411,23 +409,25 @@ impl ProjectIndex {
     /// Get diagnostic information for a key (for diagnostics)
     pub fn get_diagnostic_info(&self, key: &IndexKey) -> DiagnosticInfo {
         // Check cache first
-        if let Some(cached) = self.cache.diagnostic_info_cache.get(key) {
+        if let Some(cached) = self.cache.diagnostic_info.get(key) {
             return cached.clone();
         }
 
         // Cache miss - compute
         let locations = self.map.get(key).map(|v| v.clone()).unwrap_or_default();
         let info = DiagnosticInfo {
-            has_definition: locations.iter().any(|l| l.behavior == Behavior::Definition),
-            has_calls: locations.iter().any(|l| l.behavior == Behavior::Call),
-            has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit),
-            has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen),
+            command: CommandStatus {
+                has_definition: locations.iter().any(|l| l.behavior == Behavior::Definition),
+                has_calls: locations.iter().any(|l| l.behavior == Behavior::Call),
+            },
+            event: EventStatus {
+                has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit),
+                has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen),
+            },
         };
 
         // Store in cache
-        self.cache
-            .diagnostic_info_cache
-            .insert(key.clone(), info.clone());
+        self.cache.diagnostic_info.insert(key.clone(), info.clone());
 
         info
     }

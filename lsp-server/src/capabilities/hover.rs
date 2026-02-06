@@ -153,13 +153,13 @@ pub fn handle_hover(params: HoverParams, project_index: &ProjectIndex) -> Option
         }
 
         // Add warnings/tips based on diagnostic info
-        if key.entity == EntityType::Command && !info.has_definition {
+        if key.entity == EntityType::Command && !info.has_definition() {
             md_text.push_str("⚠️ *No backend implementation found*\n");
-        } else if key.entity == EntityType::Command && !info.has_calls {
+        } else if key.entity == EntityType::Command && !info.has_calls() {
             md_text.push_str("💡 *Defined but never called in frontend*\n");
-        } else if key.entity == EntityType::Event && !info.has_emitters {
+        } else if key.entity == EntityType::Event && !info.has_emitters() {
             md_text.push_str("💡 *Event listened for but never emitted*\n");
-        } else if key.entity == EntityType::Event && !info.has_listeners {
+        } else if key.entity == EntityType::Event && !info.has_listeners() {
             md_text.push_str("💡 *Event emitted but no listeners found*\n");
         }
 

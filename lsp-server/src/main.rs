@@ -1,15 +1,4 @@
 #![warn(clippy::all, clippy::pedantic)]
-#![allow(clippy::missing_panics_doc)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::mutable_key_type)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::manual_let_else)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::struct_excessive_bools)]
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::enum_variant_names)]
-#![allow(clippy::question_mark)]
 
 use dashmap::DashMap;
 use std::collections::HashSet;
@@ -91,9 +80,8 @@ impl Backend {
     }
 
     async fn publish_diagnostics_for_file(&self, path: &PathBuf) {
-        let uri = match Uri::from_file_path(path) {
-            Some(u) => u,
-            None => return,
+        let Some(uri) = Uri::from_file_path(path) else {
+            return;
         };
 
         let diagnostics = diagnostics::compute_file_diagnostics(path, &self.project_index);
@@ -362,11 +350,10 @@ impl LanguageServer for Backend {
         ))
         .await;
 
-        let workspace_root = self.workspace_root.get().cloned();
         let result = capabilities::code_actions::handle_code_action(
             &params,
             &self.project_index,
-            workspace_root.as_ref(),
+            self.workspace_root.get().map(PathBuf::as_path),
         );
 
         if let Some(ref actions) = result {

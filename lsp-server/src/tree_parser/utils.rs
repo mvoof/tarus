@@ -59,19 +59,17 @@ pub fn get_query_source(lang: LangType) -> &'static str {
 }
 
 /// Convert tree-sitter Point to LSP Position
-#[allow(clippy::cast_possible_truncation)]
 pub fn point_to_position(point: tree_sitter::Point) -> Position {
     Position {
-        line: point.row as u32,
-        character: point.column as u32,
+        line: u32::try_from(point.row).unwrap_or(u32::MAX),
+        character: u32::try_from(point.column).unwrap_or(u32::MAX),
     }
 }
 
 /// Adjust position by line offset (for Vue/Svelte script extraction)
-#[allow(clippy::cast_possible_truncation)]
 pub fn adjust_position(pos: Position, line_offset: usize) -> Position {
     Position {
-        line: pos.line + line_offset as u32,
+        line: pos.line + u32::try_from(line_offset).unwrap_or(u32::MAX),
         character: pos.character,
     }
 }

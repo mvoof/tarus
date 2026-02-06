@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 pub const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
 
 /// Check if file extension is supported
-#[must_use] pub fn is_supported_file(path: &Path) -> bool {
+#[must_use]
+pub fn is_supported_file(path: &Path) -> bool {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         SUPPORTED_EXTENSIONS.contains(&ext)
     } else {
@@ -17,11 +18,7 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue
 }
 
 /// Process file content from editor buffer
-pub fn process_file_content(
-    path: &Path,
-    content: &str,
-    project_index: &ProjectIndex,
-) -> bool {
+pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectIndex) -> bool {
     if !is_supported_file(path) {
         return false;
     }

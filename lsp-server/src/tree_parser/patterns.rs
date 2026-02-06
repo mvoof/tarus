@@ -22,7 +22,8 @@ pub struct FunctionPatternWithPos {
     pub arg_position: ArgPosition,
 }
 
-/// Get method patterns for Rust backend (method_name -> (entity, behavior))
+/// Get method patterns for Rust backend (`method_name` -> (entity, behavior))
+#[must_use]
 pub fn get_rust_event_patterns() -> HashMap<&'static str, (EntityType, Behavior)> {
     let mut patterns = HashMap::new();
     // Emit methods
@@ -41,6 +42,7 @@ pub fn get_rust_event_patterns() -> HashMap<&'static str, (EntityType, Behavior)
 }
 
 /// Get all frontend patterns including those with second argument
+#[must_use]
 pub fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
     vec![
         // First argument patterns - Commands

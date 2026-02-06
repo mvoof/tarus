@@ -197,8 +197,8 @@ fn test_get_diagnostic_info() {
     };
 
     let info = index.get_diagnostic_info(&key);
-    assert!(info.has_definition, "Should have definition");
-    assert!(info.has_calls, "Should have calls");
+    assert!(info.has_definition(), "Should have definition");
+    assert!(info.has_calls(), "Should have calls");
 }
 
 #[test]

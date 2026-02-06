@@ -15,6 +15,7 @@ use super::utils::{adjust_range, get_query_source, point_to_position, LangType, 
 // Local pattern definitions removed - using patterns::{ArgPosition, FunctionPatternWithPos, get_all_frontend_patterns}
 
 /// Process interface definition match
+#[must_use]
 pub fn process_interface_match(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
@@ -46,12 +47,13 @@ pub fn process_interface_match(
 }
 
 /// Process function call match (handles both first and second argument patterns)
-pub fn process_function_call_match(
+#[must_use]
+pub fn process_function_call_match<S: std::hash::BuildHasher>(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
     content: &str,
     line_offset: usize,
-    aliases: &HashMap<String, String>,
+    aliases: &HashMap<String, String, S>,
     patterns: &[FunctionPatternWithPos],
 ) -> Option<Finding> {
     // Try first argument pattern
@@ -143,6 +145,13 @@ pub fn process_function_call_match(
 }
 
 /// Parse TypeScript/JavaScript source code
+///
+/// # Errors
+///
+/// Returns `ParseError` if:
+/// *   The language could not be set for the parser.
+/// *   The content could not be parsed.
+/// *   The tree-sitter query could not be created.
 #[allow(clippy::too_many_lines)]
 pub fn parse_frontend(
     path: &std::path::Path,
@@ -159,14 +168,14 @@ pub fn parse_frontend(
 
     let mut parser = Parser::new();
     parser.set_language(&ts_lang).map_err(|e| {
-        ParseError::LanguageError(
+        ParseError::Language(
             format!("Failed to set {lang:?} language: {e}"),
             Some(path.to_string_lossy().to_string()),
         )
     })?;
 
     let tree = parser.parse(content, None).ok_or_else(|| {
-        ParseError::SyntaxError(
+        ParseError::Syntax(
             format!("Failed to parse {lang:?} file"),
             Some(path.to_string_lossy().to_string()),
         )
@@ -174,7 +183,7 @@ pub fn parse_frontend(
 
     let query_src = get_query_source(lang);
     let query = Query::new(&ts_lang, query_src).map_err(|e| {
-        ParseError::QueryError(
+        ParseError::Query(
             format!("Failed to create {lang:?} query: {e}"),
             Some(path.to_string_lossy().to_string()),
         )
@@ -219,7 +228,7 @@ pub fn parse_frontend(
         }
 
         // Collect interfaces
-        if let Some(finding) = process_interface_match(&m, &indices, content, line_offset) {
+        if let Some(finding) = process_interface_match(m, &indices, content, line_offset) {
             findings.push(finding);
         }
     }
@@ -230,7 +239,7 @@ pub fn parse_frontend(
 
     while let Some(m) = matches.next() {
         if let Some(finding) =
-            process_function_call_match(&m, &indices, content, line_offset, &aliases, &all_patterns)
+            process_function_call_match(m, &indices, content, line_offset, &aliases, &all_patterns)
         {
             findings.push(finding);
         }
@@ -240,6 +249,7 @@ pub fn parse_frontend(
 }
 
 /// Check if TypeScript file contains Angular decorators
+#[must_use]
 pub fn is_angular_file(content: &str) -> bool {
     // Angular decorators that indicate this is an Angular file
     const ANGULAR_DECORATORS: &[&str] = &[

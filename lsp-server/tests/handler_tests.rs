@@ -32,7 +32,7 @@ fn test_process_struct_match() {
     let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
 
     let m = matches.next().expect("No match found");
-    let finding = process_struct_match(&m, &indices, content).expect("Handler returned None");
+    let finding = process_struct_match(m, &indices, content).expect("Handler returned None");
 
     assert_eq!(finding.key, "MyStruct");
     assert_eq!(finding.entity, EntityType::Struct);
@@ -51,7 +51,7 @@ fn test_process_enum_match() {
     let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
 
     let m = matches.next().expect("No match found");
-    let finding = process_enum_match(&m, &indices, content).expect("Handler returned None");
+    let finding = process_enum_match(m, &indices, content).expect("Handler returned None");
 
     assert_eq!(finding.key, "MyEnum");
     assert_eq!(finding.entity, EntityType::Enum);
@@ -90,7 +90,7 @@ fn test_process_command_match() {
     let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
 
     let m = matches.next().expect("No match found");
-    let findings = process_command_matches(&m, &indices, content);
+    let findings = process_command_matches(m, &indices, content);
 
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].key, "my_command");
@@ -110,7 +110,7 @@ fn test_process_interface_match() {
     let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
 
     let m = matches.next().expect("No match found");
-    let finding = process_interface_match(&m, &indices, content, 0).expect("Handler returned None");
+    let finding = process_interface_match(m, &indices, content, 0).expect("Handler returned None");
 
     assert_eq!(finding.key, "User");
     assert_eq!(finding.entity, EntityType::Interface);

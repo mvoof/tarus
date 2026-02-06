@@ -47,7 +47,7 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
             // Determine if we should show diagnostic for this location
             let msg = match loc.behavior {
                 // Show on Definition if command never called
-                Behavior::Definition if key.entity == EntityType::Command && !info.has_calls => {
+                Behavior::Definition if key.entity == EntityType::Command && !info.has_calls() => {
                     Some((
                         DiagnosticSeverity::WARNING,
                         format!(
@@ -57,7 +57,7 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                     ))
                 }
                 // Show on FIRST Call only if command not defined
-                Behavior::Call if !info.has_definition => {
+                Behavior::Call if !info.has_definition() => {
                     if first_call == Some(loc.range) {
                         Some((
                             DiagnosticSeverity::WARNING,
@@ -68,12 +68,12 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                     }
                 }
                 // Show on Listen if event never emitted
-                Behavior::Listen if !info.has_emitters => Some((
+                Behavior::Listen if !info.has_emitters() => Some((
                     DiagnosticSeverity::WARNING,
                     format!("Event '{}' is listened for but never emitted", key.name),
                 )),
                 // Show on FIRST Emit only if event never listened
-                Behavior::Emit if !info.has_listeners => {
+                Behavior::Emit if !info.has_listeners() => {
                     if first_emit == Some(loc.range) {
                         Some((
                             DiagnosticSeverity::WARNING,
@@ -97,7 +97,7 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
             }
 
             // Additional type checking for Call (frontend invoke)
-            if loc.behavior == Behavior::Call && info.has_definition {
+            if loc.behavior == Behavior::Call && info.has_definition() {
                 let definition = locations
                     .iter()
                     .find(|l| l.behavior == Behavior::Definition);

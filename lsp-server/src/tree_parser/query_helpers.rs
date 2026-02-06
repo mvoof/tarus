@@ -36,7 +36,7 @@ impl CaptureIndices {
     pub fn from_query(query: &Query, names: &[&str]) -> Self {
         let mut indices = HashMap::new();
         for name in names {
-            indices.insert(name.to_string(), query.capture_index_for_name(name));
+            indices.insert((*name).to_string(), query.capture_index_for_name(name));
         }
         Self { indices }
     }
@@ -83,11 +83,11 @@ mod tests {
     #[test]
     fn test_capture_indices_creation() {
         // Create a simple test query
-        let query_str = r#"
+        let query_str = r"
             (function_item
                 name: (identifier) @func_name
                 parameters: (parameters) @func_params)
-        "#;
+        ";
 
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         let query = Query::new(&language, query_str).unwrap();

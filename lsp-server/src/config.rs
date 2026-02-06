@@ -49,9 +49,10 @@ pub async fn load_configuration(
     // Handle referenceLimit
     if let Some(settings) = iter.next() {
         if let Some(limit) = settings.as_u64() {
-            project_index
-                .reference_limit
-                .store(limit as usize, Ordering::Relaxed);
+            project_index.reference_limit.store(
+                usize::try_from(limit).unwrap_or(usize::MAX),
+                Ordering::Relaxed,
+            );
 
             client
                 .log_message(

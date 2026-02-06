@@ -137,7 +137,7 @@ mod typescript_parser_tests {
         ";
         let path = test_path("interface.ts");
 
-        let result = tree_parser::parse(&path, &content);
+        let result = tree_parser::parse(&path, content);
         if let Err(e) = &result {
             panic!("Failed to parse TS interface: {:?}", e);
         }

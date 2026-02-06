@@ -39,25 +39,25 @@ pub enum Behavior {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// File contains syntax errors
-    SyntaxError(String, Option<String>),
+    Syntax(String, Option<String>),
     /// Query execution failed
-    QueryError(String, Option<String>),
+    Query(String, Option<String>),
     /// Language configuration error
-    LanguageError(String, Option<String>),
+    Language(String, Option<String>),
 }
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::SyntaxError(msg, path) => {
+            ParseError::Syntax(msg, path) => {
                 let location = path.as_deref().unwrap_or("unknown file");
                 write!(f, "Syntax error in {location}: {msg}")
             }
-            ParseError::QueryError(msg, path) => {
+            ParseError::Query(msg, path) => {
                 let location = path.as_deref().unwrap_or("unknown file");
                 write!(f, "Query error in {location}: {msg}")
             }
-            ParseError::LanguageError(msg, path) => {
+            ParseError::Language(msg, path) => {
                 let location = path.as_deref().unwrap_or("unknown file");
                 write!(f, "Language error in {location}: {msg}")
             }
@@ -70,7 +70,7 @@ impl std::error::Error for ParseError {}
 /// Result type for parsing operations
 pub type ParseResult<T> = Result<T, ParseError>;
 
-/// Check if attributes contain serde(rename_all = "camelCase")
+/// Check if attributes contain `serde(rename_all` = "camelCase")
 #[must_use]
 pub fn should_rename_to_camel(attributes: Option<&Vec<String>>) -> bool {
     if let Some(attrs) = attributes {
@@ -103,7 +103,7 @@ pub fn snake_to_camel(s: &str) -> String {
     result
 }
 
-/// Convert camelCase to snake_case
+/// Convert camelCase to `snake_case`
 #[must_use]
 pub fn camel_to_snake(s: &str) -> String {
     let mut result = String::new();
@@ -269,17 +269,17 @@ pub fn get_base_rust_type(rust_type: &str) -> String {
 
     loop {
         if rt.starts_with("Vec<") {
-            rt = &rt[4..rt.len() - 1].trim();
+            rt = rt[4..rt.len() - 1].trim();
         } else if rt.starts_with("Option<") {
-            rt = &rt[7..rt.len() - 1].trim();
+            rt = rt[7..rt.len() - 1].trim();
         } else if rt.starts_with("Result<") {
             // Result is a bit more complex, handle the first part
             rt = &rt[7..];
 
             if let Some(comma_pos) = rt.find(',') {
-                rt = &rt[..comma_pos].trim();
+                rt = rt[..comma_pos].trim();
             } else if let Some(end_pos) = rt.rfind('>') {
-                rt = &rt[..end_pos].trim();
+                rt = rt[..end_pos].trim();
             }
         } else {
             break;

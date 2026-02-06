@@ -4,12 +4,12 @@ use crate::scanner::find_src_tauri_dir;
 use crate::syntax::{
     camel_to_snake, map_rust_type_to_ts, map_ts_type_to_rust, snake_to_camel, Behavior, EntityType,
 };
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    Position, Range, TextEdit, Uri, WorkspaceEdit,
+    DocumentChanges, OneOf, OptionalVersionedTextDocumentIdentifier, Position, Range,
+    TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
 };
 use tower_lsp_server::UriExt;
 
@@ -25,7 +25,7 @@ pub struct RustFileCandidate {
 pub fn handle_code_action(
     params: &CodeActionParams,
     project_index: &ProjectIndex,
-    workspace_root: Option<&PathBuf>,
+    workspace_root: Option<&Path>,
 ) -> Option<CodeActionResponse> {
     let path = params.text_document.uri.to_file_path()?.to_path_buf();
     let root = workspace_root?;
@@ -64,14 +64,14 @@ pub fn handle_code_action(
 /// Handle undefined command call - offer to create Rust command
 fn handle_undefined_command(
     key: &IndexKey,
-    root: &PathBuf,
+    root: &Path,
     params: &CodeActionParams,
     project_index: &ProjectIndex,
     actions: &mut Vec<CodeActionOrCommand>,
 ) {
     let info = project_index.get_diagnostic_info(key);
 
-    if info.has_definition {
+    if info.has_definition() {
         return;
     }
 
@@ -90,7 +90,7 @@ fn handle_undefined_command(
 fn handle_struct_definition(
     key: &IndexKey,
     loc: &crate::indexer::LocationInfo,
-    root: &PathBuf,
+    root: &Path,
     params: &CodeActionParams,
     actions: &mut Vec<CodeActionOrCommand>,
 ) {
@@ -109,7 +109,7 @@ fn handle_struct_definition(
 fn handle_enum_definition(
     key: &IndexKey,
     loc: &crate::indexer::LocationInfo,
-    root: &PathBuf,
+    root: &Path,
     params: &CodeActionParams,
     actions: &mut Vec<CodeActionOrCommand>,
 ) {
@@ -128,8 +128,8 @@ fn handle_enum_definition(
 fn handle_interface_definition(
     key: &IndexKey,
     loc: &crate::indexer::LocationInfo,
-    path: &PathBuf,
-    root: &PathBuf,
+    path: &Path,
+    root: &Path,
     params: &CodeActionParams,
     project_index: &ProjectIndex,
     actions: &mut Vec<CodeActionOrCommand>,
@@ -174,21 +174,19 @@ fn handle_interface_definition(
 
 /// Helper to create a workspace edit with a single text insertion
 fn create_workspace_edit(uri: Uri, line: u32, text: String) -> WorkspaceEdit {
-    let mut changes = HashMap::new();
-
-    changes.insert(
-        uri,
-        vec![TextEdit {
+    let text_document_edit = TextDocumentEdit {
+        text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+        edits: vec![OneOf::Left(TextEdit {
             range: Range {
                 start: Position { line, character: 0 },
                 end: Position { line, character: 0 },
             },
             new_text: text,
-        }],
-    );
+        })],
+    };
 
     WorkspaceEdit {
-        changes: Some(changes),
+        document_changes: Some(DocumentChanges::Edits(vec![text_document_edit])),
         ..Default::default()
     }
 }
@@ -200,7 +198,7 @@ fn create_sync_to_dts_action(
     workspace_root: &Path,
     diagnostics: &[tower_lsp_server::lsp_types::Diagnostic],
 ) -> Option<CodeActionOrCommand> {
-    let dts_path = find_or_create_dts_path(workspace_root)?;
+    let dts_path = find_or_create_dts_path(workspace_root);
 
     // Generate TypeScript interface from Rust struct
     let mut ts_interface = format!("\nexport interface {name} {{\n");
@@ -221,7 +219,7 @@ fn create_sync_to_dts_action(
         diagnostics: Some(diagnostics.to_vec()),
         edit: Some(create_workspace_edit(
             target_uri,
-            insertion_line as u32,
+            u32::try_from(insertion_line).unwrap_or(u32::MAX),
             ts_interface,
         )),
         ..Default::default()
@@ -235,7 +233,7 @@ fn create_sync_enum_to_dts_action(
     workspace_root: &Path,
     diagnostics: &[tower_lsp_server::lsp_types::Diagnostic],
 ) -> Option<CodeActionOrCommand> {
-    let dts_path = find_or_create_dts_path(workspace_root)?;
+    let dts_path = find_or_create_dts_path(workspace_root);
 
     // Generate TypeScript type from Rust enum
     let mut ts_type = format!("\nexport type {name} = ");
@@ -258,7 +256,7 @@ fn create_sync_enum_to_dts_action(
         diagnostics: Some(diagnostics.to_vec()),
         edit: Some(create_workspace_edit(
             target_uri,
-            insertion_line as u32,
+            u32::try_from(insertion_line).unwrap_or(u32::MAX),
             ts_type,
         )),
         ..Default::default()
@@ -272,7 +270,7 @@ fn create_copy_interface_to_dts_action(
     workspace_root: &Path,
     diagnostics: &[tower_lsp_server::lsp_types::Diagnostic],
 ) -> Option<CodeActionOrCommand> {
-    let dts_path = find_or_create_dts_path(workspace_root)?;
+    let dts_path = find_or_create_dts_path(workspace_root);
 
     // Generate interface (keep TS types as-is)
     let mut ts_interface = format!("\nexport interface {name} {{\n");
@@ -291,7 +289,7 @@ fn create_copy_interface_to_dts_action(
         diagnostics: Some(diagnostics.to_vec()),
         edit: Some(create_workspace_edit(
             target_uri,
-            insertion_line as u32,
+            u32::try_from(insertion_line).unwrap_or(u32::MAX),
             ts_interface,
         )),
         ..Default::default()
@@ -299,7 +297,7 @@ fn create_copy_interface_to_dts_action(
 }
 
 /// Find existing tauri-commands.d.ts or return default path
-fn find_or_create_dts_path(workspace_root: &Path) -> Option<PathBuf> {
+fn find_or_create_dts_path(workspace_root: &Path) -> PathBuf {
     let possible_locations = [
         workspace_root.join("src/tauri-commands.d.ts"),
         workspace_root.join("src/types/tauri-commands.d.ts"),
@@ -308,7 +306,7 @@ fn find_or_create_dts_path(workspace_root: &Path) -> Option<PathBuf> {
 
     for path in &possible_locations {
         if path.exists() {
-            return Some(path.clone());
+            return path.clone();
         }
     }
 
@@ -316,9 +314,9 @@ fn find_or_create_dts_path(workspace_root: &Path) -> Option<PathBuf> {
     let src_dir = workspace_root.join("src");
 
     if src_dir.exists() {
-        Some(src_dir.join("tauri-commands.d.ts"))
+        src_dir.join("tauri-commands.d.ts")
     } else {
-        Some(workspace_root.join("tauri-commands.d.ts"))
+        workspace_root.join("tauri-commands.d.ts")
     }
 }
 
@@ -376,7 +374,7 @@ fn create_rust_struct_action(
         diagnostics: Some(diagnostics.to_vec()),
         edit: Some(create_workspace_edit(
             target_uri,
-            candidate.insertion_line as u32,
+            u32::try_from(candidate.insertion_line).unwrap_or(u32::MAX),
             rust_struct,
         )),
         ..Default::default()
@@ -402,7 +400,7 @@ fn create_rust_command_action(
         diagnostics: Some(diagnostics.to_vec()),
         edit: Some(create_workspace_edit(
             target_uri,
-            candidate.insertion_line as u32,
+            u32::try_from(candidate.insertion_line).unwrap_or(u32::MAX),
             command_template,
         )),
         ..Default::default()
