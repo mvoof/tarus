@@ -5,6 +5,7 @@
 
 mod extractors;
 mod frontend_parser;
+mod query_helpers;
 mod rust_parser;
 mod sfc;
 mod utils;

@@ -1,5 +1,6 @@
 //! Parameter and field extraction utilities for various node types
 
+use super::utils::NodeTextExt;
 use crate::indexer::Parameter;
 use tree_sitter::Node;
 
@@ -15,14 +16,8 @@ pub fn extract_rust_params(node: Node, content: &str) -> Vec<Parameter> {
 
             if let (Some(n), Some(t)) = (name_node, type_node) {
                 params.push(Parameter {
-                    name: n
-                        .utf8_text(content.as_bytes())
-                        .unwrap_or_default()
-                        .to_string(),
-                    type_name: t
-                        .utf8_text(content.as_bytes())
-                        .unwrap_or_default()
-                        .to_string(),
+                    name: n.text_or_default(content),
+                    type_name: t.text_or_default(content),
                 });
             }
         }
@@ -47,14 +42,8 @@ pub fn extract_rust_struct_fields(node: Node, content: &str) -> Vec<Parameter> {
 
                     if let (Some(n), Some(t)) = (name_node, type_node) {
                         fields.push(Parameter {
-                            name: n
-                                .utf8_text(content.as_bytes())
-                                .unwrap_or_default()
-                                .to_string(),
-                            type_name: t
-                                .utf8_text(content.as_bytes())
-                                .unwrap_or_default()
-                                .to_string(),
+                            name: n.text_or_default(content),
+                            type_name: t.text_or_default(content),
                         });
                     }
                 }
@@ -80,10 +69,7 @@ pub fn extract_rust_enum_variants(node: Node, content: &str) -> Vec<Parameter> {
 
                     if let Some(n) = name_node {
                         variants.push(Parameter {
-                            name: n
-                                .utf8_text(content.as_bytes())
-                                .unwrap_or_default()
-                                .to_string(),
+                            name: n.text_or_default(content),
                             type_name: "enum_variant".to_string(),
                         });
                     }
@@ -120,14 +106,8 @@ pub fn extract_ts_interface_fields(node: Node, content: &str) -> Vec<Parameter> 
 
                         if let Some(tn) = type_node {
                             fields.push(Parameter {
-                                name: n
-                                    .utf8_text(content.as_bytes())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                type_name: tn
-                                    .utf8_text(content.as_bytes())
-                                    .unwrap_or_default()
-                                    .to_string(),
+                                name: n.text_or_default(content),
+                                type_name: tn.text_or_default(content),
                             });
                         }
                     }
@@ -152,10 +132,7 @@ pub fn extract_ts_params(node: Node, content: &str) -> Vec<Parameter> {
                 let value_node = child.child_by_field_name("value");
 
                 if let Some(k) = key_node {
-                    let name = k
-                        .utf8_text(content.as_bytes())
-                        .unwrap_or_default()
-                        .to_string();
+                    let name = k.text_or_default(content);
                     let mut type_name = "any".to_string();
 
                     if let Some(v) = value_node {
@@ -178,10 +155,7 @@ pub fn extract_ts_params(node: Node, content: &str) -> Vec<Parameter> {
             else if child.kind() == "shorthand_property_identifier"
                 || child.kind() == "shorthand_property_identifier_pattern"
             {
-                let name = child
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default()
-                    .to_string();
+                let name = child.text_or_default(content);
 
                 // For shorthand, we can't infer type from literal - it's a variable reference
                 params.push(Parameter {

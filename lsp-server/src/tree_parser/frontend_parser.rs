@@ -8,7 +8,8 @@ use tower_lsp_server::lsp_types::Range;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 use super::extractors::{extract_ts_interface_fields, extract_ts_params};
-use super::utils::{adjust_range, get_query_source, point_to_position, LangType};
+use super::query_helpers::CaptureIndices;
+use super::utils::{adjust_range, get_query_source, point_to_position, LangType, NodeTextExt};
 
 /// Function patterns with their argument position
 struct FunctionPatternWithPos {
@@ -97,20 +98,22 @@ pub fn parse_frontend(
     // Build alias map from imports
     let mut aliases: HashMap<String, String> = HashMap::new();
 
-    // Get capture indices for first argument patterns
-    let func_name_idx = query.capture_index_for_name("func_name");
-    let arg_value_idx = query.capture_index_for_name("arg_value");
-    // Get capture indices for second argument patterns
-    let func_name_second_idx = query.capture_index_for_name("func_name_second");
-    let arg_value_second_idx = query.capture_index_for_name("arg_value_second");
-    // Get capture indices for imports
-    let imported_name_idx = query.capture_index_for_name("imported_name");
-    let local_alias_idx = query.capture_index_for_name("local_alias");
-    // New captures
-    let type_args_idx = query.capture_index_for_name("type_args");
-    let invoke_args_idx = query.capture_index_for_name("invoke_args");
-    let interface_def_idx = query.capture_index_for_name("interface_def");
-    let interface_name_idx = query.capture_index_for_name("interface_name");
+    // Get capture indices using helper
+    let indices = CaptureIndices::from_query(
+        &query,
+        &[
+            "func_name",
+            "arg_value",
+            "func_name_second",
+            "arg_value_second",
+            "imported_name",
+            "local_alias",
+            "type_args",
+            "invoke_args",
+            "interface_def",
+            "interface_name",
+        ],
+    );
 
     let all_patterns = get_all_frontend_patterns();
 
@@ -119,55 +122,36 @@ pub fn parse_frontend(
 
     while let Some(m) = matches.next() {
         // Collect aliases
-        if let (Some(imp_idx), Some(alias_idx)) = (imported_name_idx, local_alias_idx) {
-            let imported = m.captures.iter().find(|c| c.index == imp_idx);
-            let local = m.captures.iter().find(|c| c.index == alias_idx);
-
-            if let (Some(imp_cap), Some(local_cap)) = (imported, local) {
-                let imported_name = imp_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-
-                let local_name = local_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-
-                aliases.insert(local_name.to_string(), imported_name.to_string());
+        if let Some(imp_cap) = indices.find_capture(m.captures, "imported_name") {
+            if let Some(local_cap) = indices.find_capture(m.captures, "local_alias") {
+                let imported_name = imp_cap.node.text_or_default(content);
+                let local_name = local_cap.node.text_or_default(content);
+                aliases.insert(local_name, imported_name);
             }
         }
 
         // Collect interfaces
-        if let Some(iface_idx) = interface_def_idx {
-            if let Some(iface_cap) = m.captures.iter().find(|c| c.index == iface_idx) {
-                if let Some(name_idx) = interface_name_idx {
-                    if let Some(name_cap) = m.captures.iter().find(|c| c.index == name_idx) {
-                        let name = name_cap
-                            .node
-                            .utf8_text(content.as_bytes())
-                            .unwrap_or_default();
+        if let Some(iface_cap) = indices.find_capture(m.captures, "interface_def") {
+            if let Some(name_cap) = indices.find_capture(m.captures, "interface_name") {
+                let name = name_cap.node.text_or_default(content);
+                let fields = extract_ts_interface_fields(iface_cap.node, content);
 
-                        let fields = extract_ts_interface_fields(iface_cap.node, content);
-
-                        findings.push(Finding {
-                            key: name.to_string(),
-                            entity: EntityType::Interface,
-                            behavior: Behavior::Definition,
-                            range: adjust_range(
-                                Range {
-                                    start: point_to_position(name_cap.node.start_position()),
-                                    end: point_to_position(name_cap.node.end_position()),
-                                },
-                                line_offset,
-                            ),
-                            parameters: None,
-                            return_type: None,
-                            fields: Some(fields),
-                            attributes: None,
-                        });
-                    }
-                }
+                findings.push(Finding {
+                    key: name,
+                    entity: EntityType::Interface,
+                    behavior: Behavior::Definition,
+                    range: adjust_range(
+                        Range {
+                            start: point_to_position(name_cap.node.start_position()),
+                            end: point_to_position(name_cap.node.end_position()),
+                        },
+                        line_offset,
+                    ),
+                    parameters: None,
+                    return_type: None,
+                    fields: Some(fields),
+                    attributes: None,
+                });
             }
         }
     }
@@ -178,25 +162,15 @@ pub fn parse_frontend(
 
     while let Some(m) = matches.next() {
         // Try first argument pattern (func_name + arg_value)
-        if let (Some(func_idx), Some(arg_idx)) = (func_name_idx, arg_value_idx) {
-            let func_capture = m.captures.iter().find(|c| c.index == func_idx);
-            let arg_capture = m.captures.iter().find(|c| c.index == arg_idx);
-
-            if let (Some(func_cap), Some(arg_cap)) = (func_capture, arg_capture) {
-                let func_name = func_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-
-                let arg_value = arg_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
+        if let Some(func_cap) = indices.find_capture(m.captures, "func_name") {
+            if let Some(arg_cap) = indices.find_capture(m.captures, "arg_value") {
+                let func_name = func_cap.node.text_or_default(content);
+                let arg_value = arg_cap.node.text_or_default(content);
 
                 // Resolve alias to original name
                 let original_name = aliases
-                    .get(func_name)
-                    .map_or(func_name, std::string::String::as_str);
+                    .get(&func_name)
+                    .map_or(func_name.as_str(), std::string::String::as_str);
 
                 // Find matching pattern (first argument)
                 if let Some(pattern) = all_patterns
@@ -208,29 +182,16 @@ pub fn parse_frontend(
                         end: point_to_position(arg_cap.node.end_position()),
                     };
 
-                    let mut parameters = None;
-                    let mut return_type = None;
+                    let parameters = indices
+                        .find_capture(m.captures, "invoke_args")
+                        .map(|cap| extract_ts_params(cap.node, content));
 
-                    if let Some(args_idx) = invoke_args_idx {
-                        if let Some(args_cap) = m.captures.iter().find(|c| c.index == args_idx) {
-                            parameters = Some(extract_ts_params(args_cap.node, content));
-                        }
-                    }
-
-                    if let Some(t_idx) = type_args_idx {
-                        if let Some(t_cap) = m.captures.iter().find(|c| c.index == t_idx) {
-                            return_type = Some(
-                                t_cap
-                                    .node
-                                    .utf8_text(content.as_bytes())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                            );
-                        }
-                    }
+                    let return_type = indices
+                        .find_capture(m.captures, "type_args")
+                        .map(|cap| cap.node.text_or_default(content));
 
                     findings.push(Finding {
-                        key: arg_value.to_string(),
+                        key: arg_value,
                         entity: pattern.entity,
                         behavior: pattern.behavior,
                         range: adjust_range(range, line_offset),
@@ -244,24 +205,15 @@ pub fn parse_frontend(
         }
 
         // Try second argument pattern (func_name_second + arg_value_second)
-        if let (Some(func_idx), Some(arg_idx)) = (func_name_second_idx, arg_value_second_idx) {
-            let func_capture = m.captures.iter().find(|c| c.index == func_idx);
-            let arg_capture = m.captures.iter().find(|c| c.index == arg_idx);
-
-            if let (Some(func_cap), Some(arg_cap)) = (func_capture, arg_capture) {
-                let func_name = func_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-                let arg_value = arg_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
+        if let Some(func_cap) = indices.find_capture(m.captures, "func_name_second") {
+            if let Some(arg_cap) = indices.find_capture(m.captures, "arg_value_second") {
+                let func_name = func_cap.node.text_or_default(content);
+                let arg_value = arg_cap.node.text_or_default(content);
 
                 // Resolve alias to original name
                 let original_name = aliases
-                    .get(func_name)
-                    .map_or(func_name, std::string::String::as_str);
+                    .get(&func_name)
+                    .map_or(func_name.as_str(), std::string::String::as_str);
 
                 // Find matching pattern (second argument)
                 if let Some(pattern) = all_patterns
@@ -273,29 +225,16 @@ pub fn parse_frontend(
                         end: point_to_position(arg_cap.node.end_position()),
                     };
 
-                    let mut parameters = None;
-                    let mut return_type = None;
+                    let parameters = indices
+                        .find_capture(m.captures, "invoke_args")
+                        .map(|cap| extract_ts_params(cap.node, content));
 
-                    if let Some(args_idx) = invoke_args_idx {
-                        if let Some(args_cap) = m.captures.iter().find(|c| c.index == args_idx) {
-                            parameters = Some(extract_ts_params(args_cap.node, content));
-                        }
-                    }
-
-                    if let Some(t_idx) = type_args_idx {
-                        if let Some(t_cap) = m.captures.iter().find(|c| c.index == t_idx) {
-                            return_type = Some(
-                                t_cap
-                                    .node
-                                    .utf8_text(content.as_bytes())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                            );
-                        }
-                    }
+                    let return_type = indices
+                        .find_capture(m.captures, "type_args")
+                        .map(|cap| cap.node.text_or_default(content));
 
                     findings.push(Finding {
-                        key: arg_value.to_string(),
+                        key: arg_value,
                         entity: pattern.entity,
                         behavior: pattern.behavior,
                         range: adjust_range(range, line_offset),
