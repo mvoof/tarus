@@ -14,7 +14,7 @@ use super::query_helpers::CaptureIndices;
 use super::utils::{get_query_source, point_to_position, LangType, NodeTextExt};
 
 /// Get method patterns for Rust backend
-fn get_rust_event_patterns() -> HashMap<&'static str, (EntityType, Behavior)> {
+pub fn get_rust_event_patterns() -> HashMap<&'static str, (EntityType, Behavior)> {
     let mut patterns = HashMap::new();
     // Emit methods
     patterns.insert("emit", (EntityType::Event, Behavior::Emit));
@@ -32,7 +32,7 @@ fn get_rust_event_patterns() -> HashMap<&'static str, (EntityType, Behavior)> {
 }
 
 /// Process struct definition match
-fn process_struct_match(
+pub fn process_struct_match(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
     content: &str,
@@ -66,7 +66,7 @@ fn process_struct_match(
 }
 
 /// Process enum definition match
-fn process_enum_match(
+pub fn process_enum_match(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
     content: &str,
@@ -100,7 +100,7 @@ fn process_enum_match(
 }
 
 /// Process command definition matches
-fn process_command_matches(
+pub fn process_command_matches(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
     content: &str,
@@ -139,7 +139,7 @@ fn process_command_matches(
 }
 
 /// Process event method call match
-fn process_event_match(
+pub fn process_event_match(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
     content: &str,

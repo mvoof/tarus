@@ -4,14 +4,15 @@
 //! using Tree-sitter queries defined in external .scm files.
 
 mod extractors;
-mod frontend_parser;
-mod query_helpers;
-mod rust_parser;
+pub mod frontend_parser;
+pub mod query_helpers;
+pub mod rust_parser;
 mod sfc;
 mod utils;
 
 pub use extractors::FindingBuilder;
-pub use utils::LangType;
+pub use query_helpers::CaptureIndices;
+pub use utils::{LangType, NodeTextExt};
 
 use crate::indexer::{FileIndex, Finding};
 use crate::syntax::ParseResult;

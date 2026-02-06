@@ -12,15 +12,15 @@ use super::query_helpers::CaptureIndices;
 use super::utils::{adjust_range, get_query_source, point_to_position, LangType, NodeTextExt};
 
 /// Function patterns with their argument position
-struct FunctionPatternWithPos {
-    name: &'static str,
-    entity: EntityType,
-    behavior: Behavior,
-    arg_position: ArgPosition,
+pub struct FunctionPatternWithPos {
+    pub name: &'static str,
+    pub entity: EntityType,
+    pub behavior: Behavior,
+    pub arg_position: ArgPosition,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum ArgPosition {
+pub enum ArgPosition {
     First,
     Second,
 }
@@ -66,7 +66,7 @@ fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
 }
 
 /// Process interface definition match
-fn process_interface_match(
+pub fn process_interface_match(
     m: &tree_sitter::QueryMatch,
     indices: &CaptureIndices,
     content: &str,
@@ -94,6 +94,103 @@ fn process_interface_match(
         .with_fields(fields)
         .build(),
     )
+}
+
+/// Process function call match (handles both first and second argument patterns)
+pub fn process_function_call_match(
+    m: &tree_sitter::QueryMatch,
+    indices: &CaptureIndices,
+    content: &str,
+    line_offset: usize,
+    aliases: &HashMap<String, String>,
+    patterns: &[FunctionPatternWithPos],
+) -> Option<Finding> {
+    // Try first argument pattern
+    if let (Some(func_cap), Some(arg_cap)) = (
+        indices.find_capture(m.captures, "func_name"),
+        indices.find_capture(m.captures, "arg_value"),
+    ) {
+        let func_name = func_cap.node.text_or_default(content);
+        let arg_value = arg_cap.node.text_or_default(content);
+
+        // Check if this is an aliased import
+        let original_name = aliases.get(&func_name).unwrap_or(&func_name);
+
+        if let Some(pattern) = patterns
+            .iter()
+            .find(|p| p.name == original_name && p.arg_position == ArgPosition::First)
+        {
+            let parameters = indices
+                .find_capture(m.captures, "invoke_args")
+                .map(|cap| extract_ts_params(cap.node, content));
+
+            let return_type = indices
+                .find_capture(m.captures, "type_args")
+                .map(|cap| cap.node.text_or_default(content));
+
+            return Some(
+                FindingBuilder::new(
+                    arg_value,
+                    pattern.entity,
+                    pattern.behavior,
+                    adjust_range(
+                        Range {
+                            start: point_to_position(arg_cap.node.start_position()),
+                            end: point_to_position(arg_cap.node.end_position()),
+                        },
+                        line_offset,
+                    ),
+                )
+                .with_parameters_opt(parameters)
+                .with_return_type_opt(return_type)
+                .build(),
+            );
+        }
+    }
+
+    // Try second argument pattern
+    if let (Some(func_cap), Some(arg_cap)) = (
+        indices.find_capture(m.captures, "func_name_second"),
+        indices.find_capture(m.captures, "arg_value_second"),
+    ) {
+        let func_name = func_cap.node.text_or_default(content);
+        let arg_value = arg_cap.node.text_or_default(content);
+
+        let original_name = aliases.get(&func_name).unwrap_or(&func_name);
+
+        if let Some(pattern) = patterns
+            .iter()
+            .find(|p| p.name == original_name && p.arg_position == ArgPosition::Second)
+        {
+            let parameters = indices
+                .find_capture(m.captures, "invoke_args")
+                .map(|cap| extract_ts_params(cap.node, content));
+
+            let return_type = indices
+                .find_capture(m.captures, "type_args")
+                .map(|cap| cap.node.text_or_default(content));
+
+            return Some(
+                FindingBuilder::new(
+                    arg_value,
+                    pattern.entity,
+                    pattern.behavior,
+                    adjust_range(
+                        Range {
+                            start: point_to_position(arg_cap.node.start_position()),
+                            end: point_to_position(arg_cap.node.end_position()),
+                        },
+                        line_offset,
+                    ),
+                )
+                .with_parameters_opt(parameters)
+                .with_return_type_opt(return_type)
+                .build(),
+            );
+        }
+    }
+
+    None
 }
 
 /// Parse TypeScript/JavaScript source code
@@ -172,94 +269,10 @@ pub fn parse_frontend(
     let mut matches = cursor.matches(&query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
-        // Try first argument pattern (func_name + arg_value)
-        if let Some(func_cap) = indices.find_capture(m.captures, "func_name") {
-            if let Some(arg_cap) = indices.find_capture(m.captures, "arg_value") {
-                let func_name = func_cap.node.text_or_default(content);
-                let arg_value = arg_cap.node.text_or_default(content);
-
-                // Resolve alias to original name
-                let original_name = aliases
-                    .get(&func_name)
-                    .map_or(func_name.as_str(), std::string::String::as_str);
-
-                // Find matching pattern (first argument)
-                if let Some(pattern) = all_patterns
-                    .iter()
-                    .find(|p| p.name == original_name && p.arg_position == ArgPosition::First)
-                {
-                    let parameters = indices
-                        .find_capture(m.captures, "invoke_args")
-                        .map(|cap| extract_ts_params(cap.node, content));
-
-                    let return_type = indices
-                        .find_capture(m.captures, "type_args")
-                        .map(|cap| cap.node.text_or_default(content));
-
-                    findings.push(
-                        FindingBuilder::new(
-                            arg_value,
-                            pattern.entity,
-                            pattern.behavior,
-                            adjust_range(
-                                Range {
-                                    start: point_to_position(arg_cap.node.start_position()),
-                                    end: point_to_position(arg_cap.node.end_position()),
-                                },
-                                line_offset,
-                            ),
-                        )
-                        .with_parameters_opt(parameters)
-                        .with_return_type_opt(return_type)
-                        .build(),
-                    );
-                }
-            }
-        }
-
-        // Try second argument pattern (func_name_second + arg_value_second)
-        if let Some(func_cap) = indices.find_capture(m.captures, "func_name_second") {
-            if let Some(arg_cap) = indices.find_capture(m.captures, "arg_value_second") {
-                let func_name = func_cap.node.text_or_default(content);
-                let arg_value = arg_cap.node.text_or_default(content);
-
-                // Resolve alias to original name
-                let original_name = aliases
-                    .get(&func_name)
-                    .map_or(func_name.as_str(), std::string::String::as_str);
-
-                // Find matching pattern (second argument)
-                if let Some(pattern) = all_patterns
-                    .iter()
-                    .find(|p| p.name == original_name && p.arg_position == ArgPosition::Second)
-                {
-                    let parameters = indices
-                        .find_capture(m.captures, "invoke_args")
-                        .map(|cap| extract_ts_params(cap.node, content));
-
-                    let return_type = indices
-                        .find_capture(m.captures, "type_args")
-                        .map(|cap| cap.node.text_or_default(content));
-
-                    findings.push(
-                        FindingBuilder::new(
-                            arg_value,
-                            pattern.entity,
-                            pattern.behavior,
-                            adjust_range(
-                                Range {
-                                    start: point_to_position(arg_cap.node.start_position()),
-                                    end: point_to_position(arg_cap.node.end_position()),
-                                },
-                                line_offset,
-                            ),
-                        )
-                        .with_parameters_opt(parameters)
-                        .with_return_type_opt(return_type)
-                        .build(),
-                    );
-                }
-            }
+        if let Some(finding) =
+            process_function_call_match(&m, &indices, content, line_offset, &aliases, &all_patterns)
+        {
+            findings.push(finding);
         }
     }
 
