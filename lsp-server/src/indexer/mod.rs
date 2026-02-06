@@ -1,12 +1,18 @@
+//! High-performance project-wide indexer for Tauri commands, events, and types
+
+mod cache;
+mod position;
+mod symbols;
+
+pub use cache::DiagnosticInfo;
+
 use crate::syntax::{Behavior, EntityType};
+use cache::CacheManager;
 use dashmap::DashMap;
-use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::RwLock;
-use tower_lsp_server::lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Uri};
-use tower_lsp_server::UriExt;
+use tower_lsp_server::lsp_types::{Position, Range, SymbolInformation};
 
 /// A single occurrence in a file (parser result)
 #[derive(Debug, Clone)]
@@ -56,19 +62,7 @@ pub struct LocationInfo {
 pub struct ProjectIndex {
     pub map: DashMap<IndexKey, Vec<LocationInfo>>,
     pub file_map: DashMap<PathBuf, Vec<IndexKey>>,
-    // Caches for get_all_names() results
-    #[allow(clippy::type_complexity)]
-    command_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
-    #[allow(clippy::type_complexity)]
-    event_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
-    // Cache for diagnostic info (avoids re-iterating locations)
-    diagnostic_info_cache: DashMap<IndexKey, DiagnosticInfo>,
-    // Cache for CodeLens data by file path
-    #[allow(clippy::type_complexity)]
-    lens_data_cache: DashMap<PathBuf, Vec<(Range, String, Vec<LocationInfo>)>>,
-    // Spatial index for fast position lookups (sorted by start position)
-    #[allow(clippy::type_complexity)]
-    position_index_cache: DashMap<PathBuf, Vec<(Range, IndexKey)>>,
+    cache: CacheManager,
     // Parse errors by file path
     pub parse_errors: DashMap<PathBuf, String>,
     // Configuration: Max number of individual file links to show in CodeLens before summarizing
@@ -80,11 +74,7 @@ impl Default for ProjectIndex {
         Self {
             map: DashMap::new(),
             file_map: DashMap::new(),
-            command_names_cache: RwLock::new(None),
-            event_names_cache: RwLock::new(None),
-            diagnostic_info_cache: DashMap::new(),
-            lens_data_cache: DashMap::new(),
-            position_index_cache: DashMap::new(),
+            cache: CacheManager::new(),
             parse_errors: DashMap::new(),
             reference_limit: AtomicUsize::new(3),
         }
@@ -108,100 +98,23 @@ impl ProjectIndex {
     pub fn get_key_at_position(
         &self,
         path: &PathBuf,
-        position: Position,
+        pos: Position,
     ) -> Option<(IndexKey, LocationInfo)> {
         // Check if we have a cached position index for this file
-        if let Some(index) = self.position_index_cache.get(path) {
+        if let Some(index) = self.cache.position_index_cache.get(path) {
             // Use binary search on cached sorted index
-            return Self::binary_search_position(&index, position, &self.map, path);
+            return position::binary_search_position(&index, pos, &self.map, path);
         }
 
         // Build position index for this file
-        let keys_in_file = self.file_map.get(path)?;
-        let mut position_index: Vec<(Range, IndexKey)> = Vec::new();
-
-        for key in keys_in_file.value() {
-            if let Some(locations) = self.map.get(key) {
-                for loc in locations.value() {
-                    if loc.path == *path {
-                        position_index.push((loc.range, key.clone()));
-                    }
-                }
-            }
-        }
-
-        // Sort by start position (line, then character) for binary search
-        position_index.sort_by(|a, b| {
-            let cmp_line = a.0.start.line.cmp(&b.0.start.line);
-            if cmp_line == std::cmp::Ordering::Equal {
-                a.0.start.character.cmp(&b.0.start.character)
-            } else {
-                cmp_line
-            }
-        });
+        let position_index = position::build_position_index(path, &self.file_map, &self.map);
 
         // Cache the index for future lookups
-        let result = Self::binary_search_position(&position_index, position, &self.map, path);
-        self.position_index_cache
+        let result = position::binary_search_position(&position_index, pos, &self.map, path);
+        self.cache
+            .position_index_cache
             .insert(path.clone(), position_index);
         result
-    }
-
-    /// Binary search for position in sorted position index
-    fn binary_search_position(
-        index: &[(Range, IndexKey)],
-        position: Position,
-        map: &DashMap<IndexKey, Vec<LocationInfo>>,
-        path: &PathBuf,
-    ) -> Option<(IndexKey, LocationInfo)> {
-        // Binary search for the range containing the position
-        let idx = index.partition_point(|(range, _)| {
-            range.start.line < position.line
-                || (range.start.line == position.line
-                    && range.start.character <= position.character)
-        });
-
-        // Check candidates around the found position
-        // We need to check a few entries because ranges can overlap
-        for i in idx.saturating_sub(2)..std::cmp::min(idx + 2, index.len()) {
-            let (range, key) = &index[i];
-            if Self::is_position_in_range(position, *range) {
-                // Found the range, now get the full location info
-                if let Some(locations) = map.get(key) {
-                    for loc in locations.value() {
-                        if loc.path == *path && Self::is_position_in_range(position, loc.range) {
-                            return Some((key.clone(), loc.clone()));
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Helper for checking if the cursor is inside a range
-    fn is_position_in_range(pos: Position, range: Range) -> bool {
-        // LSP Range inclusive start, exclusive end
-        if pos.line < range.start.line || pos.line > range.end.line {
-            return false;
-        }
-
-        // If one line
-        if range.start.line == range.end.line {
-            return pos.character >= range.start.character && pos.character < range.end.character;
-        }
-
-        // If multi-line range
-        if pos.line == range.start.line {
-            return pos.character >= range.start.character;
-        }
-
-        if pos.line == range.end.line {
-            return pos.character < range.end.character;
-        }
-
-        true
     }
 
     /// Appends (or overwrites) the parsing results of a single file
@@ -238,17 +151,7 @@ impl ProjectIndex {
         }
 
         // Invalidate caches (before moving path_ref)
-        *self
-            .command_names_cache
-            .write()
-            .expect("Command names cache lock poisoned") = None;
-        *self
-            .event_names_cache
-            .write()
-            .expect("Event names cache lock poisoned") = None;
-        self.diagnostic_info_cache.clear();
-        self.lens_data_cache.remove(&path_ref);
-        self.position_index_cache.remove(&path_ref);
+        self.cache.invalidate_file(&path_ref);
 
         self.file_map.insert(path_ref, keys_in_this_file);
     }
@@ -274,17 +177,7 @@ impl ProjectIndex {
             }
 
             // Invalidate caches
-            *self
-                .command_names_cache
-                .write()
-                .expect("Command names cache lock poisoned") = None;
-            *self
-                .event_names_cache
-                .write()
-                .expect("Event names cache lock poisoned") = None;
-            self.diagnostic_info_cache.clear();
-            self.lens_data_cache.remove(path);
-            self.position_index_cache.remove(path);
+            self.cache.invalidate_file(path);
         }
 
         // Also remove parse errors for this file
@@ -356,7 +249,7 @@ impl ProjectIndex {
     /// Preparing data for `CodeLens`
     pub fn get_lens_data(&self, path: &PathBuf) -> Vec<(Range, String, Vec<LocationInfo>)> {
         // Check cache first
-        if let Some(cached) = self.lens_data_cache.get(path) {
+        if let Some(cached) = self.cache.lens_data_cache.get(path) {
             return cached.clone();
         }
 
@@ -367,7 +260,8 @@ impl ProjectIndex {
             return result;
         };
 
-        let mut processed_keys: HashSet<&IndexKey> = HashSet::new(); //  tracking already processed keys
+        let mut processed_keys: std::collections::HashSet<&IndexKey> =
+            std::collections::HashSet::new(); //  tracking already processed keys
 
         for key in keys.value() {
             if !processed_keys.insert(key) {
@@ -445,188 +339,31 @@ impl ProjectIndex {
         }
 
         // Store in cache before returning
-        self.lens_data_cache.insert(path.clone(), result.clone());
+        self.cache
+            .lens_data_cache
+            .insert(path.clone(), result.clone());
 
         result
     }
 
     /// Generates a report only for a specific file (delta update)
     pub fn file_report(&self, path: &PathBuf) -> String {
-        let filename = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown");
-
-        let mut report_message = String::new();
-
-        let _ = writeln!(report_message, "\n📝 === UPDATE REPORT: {filename} ===");
-
-        let Some(keys) = self.file_map.get(path) else {
-            return format!("📝 File update: {filename:?} (No Tarus keys found)");
-        };
-
-        let keys_clone: Vec<IndexKey> = keys.value().clone();
-
-        report_message.push_str("\n🔑 === 1. MAIN KEY INDEX (Delta Subset) ===\n");
-
-        let mut delta_map: HashMap<IndexKey, Vec<LocationInfo>> = HashMap::new();
-
-        for key in &keys_clone {
-            if let Some(locs) = self.map.get(key) {
-                let file_locs: Vec<LocationInfo> =
-                    locs.iter().filter(|l| l.path == *path).cloned().collect();
-
-                if !file_locs.is_empty() {
-                    delta_map.insert(key.clone(), file_locs);
-                }
-            }
-        }
-
-        if delta_map.is_empty() {
-            report_message.push_str("   (Map subset is empty)\n");
-        } else {
-            let _ = writeln!(report_message, "{delta_map:#?}");
-        }
-
-        report_message.push_str("\n📄 === 2. REVERSE FILE MAP (Delta Subset) ===\n");
-
-        let mut delta_file_map: HashMap<PathBuf, Vec<IndexKey>> = HashMap::new();
-        delta_file_map.insert(path.clone(), keys_clone);
-
-        let _ = writeln!(report_message, "{delta_file_map:#?}");
-
-        report_message
+        symbols::file_report(path, &self.file_map, &self.map)
     }
 
     /// Creates a readable report of the index contents
     pub fn technical_report(&self) -> String {
-        let mut report_message = String::from("\n💾 === TECHNICAL INDEX DUMP ===\n");
-
-        if self.map.is_empty() {
-            report_message.push_str("   (Storage is Empty)\n");
-
-            return report_message;
-        }
-
-        report_message.push_str("\n\n🔑 === 1. MAIN KEY INDEX (map) ===\n");
-        report_message.push_str("   [Key -> List of ALL Locations]\n");
-
-        let _ = writeln!(report_message, "{:#?}", self.map);
-
-        report_message.push_str("\n\n📄 === 2. REVERSE FILE MAP (file_map) ===\n");
-        report_message.push_str("   [FilePath -> List of ALL Keys in that file]\n");
-
-        if self.file_map.is_empty() {
-            report_message.push_str("   (File Map is Empty)\n");
-        } else {
-            let _ = writeln!(report_message, "{:#?}", self.file_map);
-        }
-
-        report_message
+        symbols::technical_report(&self.map, &self.file_map)
     }
 
     /// Get document symbols for outline view
     pub fn get_document_symbols(&self, path: &PathBuf) -> Vec<SymbolInformation> {
-        let mut symbols = Vec::new();
-
-        let Some(keys) = self.file_map.get(path) else {
-            return symbols;
-        };
-
-        let Some(uri) = Uri::from_file_path(path) else {
-            return symbols;
-        };
-
-        for key in keys.value() {
-            if let Some(locations) = self.map.get(key) {
-                for loc in locations.iter().filter(|l| l.path == *path) {
-                    let kind = match key.entity {
-                        EntityType::Command => SymbolKind::FUNCTION,
-                        EntityType::Event => SymbolKind::EVENT,
-                        EntityType::Struct => SymbolKind::STRUCT,
-                        EntityType::Enum => SymbolKind::ENUM,
-                        EntityType::Interface => SymbolKind::INTERFACE,
-                    };
-
-                    // Use behavior terms
-                    let behavior_label = match loc.behavior {
-                        Behavior::Definition => "command",
-                        Behavior::Call => "invoke",
-                        Behavior::Emit => "emit",
-                        Behavior::Listen => "listen",
-                    };
-
-                    #[allow(deprecated)]
-                    symbols.push(SymbolInformation {
-                        name: format!("{} ({})", key.name, behavior_label),
-                        kind,
-                        tags: None,
-                        deprecated: None,
-                        location: Location {
-                            uri: uri.clone(),
-                            range: loc.range,
-                        },
-                        container_name: Some(format!("{:?}", key.entity)),
-                    });
-                }
-            }
-        }
-
-        symbols.sort_by_key(|s| s.location.range.start.line);
-        symbols
+        symbols::get_document_symbols(path, &self.file_map, &self.map)
     }
 
     /// Search workspace symbols by query (Ctrl+T)
     pub fn search_workspace_symbols(&self, query: &str) -> Vec<SymbolInformation> {
-        let mut symbols = Vec::new();
-        let query_lower = query.to_lowercase();
-
-        for entry in &self.map {
-            let key = entry.key();
-
-            // Filter by query (substring match)
-            if !query.is_empty() && !key.name.to_lowercase().contains(&query_lower) {
-                continue;
-            }
-
-            for loc in entry.value() {
-                let Some(uri) = Uri::from_file_path(&loc.path) else {
-                    continue;
-                };
-
-                let kind = match key.entity {
-                    EntityType::Command => SymbolKind::FUNCTION,
-                    EntityType::Event => SymbolKind::EVENT,
-                    EntityType::Struct => SymbolKind::STRUCT,
-                    EntityType::Enum => SymbolKind::ENUM,
-                    EntityType::Interface => SymbolKind::INTERFACE,
-                };
-
-                let behavior_label = match loc.behavior {
-                    Behavior::Definition => "command",
-                    Behavior::Call => "invoke",
-                    Behavior::Emit => "emit",
-                    Behavior::Listen => "listen",
-                };
-
-                #[allow(deprecated)]
-                symbols.push(SymbolInformation {
-                    name: format!("{} ({})", key.name, behavior_label),
-                    kind,
-                    tags: None,
-                    deprecated: None,
-                    location: Location {
-                        uri,
-                        range: loc.range,
-                    },
-                    container_name: Some(format!("{:?}", key.entity)),
-                });
-            }
-        }
-
-        // Limit results
-        symbols.truncate(100);
-        symbols
+        symbols::search_workspace_symbols(query, &self.map)
     }
 
     /// Get all known names for a specific entity type (for completion)
@@ -637,8 +374,8 @@ impl ProjectIndex {
     pub fn get_all_names(&self, entity: EntityType) -> Vec<(String, Option<LocationInfo>)> {
         // Select appropriate cache
         let cache = match entity {
-            EntityType::Command => &self.command_names_cache,
-            EntityType::Event => &self.event_names_cache,
+            EntityType::Command => &self.cache.command_names_cache,
+            EntityType::Event => &self.cache.event_names_cache,
             _ => return Vec::new(),
         };
 
@@ -674,7 +411,7 @@ impl ProjectIndex {
     /// Get diagnostic information for a key (for diagnostics)
     pub fn get_diagnostic_info(&self, key: &IndexKey) -> DiagnosticInfo {
         // Check cache first
-        if let Some(cached) = self.diagnostic_info_cache.get(key) {
+        if let Some(cached) = self.cache.diagnostic_info_cache.get(key) {
             return cached.clone();
         }
 
@@ -688,18 +425,10 @@ impl ProjectIndex {
         };
 
         // Store in cache
-        self.diagnostic_info_cache.insert(key.clone(), info.clone());
+        self.cache
+            .diagnostic_info_cache
+            .insert(key.clone(), info.clone());
 
         info
     }
-}
-
-/// Diagnostic information for a command/event
-#[derive(Clone, Debug)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct DiagnosticInfo {
-    pub has_definition: bool,
-    pub has_calls: bool,
-    pub has_emitters: bool,
-    pub has_listeners: bool,
 }
