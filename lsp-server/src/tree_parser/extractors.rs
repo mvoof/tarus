@@ -167,3 +167,104 @@ pub fn extract_ts_params(node: Node, content: &str) -> Vec<Parameter> {
     }
     params
 }
+
+/// Builder for constructing Finding objects with optional fields
+///
+/// This builder provides a fluent interface for creating Finding objects,
+/// automatically handling the conversion of empty collections to None.
+pub struct FindingBuilder {
+    key: String,
+    entity: crate::syntax::EntityType,
+    behavior: crate::syntax::Behavior,
+    range: tower_lsp_server::lsp_types::Range,
+    parameters: Option<Vec<Parameter>>,
+    return_type: Option<String>,
+    fields: Option<Vec<Parameter>>,
+    attributes: Option<Vec<String>>,
+}
+
+impl FindingBuilder {
+    /// Create a new FindingBuilder with required fields
+    pub fn new(
+        key: String,
+        entity: crate::syntax::EntityType,
+        behavior: crate::syntax::Behavior,
+        range: tower_lsp_server::lsp_types::Range,
+    ) -> Self {
+        Self {
+            key,
+            entity,
+            behavior,
+            range,
+            parameters: None,
+            return_type: None,
+            fields: None,
+            attributes: None,
+        }
+    }
+
+    /// Set parameters (automatically converts empty Vec to None)
+    #[must_use]
+    pub fn with_parameters(mut self, params: Vec<Parameter>) -> Self {
+        self.parameters = if params.is_empty() {
+            None
+        } else {
+            Some(params)
+        };
+        self
+    }
+
+    /// Set parameters as Option
+    #[must_use]
+    pub fn with_parameters_opt(mut self, params: Option<Vec<Parameter>>) -> Self {
+        self.parameters = params.filter(|p| !p.is_empty());
+        self
+    }
+
+    /// Set return type
+    #[must_use]
+    pub fn with_return_type(mut self, return_type: String) -> Self {
+        self.return_type = Some(return_type);
+        self
+    }
+
+    /// Set return type as Option
+    #[must_use]
+    pub fn with_return_type_opt(mut self, return_type: Option<String>) -> Self {
+        self.return_type = return_type;
+        self
+    }
+
+    /// Set fields (automatically converts empty Vec to None)
+    #[must_use]
+    pub fn with_fields(mut self, fields: Vec<Parameter>) -> Self {
+        self.fields = if fields.is_empty() {
+            None
+        } else {
+            Some(fields)
+        };
+        self
+    }
+
+    /// Set attributes (automatically converts empty Vec to None)
+    #[must_use]
+    pub fn with_attributes(mut self, attrs: Vec<String>) -> Self {
+        self.attributes = if attrs.is_empty() { None } else { Some(attrs) };
+        self
+    }
+
+    /// Build the Finding object
+    #[must_use]
+    pub fn build(self) -> crate::indexer::Finding {
+        crate::indexer::Finding {
+            key: self.key,
+            entity: self.entity,
+            behavior: self.behavior,
+            range: self.range,
+            parameters: self.parameters,
+            return_type: self.return_type,
+            fields: self.fields,
+            attributes: self.attributes,
+        }
+    }
+}

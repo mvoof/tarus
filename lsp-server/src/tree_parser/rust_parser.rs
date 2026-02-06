@@ -8,7 +8,7 @@ use tower_lsp_server::lsp_types::Range;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 use super::extractors::{
-    extract_rust_enum_variants, extract_rust_params, extract_rust_struct_fields,
+    extract_rust_enum_variants, extract_rust_params, extract_rust_struct_fields, FindingBuilder,
 };
 use super::query_helpers::CaptureIndices;
 use super::utils::{get_query_source, point_to_position, LangType, NodeTextExt};
@@ -89,23 +89,20 @@ pub fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                     .map(|cap| cap.node.text_or_default(content))
                     .collect();
 
-                findings.push(Finding {
-                    key: name,
-                    entity: EntityType::Struct,
-                    behavior: Behavior::Definition,
-                    range: Range {
-                        start: point_to_position(name_cap.node.start_position()),
-                        end: point_to_position(name_cap.node.end_position()),
-                    },
-                    parameters: None,
-                    return_type: None,
-                    fields: Some(fields),
-                    attributes: if attributes.is_empty() {
-                        None
-                    } else {
-                        Some(attributes)
-                    },
-                });
+                findings.push(
+                    FindingBuilder::new(
+                        name,
+                        EntityType::Struct,
+                        Behavior::Definition,
+                        Range {
+                            start: point_to_position(name_cap.node.start_position()),
+                            end: point_to_position(name_cap.node.end_position()),
+                        },
+                    )
+                    .with_fields(fields)
+                    .with_attributes(attributes)
+                    .build(),
+                );
             }
         }
 
@@ -121,23 +118,20 @@ pub fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                     .map(|cap| cap.node.text_or_default(content))
                     .collect();
 
-                findings.push(Finding {
-                    key: name,
-                    entity: EntityType::Enum,
-                    behavior: Behavior::Definition,
-                    range: Range {
-                        start: point_to_position(name_cap.node.start_position()),
-                        end: point_to_position(name_cap.node.end_position()),
-                    },
-                    parameters: None,
-                    return_type: None,
-                    fields: Some(variants),
-                    attributes: if attributes.is_empty() {
-                        None
-                    } else {
-                        Some(attributes)
-                    },
-                });
+                findings.push(
+                    FindingBuilder::new(
+                        name,
+                        EntityType::Enum,
+                        Behavior::Definition,
+                        Range {
+                            start: point_to_position(name_cap.node.start_position()),
+                            end: point_to_position(name_cap.node.end_position()),
+                        },
+                    )
+                    .with_fields(variants)
+                    .with_attributes(attributes)
+                    .build(),
+                );
             }
         }
 
@@ -155,19 +149,20 @@ pub fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                 .find_capture(m.captures, "command_return_type")
                 .map(|cap| cap.node.text_or_default(content));
 
-            findings.push(Finding {
-                key: name,
-                entity: EntityType::Command,
-                behavior: Behavior::Definition,
-                range: Range {
-                    start: point_to_position(node.start_position()),
-                    end: point_to_position(node.end_position()),
-                },
-                parameters,
-                return_type,
-                fields: None,
-                attributes: None,
-            });
+            findings.push(
+                FindingBuilder::new(
+                    name,
+                    EntityType::Command,
+                    Behavior::Definition,
+                    Range {
+                        start: point_to_position(node.start_position()),
+                        end: point_to_position(node.end_position()),
+                    },
+                )
+                .with_parameters_opt(parameters)
+                .with_return_type_opt(return_type)
+                .build(),
+            );
         }
 
         // Process event method calls
@@ -177,19 +172,18 @@ pub fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                 let event_name = event_cap.node.text_or_default(content);
 
                 if let Some((entity, behavior)) = rust_event_patterns.get(method_name.as_str()) {
-                    findings.push(Finding {
-                        key: event_name,
-                        entity: *entity,
-                        behavior: *behavior,
-                        range: Range {
-                            start: point_to_position(event_cap.node.start_position()),
-                            end: point_to_position(event_cap.node.end_position()),
-                        },
-                        parameters: None,
-                        return_type: None,
-                        fields: None,
-                        attributes: None,
-                    });
+                    findings.push(
+                        FindingBuilder::new(
+                            event_name,
+                            *entity,
+                            *behavior,
+                            Range {
+                                start: point_to_position(event_cap.node.start_position()),
+                                end: point_to_position(event_cap.node.end_position()),
+                            },
+                        )
+                        .build(),
+                    );
                 }
             }
         }

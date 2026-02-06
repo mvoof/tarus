@@ -7,7 +7,7 @@ use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::Range;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
-use super::extractors::{extract_ts_interface_fields, extract_ts_params};
+use super::extractors::{extract_ts_interface_fields, extract_ts_params, FindingBuilder};
 use super::query_helpers::CaptureIndices;
 use super::utils::{adjust_range, get_query_source, point_to_position, LangType, NodeTextExt};
 
@@ -136,22 +136,22 @@ pub fn parse_frontend(
                 let name = name_cap.node.text_or_default(content);
                 let fields = extract_ts_interface_fields(iface_cap.node, content);
 
-                findings.push(Finding {
-                    key: name,
-                    entity: EntityType::Interface,
-                    behavior: Behavior::Definition,
-                    range: adjust_range(
-                        Range {
-                            start: point_to_position(name_cap.node.start_position()),
-                            end: point_to_position(name_cap.node.end_position()),
-                        },
-                        line_offset,
-                    ),
-                    parameters: None,
-                    return_type: None,
-                    fields: Some(fields),
-                    attributes: None,
-                });
+                findings.push(
+                    FindingBuilder::new(
+                        name,
+                        EntityType::Interface,
+                        Behavior::Definition,
+                        adjust_range(
+                            Range {
+                                start: point_to_position(name_cap.node.start_position()),
+                                end: point_to_position(name_cap.node.end_position()),
+                            },
+                            line_offset,
+                        ),
+                    )
+                    .with_fields(fields)
+                    .build(),
+                );
             }
         }
     }
@@ -177,11 +177,6 @@ pub fn parse_frontend(
                     .iter()
                     .find(|p| p.name == original_name && p.arg_position == ArgPosition::First)
                 {
-                    let range = Range {
-                        start: point_to_position(arg_cap.node.start_position()),
-                        end: point_to_position(arg_cap.node.end_position()),
-                    };
-
                     let parameters = indices
                         .find_capture(m.captures, "invoke_args")
                         .map(|cap| extract_ts_params(cap.node, content));
@@ -190,16 +185,23 @@ pub fn parse_frontend(
                         .find_capture(m.captures, "type_args")
                         .map(|cap| cap.node.text_or_default(content));
 
-                    findings.push(Finding {
-                        key: arg_value,
-                        entity: pattern.entity,
-                        behavior: pattern.behavior,
-                        range: adjust_range(range, line_offset),
-                        parameters,
-                        return_type,
-                        fields: None,
-                        attributes: None,
-                    });
+                    findings.push(
+                        FindingBuilder::new(
+                            arg_value,
+                            pattern.entity,
+                            pattern.behavior,
+                            adjust_range(
+                                Range {
+                                    start: point_to_position(arg_cap.node.start_position()),
+                                    end: point_to_position(arg_cap.node.end_position()),
+                                },
+                                line_offset,
+                            ),
+                        )
+                        .with_parameters_opt(parameters)
+                        .with_return_type_opt(return_type)
+                        .build(),
+                    );
                 }
             }
         }
@@ -220,11 +222,6 @@ pub fn parse_frontend(
                     .iter()
                     .find(|p| p.name == original_name && p.arg_position == ArgPosition::Second)
                 {
-                    let range = Range {
-                        start: point_to_position(arg_cap.node.start_position()),
-                        end: point_to_position(arg_cap.node.end_position()),
-                    };
-
                     let parameters = indices
                         .find_capture(m.captures, "invoke_args")
                         .map(|cap| extract_ts_params(cap.node, content));
@@ -233,16 +230,23 @@ pub fn parse_frontend(
                         .find_capture(m.captures, "type_args")
                         .map(|cap| cap.node.text_or_default(content));
 
-                    findings.push(Finding {
-                        key: arg_value,
-                        entity: pattern.entity,
-                        behavior: pattern.behavior,
-                        range: adjust_range(range, line_offset),
-                        parameters,
-                        return_type,
-                        fields: None,
-                        attributes: None,
-                    });
+                    findings.push(
+                        FindingBuilder::new(
+                            arg_value,
+                            pattern.entity,
+                            pattern.behavior,
+                            adjust_range(
+                                Range {
+                                    start: point_to_position(arg_cap.node.start_position()),
+                                    end: point_to_position(arg_cap.node.end_position()),
+                                },
+                                line_offset,
+                            ),
+                        )
+                        .with_parameters_opt(parameters)
+                        .with_return_type_opt(return_type)
+                        .build(),
+                    );
                 }
             }
         }
