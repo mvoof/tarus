@@ -43,16 +43,17 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
     let lang = LangType::from_extension(ext);
 
     let mut findings: Vec<Finding> = match lang {
-        Some(LangType::Rust) => parse_rust(content)?,
+        Some(LangType::Rust) => parse_rust(path, content)?,
         Some(LangType::TypeScript) => {
             // Check if it's an Angular component
+            // Check if it's an Angular component
             if is_angular_file(content) {
-                parse_frontend(content, LangType::Angular, 0)?
+                parse_frontend(path, content, LangType::Angular, 0)?
             } else {
-                parse_frontend(content, LangType::TypeScript, 0)?
+                parse_frontend(path, content, LangType::TypeScript, 0)?
             }
         }
-        Some(LangType::JavaScript) => parse_frontend(content, LangType::JavaScript, 0)?,
+        Some(LangType::JavaScript) => parse_frontend(path, content, LangType::JavaScript, 0)?,
         Some(LangType::Vue) | Some(LangType::Svelte) => {
             // Extract script blocks and parse each one
             let script_blocks = extract_script_blocks(content);
@@ -60,13 +61,13 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
 
             for (script_content, line_offset) in script_blocks {
                 let block_findings =
-                    parse_frontend(&script_content, LangType::TypeScript, line_offset)?;
+                    parse_frontend(path, &script_content, LangType::TypeScript, line_offset)?;
                 all_findings.extend(block_findings);
             }
 
             all_findings
         }
-        Some(LangType::Angular) => parse_frontend(content, LangType::Angular, 0)?,
+        Some(LangType::Angular) => parse_frontend(path, content, LangType::Angular, 0)?,
         None => Vec::new(),
     };
 

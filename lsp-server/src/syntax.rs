@@ -39,19 +39,28 @@ pub enum Behavior {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// File contains syntax errors
-    SyntaxError(String),
+    SyntaxError(String, Option<String>),
     /// Query execution failed
-    QueryError(String),
+    QueryError(String, Option<String>),
     /// Language configuration error
-    LanguageError(String),
+    LanguageError(String, Option<String>),
 }
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::SyntaxError(msg) => write!(f, "Syntax error: {msg}"),
-            ParseError::QueryError(msg) => write!(f, "Query error: {msg}"),
-            ParseError::LanguageError(msg) => write!(f, "Language error: {msg}"),
+            ParseError::SyntaxError(msg, path) => {
+                let location = path.as_deref().unwrap_or("unknown file");
+                write!(f, "Syntax error in {location}: {msg}")
+            }
+            ParseError::QueryError(msg, path) => {
+                let location = path.as_deref().unwrap_or("unknown file");
+                write!(f, "Query error in {location}: {msg}")
+            }
+            ParseError::LanguageError(msg, path) => {
+                let location = path.as_deref().unwrap_or("unknown file");
+                write!(f, "Language error in {location}: {msg}")
+            }
         }
     }
 }

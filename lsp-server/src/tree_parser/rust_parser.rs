@@ -169,23 +169,33 @@ pub fn process_event_match(
 
 #[allow(clippy::too_many_lines)]
 /// Parse Rust source code
-pub fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
+pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Finding>> {
     let mut findings = Vec::new();
 
     let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = Parser::new();
 
-    parser
-        .set_language(&ts_lang)
-        .map_err(|e| ParseError::LanguageError(format!("Failed to set Rust language: {e}")))?;
+    parser.set_language(&ts_lang).map_err(|e| {
+        ParseError::LanguageError(
+            format!("Failed to set Rust language: {e}"),
+            Some(path.to_string_lossy().to_string()),
+        )
+    })?;
 
-    let tree = parser
-        .parse(content, None)
-        .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
+    let tree = parser.parse(content, None).ok_or_else(|| {
+        ParseError::SyntaxError(
+            "Failed to parse Rust file".to_string(),
+            Some(path.to_string_lossy().to_string()),
+        )
+    })?;
 
     let query_src = get_query_source(LangType::Rust);
-    let query = Query::new(&ts_lang, query_src)
-        .map_err(|e| ParseError::QueryError(format!("Failed to create Rust query: {e}")))?;
+    let query = Query::new(&ts_lang, query_src).map_err(|e| {
+        ParseError::QueryError(
+            format!("Failed to create Rust query: {e}"),
+            Some(path.to_string_lossy().to_string()),
+        )
+    })?;
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();

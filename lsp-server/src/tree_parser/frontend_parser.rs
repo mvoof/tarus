@@ -196,6 +196,7 @@ pub fn process_function_call_match(
 /// Parse TypeScript/JavaScript source code
 #[allow(clippy::too_many_lines)]
 pub fn parse_frontend(
+    path: &std::path::Path,
     content: &str,
     lang: LangType,
     line_offset: usize,
@@ -208,17 +209,27 @@ pub fn parse_frontend(
     };
 
     let mut parser = Parser::new();
-    parser
-        .set_language(&ts_lang)
-        .map_err(|e| ParseError::LanguageError(format!("Failed to set {lang:?} language: {e}")))?;
+    parser.set_language(&ts_lang).map_err(|e| {
+        ParseError::LanguageError(
+            format!("Failed to set {lang:?} language: {e}"),
+            Some(path.to_string_lossy().to_string()),
+        )
+    })?;
 
-    let tree = parser
-        .parse(content, None)
-        .ok_or_else(|| ParseError::SyntaxError(format!("Failed to parse {lang:?} file")))?;
+    let tree = parser.parse(content, None).ok_or_else(|| {
+        ParseError::SyntaxError(
+            format!("Failed to parse {lang:?} file"),
+            Some(path.to_string_lossy().to_string()),
+        )
+    })?;
 
     let query_src = get_query_source(lang);
-    let query = Query::new(&ts_lang, query_src)
-        .map_err(|e| ParseError::QueryError(format!("Failed to create {lang:?} query: {e}")))?;
+    let query = Query::new(&ts_lang, query_src).map_err(|e| {
+        ParseError::QueryError(
+            format!("Failed to create {lang:?} query: {e}"),
+            Some(path.to_string_lossy().to_string()),
+        )
+    })?;
 
     let mut cursor = QueryCursor::new();
     let root = tree.root_node();
