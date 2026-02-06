@@ -3,9 +3,22 @@
 use crate::indexer::{LocationInfo, ProjectIndex};
 use crate::syntax::{Behavior, EntityType};
 use std::fmt::Write as _;
+use std::path::Path;
 use std::path::PathBuf;
 use tower_lsp_server::lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 use tower_lsp_server::UriExt;
+
+/// Get file icon and filename for display purposes
+fn file_icon_and_name(path: &Path) -> (&'static str, &str) {
+    let icon = if path.extension().is_some_and(|e| e == "rs") {
+        "🦀"
+    } else {
+        "⚡️"
+    };
+
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+    (icon, name)
+}
 
 #[allow(clippy::too_many_lines)]
 /// Handle hover request (pure function)
@@ -75,13 +88,7 @@ pub fn handle_hover(params: HoverParams, project_index: &ProjectIndex) -> Option
             md_text.push_str("**Definition:**\n");
 
             for def in &definitions {
-                let file_icon = if def.path.extension().is_some_and(|e| e == "rs") {
-                    "🦀"
-                } else {
-                    "⚡️"
-                };
-
-                let filename = def.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                let (file_icon, filename) = file_icon_and_name(&def.path);
 
                 let _ = writeln!(
                     md_text,
@@ -129,13 +136,7 @@ pub fn handle_hover(params: HoverParams, project_index: &ProjectIndex) -> Option
                     break;
                 }
 
-                let file_icon = if rf.path.extension().is_some_and(|e| e == "rs") {
-                    "🦀"
-                } else {
-                    "⚡️"
-                };
-
-                let filename = rf.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                let (file_icon, filename) = file_icon_and_name(&rf.path);
                 let behavior_badge = format!("{:?}", rf.behavior).to_uppercase();
 
                 let _ = writeln!(
