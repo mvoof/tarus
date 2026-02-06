@@ -66,6 +66,9 @@ pub struct ProjectIndex {
     // Cache for CodeLens data by file path
     #[allow(clippy::type_complexity)]
     lens_data_cache: DashMap<PathBuf, Vec<(Range, String, Vec<LocationInfo>)>>,
+    // Spatial index for fast position lookups (sorted by start position)
+    #[allow(clippy::type_complexity)]
+    position_index_cache: DashMap<PathBuf, Vec<(Range, IndexKey)>>,
     // Parse errors by file path
     pub parse_errors: DashMap<PathBuf, String>,
     // Configuration: Max number of individual file links to show in CodeLens before summarizing
@@ -81,6 +84,7 @@ impl Default for ProjectIndex {
             event_names_cache: RwLock::new(None),
             diagnostic_info_cache: DashMap::new(),
             lens_data_cache: DashMap::new(),
+            position_index_cache: DashMap::new(),
             parse_errors: DashMap::new(),
             reference_limit: AtomicUsize::new(3),
         }
@@ -106,13 +110,68 @@ impl ProjectIndex {
         path: &PathBuf,
         position: Position,
     ) -> Option<(IndexKey, LocationInfo)> {
+        // Check if we have a cached position index for this file
+        if let Some(index) = self.position_index_cache.get(path) {
+            // Use binary search on cached sorted index
+            return Self::binary_search_position(&index, position, &self.map, path);
+        }
+
+        // Build position index for this file
         let keys_in_file = self.file_map.get(path)?;
+        let mut position_index: Vec<(Range, IndexKey)> = Vec::new();
 
         for key in keys_in_file.value() {
             if let Some(locations) = self.map.get(key) {
                 for loc in locations.value() {
-                    if loc.path == *path && Self::is_position_in_range(position, loc.range) {
-                        return Some((key.clone(), loc.clone()));
+                    if loc.path == *path {
+                        position_index.push((loc.range, key.clone()));
+                    }
+                }
+            }
+        }
+
+        // Sort by start position (line, then character) for binary search
+        position_index.sort_by(|a, b| {
+            let cmp_line = a.0.start.line.cmp(&b.0.start.line);
+            if cmp_line == std::cmp::Ordering::Equal {
+                a.0.start.character.cmp(&b.0.start.character)
+            } else {
+                cmp_line
+            }
+        });
+
+        // Cache the index for future lookups
+        let result = Self::binary_search_position(&position_index, position, &self.map, path);
+        self.position_index_cache
+            .insert(path.clone(), position_index);
+        result
+    }
+
+    /// Binary search for position in sorted position index
+    fn binary_search_position(
+        index: &[(Range, IndexKey)],
+        position: Position,
+        map: &DashMap<IndexKey, Vec<LocationInfo>>,
+        path: &PathBuf,
+    ) -> Option<(IndexKey, LocationInfo)> {
+        // Binary search for the range containing the position
+        let idx = index.partition_point(|(range, _)| {
+            range.start.line < position.line
+                || (range.start.line == position.line
+                    && range.start.character <= position.character)
+        });
+
+        // Check candidates around the found position
+        // We need to check a few entries because ranges can overlap
+        for i in idx.saturating_sub(2)..std::cmp::min(idx + 2, index.len()) {
+            let (range, key) = &index[i];
+            if Self::is_position_in_range(position, *range) {
+                // Found the range, now get the full location info
+                if let Some(locations) = map.get(key) {
+                    for loc in locations.value() {
+                        if loc.path == *path && Self::is_position_in_range(position, loc.range) {
+                            return Some((key.clone(), loc.clone()));
+                        }
                     }
                 }
             }
@@ -189,6 +248,7 @@ impl ProjectIndex {
             .expect("Event names cache lock poisoned") = None;
         self.diagnostic_info_cache.clear();
         self.lens_data_cache.remove(&path_ref);
+        self.position_index_cache.remove(&path_ref);
 
         self.file_map.insert(path_ref, keys_in_this_file);
     }
@@ -224,6 +284,7 @@ impl ProjectIndex {
                 .expect("Event names cache lock poisoned") = None;
             self.diagnostic_info_cache.clear();
             self.lens_data_cache.remove(path);
+            self.position_index_cache.remove(path);
         }
 
         // Also remove parse errors for this file
