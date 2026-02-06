@@ -63,6 +63,9 @@ pub struct ProjectIndex {
     event_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
     // Cache for diagnostic info (avoids re-iterating locations)
     diagnostic_info_cache: DashMap<IndexKey, DiagnosticInfo>,
+    // Cache for CodeLens data by file path
+    #[allow(clippy::type_complexity)]
+    lens_data_cache: DashMap<PathBuf, Vec<(Range, String, Vec<LocationInfo>)>>,
     // Parse errors by file path
     pub parse_errors: DashMap<PathBuf, String>,
     // Configuration: Max number of individual file links to show in CodeLens before summarizing
@@ -77,6 +80,7 @@ impl Default for ProjectIndex {
             command_names_cache: RwLock::new(None),
             event_names_cache: RwLock::new(None),
             diagnostic_info_cache: DashMap::new(),
+            lens_data_cache: DashMap::new(),
             parse_errors: DashMap::new(),
             reference_limit: AtomicUsize::new(3),
         }
@@ -174,9 +178,7 @@ impl ProjectIndex {
             keys_in_this_file.push(key);
         }
 
-        self.file_map.insert(path_ref, keys_in_this_file);
-
-        // Invalidate caches
+        // Invalidate caches (before moving path_ref)
         *self
             .command_names_cache
             .write()
@@ -186,6 +188,9 @@ impl ProjectIndex {
             .write()
             .expect("Event names cache lock poisoned") = None;
         self.diagnostic_info_cache.clear();
+        self.lens_data_cache.remove(&path_ref);
+
+        self.file_map.insert(path_ref, keys_in_this_file);
     }
 
     /// Deletes all entries associated with a specific file.
@@ -218,6 +223,7 @@ impl ProjectIndex {
                 .write()
                 .expect("Event names cache lock poisoned") = None;
             self.diagnostic_info_cache.clear();
+            self.lens_data_cache.remove(path);
         }
 
         // Also remove parse errors for this file
@@ -288,6 +294,11 @@ impl ProjectIndex {
     #[allow(clippy::too_many_lines)]
     /// Preparing data for `CodeLens`
     pub fn get_lens_data(&self, path: &PathBuf) -> Vec<(Range, String, Vec<LocationInfo>)> {
+        // Check cache first
+        if let Some(cached) = self.lens_data_cache.get(path) {
+            return cached.clone();
+        }
+
         let mut result = Vec::new();
 
         // Collect keys
@@ -371,6 +382,9 @@ impl ProjectIndex {
                 }
             }
         }
+
+        // Store in cache before returning
+        self.lens_data_cache.insert(path.clone(), result.clone());
 
         result
     }
