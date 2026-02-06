@@ -176,6 +176,120 @@ impl Backend {
             }
         })
     }
+
+    /// Load and apply configuration settings from the client
+    async fn load_configuration(&self) {
+        let ext_config_request = ConfigurationParams {
+            items: vec![
+                ConfigurationItem {
+                    scope_uri: None,
+                    section: Some("tarus.developerMode".to_string()),
+                },
+                ConfigurationItem {
+                    scope_uri: None,
+                    section: Some("tarus.referenceLimit".to_string()),
+                },
+            ],
+        };
+
+        let Ok(response) = self.client.configuration(ext_config_request.items).await else {
+            return;
+        };
+
+        let mut iter = response.into_iter();
+
+        // Handle developerMode
+        if let Some(settings) = iter.next() {
+            if let Some(is_enabled) = settings.as_bool() {
+                self.is_developer_mode_active
+                    .store(is_enabled, Ordering::Relaxed);
+
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        &format!("Developer Mode initialized to: {is_enabled}"),
+                    )
+                    .await;
+            }
+        }
+
+        // Handle referenceLimit
+        if let Some(settings) = iter.next() {
+            if let Some(limit) = settings.as_u64() {
+                self.project_index
+                    .reference_limit
+                    .store(limit as usize, Ordering::Relaxed);
+
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        &format!("Reference Limit initialized to: {limit}"),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    /// Spawn background indexing task
+    fn spawn_background_indexing(&self, root: PathBuf) {
+        let root_for_scan = root.clone();
+        let root_for_typegen = root;
+        let project_index_clone = self.project_index.clone();
+        let client_clone = self.client.clone();
+        let is_dev_mode_clone = self.is_developer_mode_active.clone();
+
+        tokio::spawn(async move {
+            client_clone
+                .log_message(MessageType::INFO, "🚀 Starting background indexing...")
+                .await;
+
+            let files = tokio::task::spawn_blocking(move || scan_workspace_files(&root_for_scan))
+                .await
+                .unwrap_or_default();
+
+            for path in files {
+                file_processor::process_file_index(path, &project_index_clone);
+            }
+
+            // Generate TypeScript type definitions
+            if let Err(e) = typegen::write_types_file(&project_index_clone, &root_for_typegen) {
+                client_clone
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("Failed to generate type definitions: {e}"),
+                    )
+                    .await;
+            } else {
+                client_clone
+                    .log_message(MessageType::INFO, "📝 Generated tauri-commands.d.ts")
+                    .await;
+            }
+
+            // Publish diagnostics for all indexed files
+            for entry in &project_index_clone.file_map {
+                let path = entry.key().clone();
+
+                if let Some(uri) = Uri::from_file_path(&path) {
+                    let diagnostics =
+                        diagnostics::compute_file_diagnostics(&path, &project_index_clone);
+                    client_clone
+                        .publish_diagnostics(uri, diagnostics, None)
+                        .await;
+                }
+            }
+
+            // Report about the indexing process
+            let report = project_index_clone.technical_report();
+
+            if is_dev_mode_clone.load(Ordering::Relaxed) {
+                client_clone.log_message(MessageType::INFO, report).await;
+            }
+
+            client_clone
+                .log_message(MessageType::INFO, "🏁 Indexing complete".to_string())
+                .await;
+        });
+    }
 }
 
 /// Helper: Extract path and content from document change params
@@ -235,115 +349,14 @@ impl LanguageServer for Backend {
             return;
         }
 
-        let ext_config_request = ConfigurationParams {
-            items: vec![
-                ConfigurationItem {
-                    scope_uri: None,
-                    section: Some("tarus.developerMode".to_string()),
-                },
-                ConfigurationItem {
-                    scope_uri: None,
-                    section: Some("tarus.referenceLimit".to_string()),
-                },
-            ],
+        // Load configuration settings
+        self.load_configuration().await;
+
+        // Start background indexing
+        let Some(root) = self.workspace_root.get() else {
+            return;
         };
-
-        if let Ok(response) = self.client.configuration(ext_config_request.items).await {
-            let mut iter = response.into_iter();
-
-            // Handle developerMode
-            if let Some(settings) = iter.next() {
-                if let Some(is_enabled) = settings.as_bool() {
-                    self.is_developer_mode_active
-                        .store(is_enabled, Ordering::Relaxed);
-
-                    self.client
-                        .log_message(
-                            MessageType::INFO,
-                            &format!("Developer Mode initialized to: {is_enabled}"),
-                        )
-                        .await;
-                }
-            }
-
-            // Handle referenceLimit
-            if let Some(settings) = iter.next() {
-                if let Some(limit) = settings.as_u64() {
-                    self.project_index
-                        .reference_limit
-                        .store(limit as usize, Ordering::Relaxed);
-
-                    self.client
-                        .log_message(
-                            MessageType::INFO,
-                            &format!("Reference Limit initialized to: {limit}"),
-                        )
-                        .await;
-                }
-            }
-        }
-
-        let root = match self.workspace_root.get() {
-            Some(r) => r,
-            None => return,
-        };
-
-        let root_clone = root.clone();
-        let root_for_typegen = root.clone();
-        let project_index_clone = self.project_index.clone();
-        let client_clone = self.client.clone();
-
-        let is_dev_mode_clone = self.is_developer_mode_active.clone();
-
-        tokio::spawn(async move {
-            client_clone
-                .log_message(MessageType::INFO, "🚀 Starting background indexing...")
-                .await;
-
-            let files = tokio::task::spawn_blocking(move || scan_workspace_files(&root_clone))
-                .await
-                .unwrap_or_default();
-
-            for path in files {
-                file_processor::process_file_index(path, &project_index_clone);
-            }
-
-            // Generate TypeScript type definitions
-            if let Err(e) = typegen::write_types_file(&project_index_clone, &root_for_typegen) {
-                client_clone
-                    .log_message(
-                        MessageType::WARNING,
-                        format!("Failed to generate type definitions: {e}"),
-                    )
-                    .await;
-            } else {
-                client_clone
-                    .log_message(MessageType::INFO, "📝 Generated tauri-commands.d.ts")
-                    .await;
-            }
-
-            // Publish diagnostics for all indexed files
-            for entry in &project_index_clone.file_map {
-                let path = entry.key().clone();
-                if let Some(uri) = Uri::from_file_path(&path) {
-                    let diagnostics =
-                        diagnostics::compute_file_diagnostics(&path, &project_index_clone);
-                    client_clone
-                        .publish_diagnostics(uri, diagnostics, None)
-                        .await;
-                }
-            }
-
-            // Report about the indexing process
-            let report = project_index_clone.technical_report();
-            if is_dev_mode_clone.load(Ordering::Relaxed) {
-                client_clone.log_message(MessageType::INFO, report).await;
-            }
-
-            client_clone
-                .log_message(MessageType::INFO, "🏁 Indexing complete".to_string())
-                .await;
-        });
+        self.spawn_background_indexing(root.clone());
     }
 
     async fn goto_definition(
