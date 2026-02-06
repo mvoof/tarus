@@ -177,8 +177,14 @@ impl ProjectIndex {
         self.file_map.insert(path_ref, keys_in_this_file);
 
         // Invalidate caches
-        *self.command_names_cache.write().unwrap() = None;
-        *self.event_names_cache.write().unwrap() = None;
+        *self
+            .command_names_cache
+            .write()
+            .expect("Command names cache lock poisoned") = None;
+        *self
+            .event_names_cache
+            .write()
+            .expect("Event names cache lock poisoned") = None;
         self.diagnostic_info_cache.clear();
     }
 
@@ -203,8 +209,14 @@ impl ProjectIndex {
             }
 
             // Invalidate caches
-            *self.command_names_cache.write().unwrap() = None;
-            *self.event_names_cache.write().unwrap() = None;
+            *self
+                .command_names_cache
+                .write()
+                .expect("Command names cache lock poisoned") = None;
+            *self
+                .event_names_cache
+                .write()
+                .expect("Event names cache lock poisoned") = None;
             self.diagnostic_info_cache.clear();
         }
 
@@ -557,7 +569,7 @@ impl ProjectIndex {
 
         // Try to read from cache
         {
-            let cache_read = cache.read().unwrap();
+            let cache_read = cache.read().expect("Cache RwLock poisoned during read");
             if let Some(cached) = cache_read.as_ref() {
                 return cached.clone();
             }
@@ -579,7 +591,7 @@ impl ProjectIndex {
             .collect();
 
         // Store in cache
-        *cache.write().unwrap() = Some(result.clone());
+        *cache.write().expect("Cache RwLock poisoned during write") = Some(result.clone());
 
         result
     }
