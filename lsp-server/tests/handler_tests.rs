@@ -1,10 +1,7 @@
-use lsp_server::indexer::Finding;
 use lsp_server::syntax::{Behavior, EntityType};
-use lsp_server::tree_parser::frontend_parser::{
-    process_function_call_match, process_interface_match,
-};
+use lsp_server::tree_parser::frontend_parser::process_interface_match;
 use lsp_server::tree_parser::rust_parser::{
-    process_command_matches, process_enum_match, process_event_match, process_struct_match,
+    process_command_matches, process_enum_match, process_struct_match,
 };
 use lsp_server::tree_parser::{CaptureIndices, LangType};
 use streaming_iterator::StreamingIterator;

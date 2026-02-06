@@ -10,8 +10,11 @@ pub mod rust_parser;
 mod sfc;
 mod utils;
 
+#[allow(unused_imports)]
 pub use extractors::FindingBuilder;
+#[allow(unused_imports)]
 pub use query_helpers::CaptureIndices;
+#[allow(unused_imports)]
 pub use utils::{LangType, NodeTextExt};
 
 use crate::indexer::{FileIndex, Finding};
