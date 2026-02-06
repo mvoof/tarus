@@ -1,0 +1,253 @@
+//! Parameter and field extraction utilities for various node types
+
+use super::utils::NodeTextExt;
+use crate::indexer::Parameter;
+use tree_sitter::Node;
+
+/// Extract Rust function parameters
+pub fn extract_rust_params(node: Node, content: &str) -> Vec<Parameter> {
+    let mut params = Vec::new();
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            let name_node = child.child_by_field_name("pattern");
+            let type_node = child.child_by_field_name("type");
+
+            if let (Some(n), Some(t)) = (name_node, type_node) {
+                params.push(Parameter {
+                    name: n.text_or_default(content),
+                    type_name: t.text_or_default(content),
+                });
+            }
+        }
+    }
+    params
+}
+
+/// Extract Rust struct fields
+pub fn extract_rust_struct_fields(node: Node, content: &str) -> Vec<Parameter> {
+    let mut fields = Vec::new();
+    let mut cursor = node.walk();
+
+    // Navigate to field_declaration_list
+    for child in node.children(&mut cursor) {
+        if child.kind() == "field_declaration_list" {
+            let mut field_cursor = child.walk();
+
+            for field in child.children(&mut field_cursor) {
+                if field.kind() == "field_declaration" {
+                    let name_node = field.child_by_field_name("name");
+                    let type_node = field.child_by_field_name("type");
+
+                    if let (Some(n), Some(t)) = (name_node, type_node) {
+                        fields.push(Parameter {
+                            name: n.text_or_default(content),
+                            type_name: t.text_or_default(content),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fields
+}
+
+/// Extract Rust enum variants
+pub fn extract_rust_enum_variants(node: Node, content: &str) -> Vec<Parameter> {
+    let mut variants = Vec::new();
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        if child.kind() == "enum_variant_list" {
+            let mut variant_cursor = child.walk();
+
+            for variant in child.children(&mut variant_cursor) {
+                if variant.kind() == "enum_variant" {
+                    let name_node = variant.child_by_field_name("name");
+
+                    if let Some(n) = name_node {
+                        variants.push(Parameter {
+                            name: n.text_or_default(content),
+                            type_name: "enum_variant".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    variants
+}
+
+/// Extract TypeScript interface fields
+pub fn extract_ts_interface_fields(node: Node, content: &str) -> Vec<Parameter> {
+    let mut fields = Vec::new();
+    let mut cursor = node.walk();
+
+    // Navigate to interface_body
+    for child in node.children(&mut cursor) {
+        if child.kind() == "interface_body" {
+            let mut field_cursor = child.walk();
+
+            for field in child.children(&mut field_cursor) {
+                if field.kind() == "property_signature" {
+                    let name_node = field.child_by_field_name("name");
+                    let type_ann_node = field.child_by_field_name("type");
+
+                    if let (Some(n), Some(ta)) = (name_node, type_ann_node) {
+                        // type_annotation has a child which is the actual type
+                        let mut ta_cursor = ta.walk();
+
+                        let type_node = ta
+                            .children(&mut ta_cursor)
+                            .find(|c| c.kind() != ":" && c.kind() != "comment");
+
+                        if let Some(tn) = type_node {
+                            fields.push(Parameter {
+                                name: n.text_or_default(content),
+                                type_name: tn.text_or_default(content),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fields
+}
+
+/// Extract TypeScript parameters from an object literal (invoke arguments)
+pub fn extract_ts_params(node: Node, content: &str) -> Vec<Parameter> {
+    let mut params = Vec::new();
+
+    if node.kind() == "object" {
+        let mut cursor = node.walk();
+
+        for child in node.children(&mut cursor) {
+            // Handle { key: value } syntax
+            if child.kind() == "pair" {
+                let key_node = child.child_by_field_name("key");
+                let value_node = child.child_by_field_name("value");
+
+                if let Some(k) = key_node {
+                    let name = k.text_or_default(content);
+                    let mut type_name = "any".to_string();
+
+                    if let Some(v) = value_node {
+                        // Very basic type inference from literal values
+                        type_name = match v.kind() {
+                            "string" => "string",
+                            "number" => "number",
+                            "true" | "false" => "boolean",
+                            "array" => "any[]",
+                            "object" => "object",
+                            _ => "any",
+                        }
+                        .to_string();
+                    }
+
+                    params.push(Parameter { name, type_name });
+                }
+            }
+            // Handle { name } shorthand syntax (shorthand_property_identifier)
+            else if child.kind() == "shorthand_property_identifier"
+                || child.kind() == "shorthand_property_identifier_pattern"
+            {
+                let name = child.text_or_default(content);
+
+                // For shorthand, we can't infer type from literal - it's a variable reference
+                params.push(Parameter {
+                    name,
+                    type_name: "any".to_string(),
+                });
+            }
+        }
+    }
+    params
+}
+
+/// Builder for constructing Finding objects with optional fields
+///
+/// This builder provides a fluent interface for creating Finding objects,
+/// automatically handling the conversion of empty collections to None.
+pub struct FindingBuilder {
+    key: String,
+    entity: crate::syntax::EntityType,
+    behavior: crate::syntax::Behavior,
+    range: tower_lsp_server::lsp_types::Range,
+    parameters: Option<Vec<Parameter>>,
+    return_type: Option<String>,
+    fields: Option<Vec<Parameter>>,
+    attributes: Option<Vec<String>>,
+}
+
+impl FindingBuilder {
+    /// Create a new `FindingBuilder` with required fields
+    #[must_use]
+    pub fn new(
+        key: String,
+        entity: crate::syntax::EntityType,
+        behavior: crate::syntax::Behavior,
+        range: tower_lsp_server::lsp_types::Range,
+    ) -> Self {
+        Self {
+            key,
+            entity,
+            behavior,
+            range,
+            parameters: None,
+            return_type: None,
+            fields: None,
+            attributes: None,
+        }
+    }
+
+    /// Set parameters as Option (automatically filters empty vecs)
+    #[must_use]
+    pub fn with_parameters_opt(mut self, params: Option<Vec<Parameter>>) -> Self {
+        self.parameters = params.filter(|p| !p.is_empty());
+        self
+    }
+
+    /// Set return type as Option
+    #[must_use]
+    pub fn with_return_type_opt(mut self, return_type: Option<String>) -> Self {
+        self.return_type = return_type;
+        self
+    }
+
+    /// Set fields (automatically converts empty Vec to None)
+    #[must_use]
+    pub fn with_fields(mut self, fields: Vec<Parameter>) -> Self {
+        self.fields = if fields.is_empty() {
+            None
+        } else {
+            Some(fields)
+        };
+        self
+    }
+
+    /// Set attributes (automatically converts empty Vec to None)
+    #[must_use]
+    pub fn with_attributes(mut self, attrs: Vec<String>) -> Self {
+        self.attributes = if attrs.is_empty() { None } else { Some(attrs) };
+        self
+    }
+
+    /// Build the Finding object
+    #[must_use]
+    pub fn build(self) -> crate::indexer::Finding {
+        crate::indexer::Finding {
+            key: self.key,
+            entity: self.entity,
+            behavior: self.behavior,
+            range: self.range,
+            parameters: self.parameters,
+            return_type: self.return_type,
+            fields: self.fields,
+            attributes: self.attributes,
+        }
+    }
+}

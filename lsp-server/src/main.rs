@@ -1,15 +1,4 @@
 #![warn(clippy::all, clippy::pedantic)]
-#![allow(clippy::missing_panics_doc)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::mutable_key_type)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::manual_let_else)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::struct_excessive_bools)]
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::enum_variant_names)]
-#![allow(clippy::question_mark)]
 
 use dashmap::DashMap;
 use std::collections::HashSet;
@@ -17,20 +6,30 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::{MessageType, Uri, InitializeParams, InitializeResult, ServerCapabilities, InitializedParams, ConfigurationParams, ConfigurationItem, GotoDefinitionParams, GotoDefinitionResponse, ReferenceParams, Location, CodeLensParams, CodeLens, HoverParams, Hover, CodeActionParams, CodeActionResponse, DocumentSymbolParams, DocumentSymbolResponse, WorkspaceSymbolParams, OneOf, SymbolInformation, WorkspaceSymbol, CompletionParams, CompletionResponse, DidOpenTextDocumentParams, DidChangeTextDocumentParams, DidSaveTextDocumentParams};
+use tower_lsp_server::lsp_types::{
+    CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, CompletionParams,
+    CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, InitializeParams, InitializeResult,
+    InitializedParams, Location, MessageType, OneOf, ReferenceParams, ServerCapabilities,
+    SymbolInformation, Uri, WorkspaceSymbol, WorkspaceSymbolParams,
+};
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
 // Refactored modules
 mod capabilities;
+mod config;
 mod file_processor;
 mod indexer;
+mod initialization;
 mod scanner;
 mod syntax;
 mod tree_parser;
+mod typegen;
 
 use capabilities::{build_server_capabilities, diagnostics};
 use indexer::{IndexKey, ProjectIndex};
-use scanner::{is_tauri_project, scan_workspace_files};
+use scanner::is_tauri_project;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -56,9 +55,21 @@ impl Backend {
             return;
         }
 
+        let is_rust_file = path.extension().is_some_and(|ext| ext == "rs");
+
         if file_processor::process_file_index(path.clone(), &self.project_index) {
             let report = self.project_index.file_report(&path);
             self.log_dev_info(&report).await;
+
+            // Regenerate type definitions when Rust files change
+            if is_rust_file {
+                if let Some(root) = self.workspace_root.get() {
+                    if let Err(e) = typegen::write_types_file(&self.project_index, root) {
+                        self.log_dev_info(&format!("Failed to regenerate types: {e}"))
+                            .await;
+                    }
+                }
+            }
         }
     }
 
@@ -69,9 +80,8 @@ impl Backend {
     }
 
     async fn publish_diagnostics_for_file(&self, path: &PathBuf) {
-        let uri = match Uri::from_file_path(path) {
-            Some(u) => u,
-            None => return,
+        let Some(uri) = Uri::from_file_path(path) else {
+            return;
         };
 
         let diagnostics = diagnostics::compute_file_diagnostics(path, &self.project_index);
@@ -79,6 +89,110 @@ impl Backend {
             .publish_diagnostics(uri, diagnostics, None)
             .await;
     }
+}
+
+impl Backend {
+    /// Spawn a debounced file processing task
+    fn spawn_debounced_processing(
+        &self,
+        path: PathBuf,
+        content: String,
+    ) -> tokio::task::JoinHandle<()> {
+        let project_index = self.project_index.clone();
+        let client = self.client.clone();
+        let is_dev_mode = self.is_developer_mode_active.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+
+            // Get OLD keys before processing (will be removed)
+            let old_keys: Vec<IndexKey> = project_index
+                .file_map
+                .get(&path)
+                .map(|keys| keys.value().clone())
+                .unwrap_or_default();
+
+            if file_processor::process_file_content(&path, &content, &project_index) {
+                // Log parse errors in developer mode (check AFTER processing)
+                if is_dev_mode.load(Ordering::Relaxed) {
+                    if let Some(error_msg) = project_index.get_parse_error(&path) {
+                        let filename = path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown");
+                        client
+                            .log_message(
+                                MessageType::ERROR,
+                                format!("Parse error in {filename}: {error_msg}"),
+                            )
+                            .await;
+                    }
+                }
+
+                // Get NEW keys after processing
+                let new_keys: Vec<IndexKey> = project_index
+                    .file_map
+                    .get(&path)
+                    .map(|keys| keys.value().clone())
+                    .unwrap_or_default();
+
+                // Combine old and new keys to find all affected commands/events
+                let mut all_keys = HashSet::new();
+                for key in old_keys.iter().chain(new_keys.iter()) {
+                    all_keys.insert(key.clone());
+                }
+
+                // Collect all files that contain these commands/events
+                let mut affected_files = HashSet::new();
+                affected_files.insert(path.clone());
+
+                for key in &all_keys {
+                    if let Some(locations) = project_index.map.get(key) {
+                        for loc in locations.iter() {
+                            affected_files.insert(loc.path.clone());
+                        }
+                    }
+                }
+
+                // Publish diagnostics for all affected files
+                for file in affected_files {
+                    if let Some(uri) = Uri::from_file_path(&file) {
+                        let diagnostics =
+                            diagnostics::compute_file_diagnostics(&file, &project_index);
+                        client.publish_diagnostics(uri, diagnostics, None).await;
+                    }
+                }
+            }
+        })
+    }
+
+    /// Load and apply configuration settings from the client
+    async fn load_configuration(&self) {
+        config::load_configuration(
+            &self.client,
+            &self.is_developer_mode_active,
+            &self.project_index,
+        )
+        .await;
+    }
+
+    /// Spawn background indexing task
+    fn spawn_background_indexing(&self, root: PathBuf) {
+        initialization::spawn_background_indexing(
+            root,
+            self.project_index.clone(),
+            self.client.clone(),
+            self.is_developer_mode_active.clone(),
+        );
+    }
+}
+
+/// Helper: Extract path and content from document change params
+fn extract_change_params(params: DidChangeTextDocumentParams) -> Option<(PathBuf, String)> {
+    let path = params.text_document.uri.to_file_path()?.into_owned();
+    // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
+    let content = params.content_changes.into_iter().next()?.text;
+    Some((path, content))
 }
 
 impl LanguageServer for Backend {
@@ -130,100 +244,14 @@ impl LanguageServer for Backend {
             return;
         }
 
-        let ext_config_request = ConfigurationParams {
-            items: vec![
-                ConfigurationItem {
-                    scope_uri: None,
-                    section: Some("tarus.developerMode".to_string()),
-                },
-                ConfigurationItem {
-                    scope_uri: None,
-                    section: Some("tarus.referenceLimit".to_string()),
-                },
-            ],
+        // Load configuration settings
+        self.load_configuration().await;
+
+        // Start background indexing
+        let Some(root) = self.workspace_root.get() else {
+            return;
         };
-
-        if let Ok(response) = self.client.configuration(ext_config_request.items).await {
-            let mut iter = response.into_iter();
-
-            // Handle developerMode
-            if let Some(settings) = iter.next() {
-                if let Some(is_enabled) = settings.as_bool() {
-                    self.is_developer_mode_active
-                        .store(is_enabled, Ordering::Relaxed);
-
-                    self.client
-                        .log_message(
-                            MessageType::INFO,
-                            &format!("Developer Mode initialized to: {is_enabled}"),
-                        )
-                        .await;
-                }
-            }
-
-            // Handle referenceLimit
-            if let Some(settings) = iter.next() {
-                if let Some(limit) = settings.as_u64() {
-                    self.project_index
-                        .reference_limit
-                        .store(limit as usize, Ordering::Relaxed);
-
-                    self.client
-                        .log_message(
-                            MessageType::INFO,
-                            &format!("Reference Limit initialized to: {limit}"),
-                        )
-                        .await;
-                }
-            }
-        }
-
-        let root = match self.workspace_root.get() {
-            Some(r) => r,
-            None => return,
-        };
-
-        let root_clone = root.clone();
-        let project_index_clone = self.project_index.clone();
-        let client_clone = self.client.clone();
-
-        let is_dev_mode_clone = self.is_developer_mode_active.clone();
-
-        tokio::spawn(async move {
-            client_clone
-                .log_message(MessageType::INFO, "🚀 Starting background indexing...")
-                .await;
-
-            let files = tokio::task::spawn_blocking(move || scan_workspace_files(&root_clone))
-                .await
-                .unwrap_or_default();
-
-            for path in files {
-                file_processor::process_file_index(path, &project_index_clone);
-            }
-
-            // Publish diagnostics for all indexed files
-            for entry in &project_index_clone.file_map {
-                let path = entry.key().clone();
-                if let Some(uri) = Uri::from_file_path(&path) {
-                    let diagnostics =
-                        diagnostics::compute_file_diagnostics(&path, &project_index_clone);
-                    client_clone
-                        .publish_diagnostics(uri, diagnostics, None)
-                        .await;
-                }
-            }
-
-            // Report about the indexing process
-            let report = project_index_clone.technical_report();
-            if is_dev_mode_clone.load(Ordering::Relaxed) {
-                client_clone.log_message(MessageType::INFO, report).await;
-            }
-
-            client_clone
-                .log_message(MessageType::INFO, "🏁 Indexing complete".to_string())
-                .await;
-        });
+        self.spawn_background_indexing(root.clone());
     }
 
     async fn goto_definition(
@@ -322,11 +350,10 @@ impl LanguageServer for Backend {
         ))
         .await;
 
-        let workspace_root = self.workspace_root.get().cloned();
         let result = capabilities::code_actions::handle_code_action(
             &params,
             &self.project_index,
-            workspace_root.as_ref(),
+            self.workspace_root.get().map(PathBuf::as_path),
         );
 
         if let Some(ref actions) = result {
@@ -401,7 +428,11 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         self.log_dev_info("➡️ Request: Completion").await;
 
-        let result = capabilities::completion::handle_completion(&params, &self.project_index, &self.document_cache);
+        let result = capabilities::completion::handle_completion(
+            &params,
+            &self.project_index,
+            &self.document_cache,
+        );
 
         if let Some(ref response) = result {
             match response {
@@ -458,92 +489,21 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path_cow) = params.text_document.uri.to_file_path() {
-            let path: PathBuf = path_cow.into_owned();
+        let Some((path, content)) = extract_change_params(params) else {
+            return;
+        };
 
-            // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
-            if let Some(change) = params.content_changes.into_iter().next() {
-                let content = change.text;
+        // Cache document content immediately for completion (before debounce)
+        self.document_cache.insert(path.clone(), content.clone());
 
-                // Cache document content immediately for completion (before debounce)
-                self.document_cache.insert(path.clone(), content.clone());
-
-                // Cancel existing debounce task for this file
-                if let Some((_key, old_task)) = self.debounce_tasks.remove(&path) {
-                    old_task.abort();
-                }
-
-                // Spawn new debounced task
-                let project_index = self.project_index.clone();
-                let client = self.client.clone();
-                let path_clone = path.clone();
-                let is_dev_mode = self.is_developer_mode_active.clone();
-
-                let task = tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-
-                    // Get OLD keys before processing (will be removed)
-                    let old_keys: Vec<IndexKey> = project_index
-                        .file_map
-                        .get(&path_clone)
-                        .map(|keys| keys.value().clone())
-                        .unwrap_or_default();
-
-                    if file_processor::process_file_content(&path_clone, &content, &project_index) {
-                        // Log parse errors in developer mode (check AFTER processing)
-                        if is_dev_mode.load(Ordering::Relaxed) {
-                            if let Some(error_msg) = project_index.get_parse_error(&path_clone) {
-                                let filename = path_clone
-                                    .file_name()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("unknown");
-                                client
-                                    .log_message(
-                                        MessageType::ERROR,
-                                        format!("Parse error in {filename}: {error_msg}"),
-                                    )
-                                    .await;
-                            }
-                        }
-                        // Get NEW keys after processing
-                        let new_keys: Vec<IndexKey> = project_index
-                            .file_map
-                            .get(&path_clone)
-                            .map(|keys| keys.value().clone())
-                            .unwrap_or_default();
-
-                        // Combine old and new keys to find all affected commands/events
-                        let mut all_keys = HashSet::new();
-                        for key in old_keys.iter().chain(new_keys.iter()) {
-                            all_keys.insert(key.clone());
-                        }
-
-                        // Collect all files that contain these commands/events
-                        let mut affected_files = HashSet::new();
-                        affected_files.insert(path_clone.clone());
-
-                        for key in &all_keys {
-                            if let Some(locations) = project_index.map.get(key) {
-                                for loc in locations.iter() {
-                                    affected_files.insert(loc.path.clone());
-                                }
-                            }
-                        }
-
-                        // Publish diagnostics for all affected files
-                        for file in affected_files {
-                            if let Some(uri) = Uri::from_file_path(&file) {
-                                let diagnostics =
-                                    diagnostics::compute_file_diagnostics(&file, &project_index);
-                                client.publish_diagnostics(uri, diagnostics, None).await;
-                            }
-                        }
-                    }
-                });
-
-                self.debounce_tasks.insert(path, task);
-            }
+        // Cancel existing debounce task for this file
+        if let Some((_key, old_task)) = self.debounce_tasks.remove(&path) {
+            old_task.abort();
         }
+
+        // Spawn new debounced task
+        let task = self.spawn_debounced_processing(path.clone(), content);
+        self.debounce_tasks.insert(path, task);
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
