@@ -17,7 +17,15 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::{MessageType, Uri, InitializeParams, InitializeResult, ServerCapabilities, InitializedParams, ConfigurationParams, ConfigurationItem, GotoDefinitionParams, GotoDefinitionResponse, ReferenceParams, Location, CodeLensParams, CodeLens, HoverParams, Hover, CodeActionParams, CodeActionResponse, DocumentSymbolParams, DocumentSymbolResponse, WorkspaceSymbolParams, OneOf, SymbolInformation, WorkspaceSymbol, CompletionParams, CompletionResponse, DidOpenTextDocumentParams, DidChangeTextDocumentParams, DidSaveTextDocumentParams};
+use tower_lsp_server::lsp_types::{
+    CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, CompletionParams,
+    CompletionResponse, ConfigurationItem, ConfigurationParams, DidChangeTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
+    ReferenceParams, ServerCapabilities, SymbolInformation, Uri, WorkspaceSymbol,
+    WorkspaceSymbolParams,
+};
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
 // Refactored modules
@@ -92,6 +100,90 @@ impl Backend {
             .publish_diagnostics(uri, diagnostics, None)
             .await;
     }
+}
+
+impl Backend {
+    /// Spawn a debounced file processing task
+    fn spawn_debounced_processing(
+        &self,
+        path: PathBuf,
+        content: String,
+    ) -> tokio::task::JoinHandle<()> {
+        let project_index = self.project_index.clone();
+        let client = self.client.clone();
+        let is_dev_mode = self.is_developer_mode_active.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+
+            // Get OLD keys before processing (will be removed)
+            let old_keys: Vec<IndexKey> = project_index
+                .file_map
+                .get(&path)
+                .map(|keys| keys.value().clone())
+                .unwrap_or_default();
+
+            if file_processor::process_file_content(&path, &content, &project_index) {
+                // Log parse errors in developer mode (check AFTER processing)
+                if is_dev_mode.load(Ordering::Relaxed) {
+                    if let Some(error_msg) = project_index.get_parse_error(&path) {
+                        let filename = path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown");
+                        client
+                            .log_message(
+                                MessageType::ERROR,
+                                format!("Parse error in {filename}: {error_msg}"),
+                            )
+                            .await;
+                    }
+                }
+
+                // Get NEW keys after processing
+                let new_keys: Vec<IndexKey> = project_index
+                    .file_map
+                    .get(&path)
+                    .map(|keys| keys.value().clone())
+                    .unwrap_or_default();
+
+                // Combine old and new keys to find all affected commands/events
+                let mut all_keys = HashSet::new();
+                for key in old_keys.iter().chain(new_keys.iter()) {
+                    all_keys.insert(key.clone());
+                }
+
+                // Collect all files that contain these commands/events
+                let mut affected_files = HashSet::new();
+                affected_files.insert(path.clone());
+
+                for key in &all_keys {
+                    if let Some(locations) = project_index.map.get(key) {
+                        for loc in locations.iter() {
+                            affected_files.insert(loc.path.clone());
+                        }
+                    }
+                }
+
+                // Publish diagnostics for all affected files
+                for file in affected_files {
+                    if let Some(uri) = Uri::from_file_path(&file) {
+                        let diagnostics =
+                            diagnostics::compute_file_diagnostics(&file, &project_index);
+                        client.publish_diagnostics(uri, diagnostics, None).await;
+                    }
+                }
+            }
+        })
+    }
+}
+
+/// Helper: Extract path and content from document change params
+fn extract_change_params(params: DidChangeTextDocumentParams) -> Option<(PathBuf, String)> {
+    let path = params.text_document.uri.to_file_path()?.into_owned();
+    // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
+    let content = params.content_changes.into_iter().next()?.text;
+    Some((path, content))
 }
 
 impl LanguageServer for Backend {
@@ -230,7 +322,7 @@ impl LanguageServer for Backend {
                     .await;
             }
 
-    // Publish diagnostics for all indexed files
+            // Publish diagnostics for all indexed files
             for entry in &project_index_clone.file_map {
                 let path = entry.key().clone();
                 if let Some(uri) = Uri::from_file_path(&path) {
@@ -429,7 +521,11 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         self.log_dev_info("➡️ Request: Completion").await;
 
-        let result = capabilities::completion::handle_completion(&params, &self.project_index, &self.document_cache);
+        let result = capabilities::completion::handle_completion(
+            &params,
+            &self.project_index,
+            &self.document_cache,
+        );
 
         if let Some(ref response) = result {
             match response {
@@ -486,92 +582,21 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path_cow) = params.text_document.uri.to_file_path() {
-            let path: PathBuf = path_cow.into_owned();
+        let Some((path, content)) = extract_change_params(params) else {
+            return;
+        };
 
-            // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
-            if let Some(change) = params.content_changes.into_iter().next() {
-                let content = change.text;
+        // Cache document content immediately for completion (before debounce)
+        self.document_cache.insert(path.clone(), content.clone());
 
-                // Cache document content immediately for completion (before debounce)
-                self.document_cache.insert(path.clone(), content.clone());
-
-                // Cancel existing debounce task for this file
-                if let Some((_key, old_task)) = self.debounce_tasks.remove(&path) {
-                    old_task.abort();
-                }
-
-                // Spawn new debounced task
-                let project_index = self.project_index.clone();
-                let client = self.client.clone();
-                let path_clone = path.clone();
-                let is_dev_mode = self.is_developer_mode_active.clone();
-
-                let task = tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-
-                    // Get OLD keys before processing (will be removed)
-                    let old_keys: Vec<IndexKey> = project_index
-                        .file_map
-                        .get(&path_clone)
-                        .map(|keys| keys.value().clone())
-                        .unwrap_or_default();
-
-                    if file_processor::process_file_content(&path_clone, &content, &project_index) {
-                        // Log parse errors in developer mode (check AFTER processing)
-                        if is_dev_mode.load(Ordering::Relaxed) {
-                            if let Some(error_msg) = project_index.get_parse_error(&path_clone) {
-                                let filename = path_clone
-                                    .file_name()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("unknown");
-                                client
-                                    .log_message(
-                                        MessageType::ERROR,
-                                        format!("Parse error in {filename}: {error_msg}"),
-                                    )
-                                    .await;
-                            }
-                        }
-                        // Get NEW keys after processing
-                        let new_keys: Vec<IndexKey> = project_index
-                            .file_map
-                            .get(&path_clone)
-                            .map(|keys| keys.value().clone())
-                            .unwrap_or_default();
-
-                        // Combine old and new keys to find all affected commands/events
-                        let mut all_keys = HashSet::new();
-                        for key in old_keys.iter().chain(new_keys.iter()) {
-                            all_keys.insert(key.clone());
-                        }
-
-                        // Collect all files that contain these commands/events
-                        let mut affected_files = HashSet::new();
-                        affected_files.insert(path_clone.clone());
-
-                        for key in &all_keys {
-                            if let Some(locations) = project_index.map.get(key) {
-                                for loc in locations.iter() {
-                                    affected_files.insert(loc.path.clone());
-                                }
-                            }
-                        }
-
-                        // Publish diagnostics for all affected files
-                        for file in affected_files {
-                            if let Some(uri) = Uri::from_file_path(&file) {
-                                let diagnostics =
-                                    diagnostics::compute_file_diagnostics(&file, &project_index);
-                                client.publish_diagnostics(uri, diagnostics, None).await;
-                            }
-                        }
-                    }
-                });
-
-                self.debounce_tasks.insert(path, task);
-            }
+        // Cancel existing debounce task for this file
+        if let Some((_key, old_task)) = self.debounce_tasks.remove(&path) {
+            old_task.abort();
         }
+
+        // Spawn new debounced task
+        let task = self.spawn_debounced_processing(path.clone(), content);
+        self.debounce_tasks.insert(path, task);
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
