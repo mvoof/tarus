@@ -232,6 +232,47 @@ impl ProjectIndex {
         self.map.get(&key).map(|v| v.clone()).unwrap_or_default()
     }
 
+    /// Helper function to group targets by file and format lens data
+    fn group_and_format_targets(
+        targets: &[LocationInfo],
+        my_range: Range,
+        limit: usize,
+    ) -> Vec<(Range, String, Vec<LocationInfo>)> {
+        if targets.is_empty() {
+            return Vec::new();
+        }
+
+        // Group by file path
+        let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
+        for t in targets {
+            files_map.entry(t.path.clone()).or_default().push(t.clone());
+        }
+
+        if files_map.len() <= limit {
+            // Show individual link for each file
+            let mut sorted_files: Vec<_> = files_map.into_iter().collect();
+            sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+            sorted_files
+                .into_iter()
+                .map(|(fpath, locs)| {
+                    let fname = fpath
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown");
+                    (my_range, format!("Go to {fname}"), locs)
+                })
+                .collect()
+        } else {
+            // Show summary when too many files
+            vec![(
+                my_range,
+                format!("{} references", targets.len()),
+                targets.to_vec(),
+            )]
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     /// Preparing data for `CodeLens`
     pub fn get_lens_data(&self, path: &PathBuf) -> Vec<(Range, String, Vec<LocationInfo>)> {
@@ -287,106 +328,32 @@ impl ProjectIndex {
 
                 if is_current_rust {
                     // Rust Logic: Show frontend files separately
-
-                    // Group by file path
-                    let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-
-                    for t in &frontend_targets {
-                        files_map.entry(t.path.clone()).or_default().push(t.clone());
-                    }
-
                     let limit = self.reference_limit.load(Ordering::Relaxed);
-
-                    if files_map.len() <= limit {
-                        // If <= limit files, show distinct link for EACH file
-                        let mut sorted_files: Vec<_> = files_map.into_iter().collect();
-                        // Sort for consistency
-                        sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        for (fpath, locs) in sorted_files {
-                            let fname = fpath
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-
-                            result.push((my_loc.range, format!("Go to {fname}"), locs));
-                        }
-                    } else {
-                        // If > limit files, show summary
-                        result.push((
-                            my_loc.range,
-                            format!("{} references", frontend_targets.len()),
-                            frontend_targets.clone(),
-                        ));
-                    }
+                    result.extend(Self::group_and_format_targets(
+                        &frontend_targets,
+                        my_loc.range,
+                        limit,
+                    ));
                 } else {
                     // Frontend Logic: "Go to Rust" + "Go to others"
 
                     let limit = self.reference_limit.load(Ordering::Relaxed);
 
                     // 1. Link to Rust (if exists)
-
                     if !rust_targets.is_empty() {
-                        // Group by file path
-                        let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-
-                        for t in &rust_targets {
-                            files_map.entry(t.path.clone()).or_default().push(t.clone());
-                        }
-
-                        if files_map.len() <= limit {
-                            // If <= limit files, show distinct link for EACH file
-                            let mut sorted_files: Vec<_> = files_map.into_iter().collect();
-                            sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-                            for (fpath, locs) in sorted_files {
-                                let fname = fpath
-                                    .file_name()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-
-                                result.push((my_loc.range, format!("Go to {fname}"), locs));
-                            }
-                        } else {
-                            // If > limit files, show summary
-                            result.push((
-                                my_loc.range,
-                                format!("{} rust refs", rust_targets.len()),
-                                rust_targets,
-                            ));
-                        }
+                        result.extend(Self::group_and_format_targets(
+                            &rust_targets,
+                            my_loc.range,
+                            limit,
+                        ));
                     }
 
                     // 2. Links to other frontend files
-                    // Group by file path
-                    let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-
-                    for t in &frontend_targets {
-                        files_map.entry(t.path.clone()).or_default().push(t.clone());
-                    }
-
-                    if files_map.len() <= limit {
-                        // If <= limit files, show distinct link for EACH file
-                        let mut sorted_files: Vec<_> = files_map.into_iter().collect();
-                        sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        for (fpath, locs) in sorted_files {
-                            let fname = fpath
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-
-                            result.push((my_loc.range, format!("Go to {fname}"), locs));
-                        }
-                    } else {
-                        // If > limit files, show summary
-                        result.push((
+                    if !frontend_targets.is_empty() {
+                        result.extend(Self::group_and_format_targets(
+                            &frontend_targets,
                             my_loc.range,
-                            format!("{} references", frontend_targets.len()),
-                            frontend_targets,
+                            limit,
                         ));
                     }
                 }
