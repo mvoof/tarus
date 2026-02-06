@@ -10,6 +10,7 @@ mod rust_parser;
 mod sfc;
 mod utils;
 
+pub use extractors::FindingBuilder;
 pub use utils::LangType;
 
 use crate::indexer::{FileIndex, Finding};

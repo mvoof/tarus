@@ -7,21 +7,12 @@ use tree_sitter::Node;
 pub trait NodeTextExt {
     /// Extract text from node, returning empty string if extraction fails
     fn text_or_default(&self, content: &str) -> String;
-
-    /// Extract text from node, returning provided default if extraction fails
-    fn text_or(&self, content: &str, default: &str) -> String;
 }
 
 impl NodeTextExt for Node<'_> {
     fn text_or_default(&self, content: &str) -> String {
         self.utf8_text(content.as_bytes())
             .unwrap_or_default()
-            .to_string()
-    }
-
-    fn text_or(&self, content: &str, default: &str) -> String {
-        self.utf8_text(content.as_bytes())
-            .unwrap_or(default)
             .to_string()
     }
 }

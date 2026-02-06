@@ -203,28 +203,10 @@ impl FindingBuilder {
         }
     }
 
-    /// Set parameters (automatically converts empty Vec to None)
-    #[must_use]
-    pub fn with_parameters(mut self, params: Vec<Parameter>) -> Self {
-        self.parameters = if params.is_empty() {
-            None
-        } else {
-            Some(params)
-        };
-        self
-    }
-
-    /// Set parameters as Option
+    /// Set parameters as Option (automatically filters empty vecs)
     #[must_use]
     pub fn with_parameters_opt(mut self, params: Option<Vec<Parameter>>) -> Self {
         self.parameters = params.filter(|p| !p.is_empty());
-        self
-    }
-
-    /// Set return type
-    #[must_use]
-    pub fn with_return_type(mut self, return_type: String) -> Self {
-        self.return_type = Some(return_type);
         self
     }
 

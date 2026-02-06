@@ -65,6 +65,37 @@ fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
     ]
 }
 
+/// Process interface definition match
+fn process_interface_match(
+    m: &tree_sitter::QueryMatch,
+    indices: &CaptureIndices,
+    content: &str,
+    line_offset: usize,
+) -> Option<Finding> {
+    let iface_cap = indices.find_capture(m.captures, "interface_def")?;
+    let name_cap = indices.find_capture(m.captures, "interface_name")?;
+
+    let name = name_cap.node.text_or_default(content);
+    let fields = extract_ts_interface_fields(iface_cap.node, content);
+
+    Some(
+        FindingBuilder::new(
+            name,
+            EntityType::Interface,
+            Behavior::Definition,
+            adjust_range(
+                Range {
+                    start: point_to_position(name_cap.node.start_position()),
+                    end: point_to_position(name_cap.node.end_position()),
+                },
+                line_offset,
+            ),
+        )
+        .with_fields(fields)
+        .build(),
+    )
+}
+
 /// Parse TypeScript/JavaScript source code
 #[allow(clippy::too_many_lines)]
 pub fn parse_frontend(
@@ -131,28 +162,8 @@ pub fn parse_frontend(
         }
 
         // Collect interfaces
-        if let Some(iface_cap) = indices.find_capture(m.captures, "interface_def") {
-            if let Some(name_cap) = indices.find_capture(m.captures, "interface_name") {
-                let name = name_cap.node.text_or_default(content);
-                let fields = extract_ts_interface_fields(iface_cap.node, content);
-
-                findings.push(
-                    FindingBuilder::new(
-                        name,
-                        EntityType::Interface,
-                        Behavior::Definition,
-                        adjust_range(
-                            Range {
-                                start: point_to_position(name_cap.node.start_position()),
-                                end: point_to_position(name_cap.node.end_position()),
-                            },
-                            line_offset,
-                        ),
-                    )
-                    .with_fields(fields)
-                    .build(),
-                );
-            }
+        if let Some(finding) = process_interface_match(&m, &indices, content, line_offset) {
+            findings.push(finding);
         }
     }
 

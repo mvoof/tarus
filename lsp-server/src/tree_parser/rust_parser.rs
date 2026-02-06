@@ -31,6 +31,142 @@ fn get_rust_event_patterns() -> HashMap<&'static str, (EntityType, Behavior)> {
     patterns
 }
 
+/// Process struct definition match
+fn process_struct_match(
+    m: &tree_sitter::QueryMatch,
+    indices: &CaptureIndices,
+    content: &str,
+) -> Option<Finding> {
+    let struct_cap = indices.find_capture(m.captures, "struct_def")?;
+    let name_cap = indices.find_capture(m.captures, "struct_name")?;
+
+    let name = name_cap.node.text_or_default(content);
+    let fields = extract_rust_struct_fields(struct_cap.node, content);
+
+    let attributes: Vec<String> = indices
+        .find_captures(m.captures, "struct_attr")
+        .iter()
+        .map(|cap| cap.node.text_or_default(content))
+        .collect();
+
+    Some(
+        FindingBuilder::new(
+            name,
+            EntityType::Struct,
+            Behavior::Definition,
+            Range {
+                start: point_to_position(name_cap.node.start_position()),
+                end: point_to_position(name_cap.node.end_position()),
+            },
+        )
+        .with_fields(fields)
+        .with_attributes(attributes)
+        .build(),
+    )
+}
+
+/// Process enum definition match
+fn process_enum_match(
+    m: &tree_sitter::QueryMatch,
+    indices: &CaptureIndices,
+    content: &str,
+) -> Option<Finding> {
+    let enum_cap = indices.find_capture(m.captures, "enum_def")?;
+    let name_cap = indices.find_capture(m.captures, "enum_name")?;
+
+    let name = name_cap.node.text_or_default(content);
+    let variants = extract_rust_enum_variants(enum_cap.node, content);
+
+    let attributes: Vec<String> = indices
+        .find_captures(m.captures, "enum_attr")
+        .iter()
+        .map(|cap| cap.node.text_or_default(content))
+        .collect();
+
+    Some(
+        FindingBuilder::new(
+            name,
+            EntityType::Enum,
+            Behavior::Definition,
+            Range {
+                start: point_to_position(name_cap.node.start_position()),
+                end: point_to_position(name_cap.node.end_position()),
+            },
+        )
+        .with_fields(variants)
+        .with_attributes(attributes)
+        .build(),
+    )
+}
+
+/// Process command definition matches
+fn process_command_matches(
+    m: &tree_sitter::QueryMatch,
+    indices: &CaptureIndices,
+    content: &str,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    for capture in indices.find_captures(m.captures, "command_name") {
+        let node = capture.node;
+        let name = node.text_or_default(content);
+
+        let parameters = indices
+            .find_capture(m.captures, "command_params")
+            .map(|cap| extract_rust_params(cap.node, content));
+
+        let return_type = indices
+            .find_capture(m.captures, "command_return_type")
+            .map(|cap| cap.node.text_or_default(content));
+
+        findings.push(
+            FindingBuilder::new(
+                name,
+                EntityType::Command,
+                Behavior::Definition,
+                Range {
+                    start: point_to_position(node.start_position()),
+                    end: point_to_position(node.end_position()),
+                },
+            )
+            .with_parameters_opt(parameters)
+            .with_return_type_opt(return_type)
+            .build(),
+        );
+    }
+
+    findings
+}
+
+/// Process event method call match
+fn process_event_match(
+    m: &tree_sitter::QueryMatch,
+    indices: &CaptureIndices,
+    content: &str,
+    patterns: &HashMap<&str, (EntityType, Behavior)>,
+) -> Option<Finding> {
+    let method_cap = indices.find_capture(m.captures, "method_name")?;
+    let event_cap = indices.find_capture(m.captures, "event_name")?;
+
+    let method_name = method_cap.node.text_or_default(content);
+    let event_name = event_cap.node.text_or_default(content);
+
+    let (entity, behavior) = patterns.get(method_name.as_str())?;
+
+    Some(
+        FindingBuilder::new(
+            event_name,
+            *entity,
+            *behavior,
+            Range {
+                start: point_to_position(event_cap.node.start_position()),
+                end: point_to_position(event_cap.node.end_position()),
+            },
+        )
+        .build(),
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 /// Parse Rust source code
 pub fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
@@ -77,115 +213,18 @@ pub fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
     let mut matches = cursor.matches(&query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
-        // Process struct definitions
-        if let Some(struct_cap) = indices.find_capture(m.captures, "struct_def") {
-            if let Some(name_cap) = indices.find_capture(m.captures, "struct_name") {
-                let name = name_cap.node.text_or_default(content);
-                let fields = extract_rust_struct_fields(struct_cap.node, content);
-
-                let attributes: Vec<String> = indices
-                    .find_captures(m.captures, "struct_attr")
-                    .iter()
-                    .map(|cap| cap.node.text_or_default(content))
-                    .collect();
-
-                findings.push(
-                    FindingBuilder::new(
-                        name,
-                        EntityType::Struct,
-                        Behavior::Definition,
-                        Range {
-                            start: point_to_position(name_cap.node.start_position()),
-                            end: point_to_position(name_cap.node.end_position()),
-                        },
-                    )
-                    .with_fields(fields)
-                    .with_attributes(attributes)
-                    .build(),
-                );
-            }
+        if let Some(finding) = process_struct_match(&m, &indices, content) {
+            findings.push(finding);
         }
 
-        // Process enum definitions
-        if let Some(enum_cap) = indices.find_capture(m.captures, "enum_def") {
-            if let Some(name_cap) = indices.find_capture(m.captures, "enum_name") {
-                let name = name_cap.node.text_or_default(content);
-                let variants = extract_rust_enum_variants(enum_cap.node, content);
-
-                let attributes: Vec<String> = indices
-                    .find_captures(m.captures, "enum_attr")
-                    .iter()
-                    .map(|cap| cap.node.text_or_default(content))
-                    .collect();
-
-                findings.push(
-                    FindingBuilder::new(
-                        name,
-                        EntityType::Enum,
-                        Behavior::Definition,
-                        Range {
-                            start: point_to_position(name_cap.node.start_position()),
-                            end: point_to_position(name_cap.node.end_position()),
-                        },
-                    )
-                    .with_fields(variants)
-                    .with_attributes(attributes)
-                    .build(),
-                );
-            }
+        if let Some(finding) = process_enum_match(&m, &indices, content) {
+            findings.push(finding);
         }
 
-        // Process command definitions
-        for capture in indices.find_captures(m.captures, "command_name") {
-            let node = capture.node;
-            let name = node.text_or_default(content);
+        findings.extend(process_command_matches(&m, &indices, content));
 
-            // Extract parameters and return type
-            let parameters = indices
-                .find_capture(m.captures, "command_params")
-                .map(|cap| extract_rust_params(cap.node, content));
-
-            let return_type = indices
-                .find_capture(m.captures, "command_return_type")
-                .map(|cap| cap.node.text_or_default(content));
-
-            findings.push(
-                FindingBuilder::new(
-                    name,
-                    EntityType::Command,
-                    Behavior::Definition,
-                    Range {
-                        start: point_to_position(node.start_position()),
-                        end: point_to_position(node.end_position()),
-                    },
-                )
-                .with_parameters_opt(parameters)
-                .with_return_type_opt(return_type)
-                .build(),
-            );
-        }
-
-        // Process event method calls
-        if let Some(method_cap) = indices.find_capture(m.captures, "method_name") {
-            if let Some(event_cap) = indices.find_capture(m.captures, "event_name") {
-                let method_name = method_cap.node.text_or_default(content);
-                let event_name = event_cap.node.text_or_default(content);
-
-                if let Some((entity, behavior)) = rust_event_patterns.get(method_name.as_str()) {
-                    findings.push(
-                        FindingBuilder::new(
-                            event_name,
-                            *entity,
-                            *behavior,
-                            Range {
-                                start: point_to_position(event_cap.node.start_position()),
-                                end: point_to_position(event_cap.node.end_position()),
-                            },
-                        )
-                        .build(),
-                    );
-                }
-            }
+        if let Some(finding) = process_event_match(&m, &indices, content, &rust_event_patterns) {
+            findings.push(finding);
         }
     }
 
