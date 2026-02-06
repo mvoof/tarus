@@ -8,62 +8,11 @@ use tower_lsp_server::lsp_types::Range;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 use super::extractors::{extract_ts_interface_fields, extract_ts_params, FindingBuilder};
+use super::patterns::{get_all_frontend_patterns, ArgPosition, FunctionPatternWithPos};
 use super::query_helpers::CaptureIndices;
 use super::utils::{adjust_range, get_query_source, point_to_position, LangType, NodeTextExt};
 
-/// Function patterns with their argument position
-pub struct FunctionPatternWithPos {
-    pub name: &'static str,
-    pub entity: EntityType,
-    pub behavior: Behavior,
-    pub arg_position: ArgPosition,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum ArgPosition {
-    First,
-    Second,
-}
-
-/// Get all frontend patterns including those with second argument
-fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
-    vec![
-        // First argument patterns - Commands
-        FunctionPatternWithPos {
-            name: "invoke",
-            entity: EntityType::Command,
-            behavior: Behavior::Call,
-            arg_position: ArgPosition::First,
-        },
-        // First argument patterns - Events (emit)
-        FunctionPatternWithPos {
-            name: "emit",
-            entity: EntityType::Event,
-            behavior: Behavior::Emit,
-            arg_position: ArgPosition::First,
-        },
-        // First argument patterns - Events (listen/subscribe)
-        FunctionPatternWithPos {
-            name: "listen",
-            entity: EntityType::Event,
-            behavior: Behavior::Listen,
-            arg_position: ArgPosition::First,
-        },
-        FunctionPatternWithPos {
-            name: "once",
-            entity: EntityType::Event,
-            behavior: Behavior::Listen,
-            arg_position: ArgPosition::First,
-        },
-        // Second argument patterns
-        FunctionPatternWithPos {
-            name: "emitTo",
-            entity: EntityType::Event,
-            behavior: Behavior::Emit,
-            arg_position: ArgPosition::Second,
-        },
-    ]
-}
+// Local pattern definitions removed - using patterns::{ArgPosition, FunctionPatternWithPos, get_all_frontend_patterns}
 
 /// Process interface definition match
 pub fn process_interface_match(

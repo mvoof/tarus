@@ -10,26 +10,11 @@ use tree_sitter::{Language, Parser, Query, QueryCursor};
 use super::extractors::{
     extract_rust_enum_variants, extract_rust_params, extract_rust_struct_fields, FindingBuilder,
 };
+use super::patterns::get_rust_event_patterns;
 use super::query_helpers::CaptureIndices;
 use super::utils::{get_query_source, point_to_position, LangType, NodeTextExt};
 
-/// Get method patterns for Rust backend
-pub fn get_rust_event_patterns() -> HashMap<&'static str, (EntityType, Behavior)> {
-    let mut patterns = HashMap::new();
-    // Emit methods
-    patterns.insert("emit", (EntityType::Event, Behavior::Emit));
-    patterns.insert("emit_to", (EntityType::Event, Behavior::Emit));
-    patterns.insert("emit_str", (EntityType::Event, Behavior::Emit));
-    patterns.insert("emit_str_to", (EntityType::Event, Behavior::Emit));
-    patterns.insert("emit_filter", (EntityType::Event, Behavior::Emit));
-    patterns.insert("emit_str_filter", (EntityType::Event, Behavior::Emit));
-    // Listen methods
-    patterns.insert("listen", (EntityType::Event, Behavior::Listen));
-    patterns.insert("listen_any", (EntityType::Event, Behavior::Listen));
-    patterns.insert("once", (EntityType::Event, Behavior::Listen));
-    patterns.insert("once_any", (EntityType::Event, Behavior::Listen));
-    patterns
-}
+// Local pattern definition removed - using patterns::get_rust_event_patterns
 
 /// Process struct definition match
 pub fn process_struct_match(
