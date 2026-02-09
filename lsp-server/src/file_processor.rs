@@ -7,9 +7,13 @@ use std::path::{Path, PathBuf};
 /// Supported file extensions
 pub const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
 
-/// Check if file extension is supported
+/// Check if file extension is supported and not ignored
 #[must_use]
 pub fn is_supported_file(path: &Path) -> bool {
+    if crate::scanner::is_ignored(path) {
+        return false;
+    }
+
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         SUPPORTED_EXTENSIONS.contains(&ext)
     } else {

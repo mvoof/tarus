@@ -271,6 +271,14 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
+        let Some(path) = uri.to_file_path() else {
+            return Ok(None);
+        };
+
+        if scanner::is_ignored(&path) {
+            return Ok(None);
+        }
+
         self.log_dev_info(&format!(
             "➡️ Request: Definition at {:?} line: {}, char: {}",
             uri, position.line, position.character
@@ -293,6 +301,14 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
+        let Some(path) = uri.to_file_path() else {
+            return Ok(None);
+        };
+
+        if scanner::is_ignored(&path) {
+            return Ok(None);
+        }
+
         self.log_dev_info(&format!(
             "➡️ Request: References at {:?} line: {}, char: {}",
             uri, position.line, position.character
@@ -313,6 +329,13 @@ impl LanguageServer for Backend {
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = &params.text_document.uri;
+        let Some(path) = uri.to_file_path() else {
+            return Ok(None);
+        };
+
+        if scanner::is_ignored(&path) {
+            return Ok(None);
+        }
 
         self.log_dev_info(&format!("➡️ Request: CodeLens for {uri:?}"))
             .await;
@@ -332,6 +355,14 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+
+        let Some(path) = uri.to_file_path() else {
+            return Ok(None);
+        };
+
+        if scanner::is_ignored(&path) {
+            return Ok(None);
+        }
 
         self.log_dev_info(&format!(
             "➡️ Request: Hover at {:?} line: {}, char: {}",
@@ -353,6 +384,14 @@ impl LanguageServer for Backend {
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
         let position = params.range.start;
+
+        let Some(path) = uri.to_file_path() else {
+            return Ok(None);
+        };
+
+        if scanner::is_ignored(&path) {
+            return Ok(None);
+        }
 
         self.log_dev_info(&format!(
             "➡️ Request: CodeAction at {:?} line: {}, char: {}",

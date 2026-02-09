@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 
 /// Ignored folder list
 const EXCLUDED_DIRS: &[&str] = &[
@@ -23,11 +23,15 @@ const EXCLUDED_FILE_SUFFIXES: &[&str] = &[".d.ts"];
 /// List of extensions that are supported by the parser
 const TARGET_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
 
-/// Filter: Returns true if this is a folder or file to be IGNORED
-fn should_skip(entry: &DirEntry) -> bool {
-    let name = entry.file_name().to_str().unwrap_or("");
+/// Returns true if the path should be IGNORED based on project settings
+#[must_use]
+pub fn is_ignored(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
 
-    if entry.file_type().is_dir() {
+    if path.is_dir() {
         EXCLUDED_DIRS.contains(&name)
     } else {
         let name_lc = name.to_lowercase();
@@ -54,7 +58,7 @@ fn find_tauri_config(root: &Path) -> Option<PathBuf> {
     WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| !should_skip(e))
+        .filter_entry(|e| !is_ignored(e.path()))
         .filter_map(std::result::Result::ok)
         .find(|e| e.file_type().is_file() && is_tauri_config_path(e.path()))
         .map(walkdir::DirEntry::into_path)
@@ -79,7 +83,7 @@ pub fn find_src_tauri_dir(root: &Path) -> Option<PathBuf> {
 pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
     WalkDir::new(root)
         .into_iter()
-        .filter_entry(|e| !should_skip(e))
+        .filter_entry(|e| !is_ignored(e.path()))
         .filter_map(std::result::Result::ok)
         .filter(|e| {
             if !e.file_type().is_file() {
