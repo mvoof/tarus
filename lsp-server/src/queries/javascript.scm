@@ -1,14 +1,13 @@
 ; JavaScript queries for Tauri commands and events
 
 ; Simple function calls: invoke("cmd"), emit("event"), listen("event"), once("event")
-; Note: We don't filter by function name here to support import aliases.
-; Filtering is done in Rust code after alias resolution.
 (call_expression
   function: (identifier) @func_name
   arguments: (arguments
-    .
     (string
-      (string_fragment) @arg_value))
+      (string_fragment) @arg_value)
+    (_) @invoke_args ?
+  )
 ) @call_simple
 
 ; Function calls with second string argument: emitTo("target", "event")
@@ -16,9 +15,10 @@
   function: (identifier) @func_name_second
   arguments: (arguments
     (_)
-    .
     (string
-      (string_fragment) @arg_value_second))
+      (string_fragment) @arg_value_second)
+    (_) @invoke_args ?
+  )
 ) @call_second_arg
 
 ; Import specifiers to track aliases

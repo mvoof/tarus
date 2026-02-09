@@ -24,12 +24,10 @@
   function: (identifier) @func_name
   !type_arguments
   arguments: (arguments
-    .
     (string
       (string_fragment) @arg_value)
-    .
-    (_) @invoke_args
-  )?
+    (_) @invoke_args ?
+  )
 ) @call_simple
 
 ; Await expression with simple call: await invoke("cmd")
@@ -38,12 +36,10 @@
     (identifier) @func_name)
   !type_arguments
   arguments: (arguments
-    .
     (string
       (string_fragment) @arg_value)
-    .
-    (_) @invoke_args
-  )?
+    (_) @invoke_args ?
+  )
 ) @call_await_simple
 
 ; Function calls with second string argument: emitTo("target", "event")
@@ -52,12 +48,10 @@
   !type_arguments
   arguments: (arguments
     (_)
-    .
     (string
       (string_fragment) @arg_value_second)
-    .
-    (_) @invoke_args
-  )?
+    (_) @invoke_args ?
+  )
 ) @call_second_arg
 
 ; Await expression with second string argument: await emitTo("target", "event")
@@ -67,12 +61,10 @@
   !type_arguments
   arguments: (arguments
     (_)
-    .
     (string
       (string_fragment) @arg_value_second)
-    .
-    (_) @invoke_args
-  )?
+    (_) @invoke_args ?
+  )
 ) @call_await_second_arg
 
 ; === GENERIC CALLS (with type arguments) ===
@@ -82,12 +74,10 @@
   function: (identifier) @func_name
   type_arguments: (type_arguments) @type_args
   arguments: (arguments
-    .
     (string
       (string_fragment) @arg_value)
-    .
-    (_) @invoke_args
-  )?
+    (_) @invoke_args ?
+  )
 ) @call_generic
 
 ; Await expression with generic call: await invoke<T>("cmd")
@@ -96,12 +86,10 @@
     (identifier) @func_name)
   type_arguments: (type_arguments) @type_args
   arguments: (arguments
-    .
     (string
       (string_fragment) @arg_value)
-    .
-    (_) @invoke_args
-  )?
+    (_) @invoke_args ?
+  )
 ) @call_await_generic
 
 ; Generic calls with second string argument: emitTo<T>("target", "event")
@@ -110,12 +98,10 @@
   type_arguments: (type_arguments) @type_args
   arguments: (arguments
     (_)
-    .
     (string
       (string_fragment) @arg_value_second)
-    .
-    (_) @invoke_args
-  )?
+    (_) @invoke_args ?
+  )
 ) @call_generic_second_arg
 
 ; Await expression with second string argument and generics: await emitTo<T>("target", "event")
@@ -125,12 +111,10 @@
   type_arguments: (type_arguments) @type_args
   arguments: (arguments
     (_)
-    .
     (string
       (string_fragment) @arg_value_second)
-    .
-    (_) @invoke_args
-  )?
+    (_) @invoke_args ?
+  )
 ) @call_await_generic_second_arg
 
 ; === INTERFACES ===
