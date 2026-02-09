@@ -66,7 +66,8 @@ impl Backend {
                 if let Some(roots) = self.workspace_roots.get() {
                     // Use the first root (usually the primary one) to store generated types
                     if let Some(primary_root) = roots.first() {
-                        if let Err(e) = typegen::write_types_file(&self.project_index, primary_root) {
+                        if let Err(e) = typegen::write_types_file(&self.project_index, primary_root)
+                        {
                             self.log_dev_info(&format!("Failed to regenerate types: {e}"))
                                 .await;
                         }
@@ -180,7 +181,7 @@ impl Backend {
     }
 
     /// Spawn background indexing task for all roots
-    fn spawn_background_indexing(&self, roots: Vec<PathBuf>) {
+    fn spawn_background_indexing(&self, roots: &[PathBuf]) {
         initialization::spawn_background_indexing(
             roots,
             self.project_index.clone(),
@@ -217,7 +218,7 @@ impl LanguageServer for Backend {
             if let Some(path) = params
                 .root_uri
                 .as_ref()
-                .and_then(|u| u.to_file_path())
+                .and_then(tower_lsp_server::UriExt::to_file_path)
                 .map(|p| p.to_path_buf())
             {
                 roots.push(path);
@@ -261,7 +262,7 @@ impl LanguageServer for Backend {
         let Some(roots) = self.workspace_roots.get() else {
             return;
         };
-        self.spawn_background_indexing(roots.clone());
+        self.spawn_background_indexing(roots);
     }
 
     async fn goto_definition(
@@ -402,7 +403,9 @@ impl LanguageServer for Backend {
         let result = capabilities::code_actions::handle_code_action(
             &params,
             &self.project_index,
-            self.workspace_roots.get().and_then(|r| r.first().map(PathBuf::as_path)),
+            self.workspace_roots
+                .get()
+                .and_then(|r| r.first().map(PathBuf::as_path)),
         );
 
         if let Some(ref actions) = result {

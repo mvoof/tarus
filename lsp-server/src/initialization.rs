@@ -13,12 +13,12 @@ use tower_lsp_server::{Client, UriExt};
 
 /// Spawn background indexing task for multiple roots
 pub fn spawn_background_indexing(
-    roots: Vec<PathBuf>,
+    roots: &[PathBuf],
     project_index: Arc<ProjectIndex>,
     client: Client,
     is_dev_mode: Arc<AtomicBool>,
 ) {
-    let roots_for_scan = roots.clone();
+    let roots_for_scan = roots.to_owned();
     let primary_root = roots.first().cloned();
 
     tokio::spawn(async move {
