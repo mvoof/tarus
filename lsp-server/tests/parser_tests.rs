@@ -109,6 +109,30 @@ mod typescript_parser_tests {
     }
 
     #[test]
+    fn test_parse_ts_invoke_no_args() {
+        let content = "
+            import { invoke } from '@tauri-apps/api/core';
+            async function test() {
+                await invoke('short_command');
+            }
+        ";
+        let path = test_path("short.ts");
+
+        let result = tree_parser::parse(&path, content);
+        assert!(result.is_ok());
+
+        let file_index = result.unwrap();
+        let invokes: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command && f.behavior == Behavior::Call)
+            .collect();
+
+        assert_eq!(invokes.len(), 1, "Expected 1 invoke call");
+        assert_eq!(invokes[0].key, "short_command");
+    }
+
+    #[test]
     fn test_parse_ts_generic_invoke() {
         let content = load_fixture("typescript/generic_calls.tsx");
         let path = test_path("generic_calls.tsx");
@@ -189,6 +213,25 @@ mod javascript_parser_tests {
             .collect();
 
         assert!(!invokes.is_empty(), "Expected invoke calls in JavaScript");
+    }
+
+    #[test]
+    fn test_parse_js_invoke_no_args() {
+        let content = "invoke('js_short_command');";
+        let path = test_path("short.js");
+
+        let result = tree_parser::parse(&path, content);
+        assert!(result.is_ok());
+
+        let file_index = result.unwrap();
+        let invokes: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command)
+            .collect();
+
+        assert_eq!(invokes.len(), 1, "Expected 1 invoke call in JS");
+        assert_eq!(invokes[0].key, "js_short_command");
     }
 
     #[test]
