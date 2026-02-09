@@ -423,6 +423,12 @@ impl LanguageServer for Backend {
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
 
+        if let Some(path) = uri.to_file_path() {
+            if scanner::is_ignored(&path) {
+                return Ok(None);
+            }
+        }
+
         self.log_dev_info(&format!("➡️ Request: DocumentSymbol for {uri:?}"))
             .await;
 
@@ -477,6 +483,13 @@ impl LanguageServer for Backend {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = &params.text_document_position.text_document.uri;
+        if let Some(path) = uri.to_file_path() {
+            if scanner::is_ignored(&path) {
+                return Ok(None);
+            }
+        }
+
         self.log_dev_info("➡️ Request: Completion").await;
 
         let result = capabilities::completion::handle_completion(
