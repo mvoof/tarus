@@ -24,7 +24,7 @@ const COMPLETION_TRIGGERS: &[&str] = &[
     "once_any",
 ];
 
-/// Handle completion request (pure function)
+/// Handle completion request
 pub fn handle_completion(
     params: &CompletionParams,
     project_index: &ProjectIndex,
@@ -52,122 +52,131 @@ pub fn handle_completion(
     let byte_index = lsp_character_to_byte_index(line, col);
     let prefix = &line[..byte_index];
 
-    // Check if we are inside the generic arguments of invoke
-    // e.g., invoke<|> ("my_cmd")
-    if let Some(invoke_pos) = prefix.rfind("invoke") {
-        let after_invoke = &line[invoke_pos + 6..];
-
-        if after_invoke.starts_with('<') {
-            let prefix_after_invoke = &prefix[invoke_pos + 6..];
-
-            if !prefix_after_invoke.contains('>') {
-                // Find command name in the rest of the line
-                let rest_of_line = &line[byte_index..];
-
-                if let Some(quote_start) =
-                    rest_of_line.find('\"').or_else(|| rest_of_line.find('\''))
-                {
-                    let after_quote = &rest_of_line[quote_start + 1..];
-
-                    if let Some(quote_end) =
-                        after_quote.find('\"').or_else(|| after_quote.find('\''))
-                    {
-                        let cmd_name = &after_quote[..quote_end];
-
-                        let mut items = Vec::new();
-                        let locations = project_index.get_locations(EntityType::Command, cmd_name);
-
-                        if let Some(def) = locations
-                            .iter()
-                            .find(|l| l.behavior == Behavior::Definition)
-                        {
-                            if let Some(rust_ret) = &def.return_type {
-                                let ts_type = map_rust_type_to_ts(rust_ret);
-
-                                items.push(CompletionItem {
-                                    label: ts_type,
-                                    kind: Some(CompletionItemKind::TYPE_PARAMETER),
-                                    detail: Some(format!("Return type of {cmd_name}")),
-                                    ..Default::default()
-                                });
-
-                                return Some(CompletionResponse::Array(items));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    // 1. Generic invoke completion: invoke<|>("cmd")
+    if let Some(items) = complete_invoke_generic_type(line, prefix, byte_index, project_index) {
+        return Some(CompletionResponse::Array(items));
     }
 
-    // Check if we are inside the arguments object of invoke
-    // e.g., invoke("my_cmd", { | })
-    if let Some(invoke_pos) = prefix.rfind("invoke") {
-        let rest = &prefix[invoke_pos + 6..];
-
-        if let Some(_open_brace_pos) = rest.rfind('{') {
-            // Very basic check: ensure the open brace is after the command name
-            let after_invoke = &rest;
-
-            if let Some(quote_start) = after_invoke.find('\"').or_else(|| after_invoke.find('\'')) {
-                let after_quote = &after_invoke[quote_start + 1..];
-
-                if let Some(quote_end) = after_quote.find('\"').or_else(|| after_quote.find('\'')) {
-                    let cmd_name = &after_quote[..quote_end];
-
-                    // Check if open brace is after the command name quote
-                    let after_cmd_name = &after_quote[quote_end + 1..];
-
-                    if after_cmd_name.contains('{') {
-                        let mut items = Vec::new();
-                        let locations = project_index.get_locations(EntityType::Command, cmd_name);
-
-                        if let Some(def) = locations
-                            .iter()
-                            .find(|l| l.behavior == Behavior::Definition)
-                        {
-                            if let Some(rust_params) = &def.parameters {
-                                let filtered_rust_params: Vec<_> = rust_params
-                                    .iter()
-                                    .filter(|p| {
-                                        !["State", "AppHandle", "Window"]
-                                            .iter()
-                                            .any(|&s| p.type_name.contains(s))
-                                    })
-                                    .collect();
-
-                                for rp in filtered_rust_params {
-                                    let camel_name = snake_to_camel(&rp.name);
-
-                                    items.push(CompletionItem {
-                                        label: camel_name.clone(),
-                                        kind: Some(CompletionItemKind::PROPERTY),
-                                        detail: Some(format!(
-                                            ": {}",
-                                            map_rust_type_to_ts(&rp.type_name)
-                                        )),
-                                        insert_text: Some(format!("{camel_name}: ")),
-                                        ..Default::default()
-                                    });
-                                }
-
-                                if !items.is_empty() {
-                                    return Some(CompletionResponse::Array(items));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    // 2. Arguments completion: invoke("cmd", { | })
+    if let Some(items) = complete_invoke_arguments(prefix, project_index) {
+        return Some(CompletionResponse::Array(items));
     }
 
+    // 3. Command/Event name completion
+    if let Some(items) = complete_command_event_names(prefix, project_index) {
+        return Some(CompletionResponse::Array(items));
+    }
+
+    None
+}
+
+/// Extract first quoted string from input. Returns `(content, rest_of_string)`.
+fn split_at_first_quote(s: &str) -> Option<(&str, &str)> {
+    let quote_start = s.find('"').or_else(|| s.find('\''))?;
+    let after_quote = &s[quote_start + 1..];
+    let quote_end = after_quote.find('"').or_else(|| after_quote.find('\''))?;
+
+    Some((&after_quote[..quote_end], &after_quote[quote_end + 1..]))
+}
+
+fn complete_invoke_generic_type(
+    line: &str,
+    prefix: &str,
+    byte_index: usize,
+    project_index: &ProjectIndex,
+) -> Option<Vec<CompletionItem>> {
+    let invoke_pos = prefix.rfind("invoke")?;
+    let after_invoke = &line[invoke_pos + 6..];
+
+    if !after_invoke.starts_with('<') {
+        return None;
+    }
+
+    let prefix_after_invoke = &prefix[invoke_pos + 6..];
+    if prefix_after_invoke.contains('>') {
+        return None;
+    }
+
+    // Find command name in the rest of the line
+    let rest_of_line = &line[byte_index..];
+    let (cmd_name, _) = split_at_first_quote(rest_of_line)?;
+
+    let locations = project_index.get_locations(EntityType::Command, cmd_name);
+    let def = locations
+        .iter()
+        .find(|l| l.behavior == Behavior::Definition)?;
+
+    let rust_ret = def.return_type.as_ref()?;
+    let ts_type = map_rust_type_to_ts(rust_ret);
+
+    Some(vec![CompletionItem {
+        label: ts_type,
+        kind: Some(CompletionItemKind::TYPE_PARAMETER),
+        detail: Some(format!("Return type of {cmd_name}")),
+        ..Default::default()
+    }])
+}
+
+fn complete_invoke_arguments(
+    prefix: &str,
+    project_index: &ProjectIndex,
+) -> Option<Vec<CompletionItem>> {
+    let invoke_pos = prefix.rfind("invoke")?;
+    let rest = &prefix[invoke_pos + 6..];
+
+    // Check for open brace of args object
+    let _open_brace_pos = rest.rfind('{')?;
+
+    // Very basic check: ensure the open brace is after the command name
+    // Found duplication here in original code: extracting command name logic
+    let (cmd_name, after_cmd_name) = split_at_first_quote(rest)?;
+
+    // Check if open brace is after the command name quote
+    if !after_cmd_name.contains('{') {
+        return None;
+    }
+
+    let locations = project_index.get_locations(EntityType::Command, cmd_name);
+    let def = locations
+        .iter()
+        .find(|l| l.behavior == Behavior::Definition)?;
+
+    let rust_params = def.parameters.as_ref()?;
+
+    let items: Vec<_> = rust_params
+        .iter()
+        .filter(|p| {
+            !["State", "AppHandle", "Window"]
+                .iter()
+                .any(|&s| p.type_name.contains(s))
+        })
+        .map(|rp| {
+            let camel_name = snake_to_camel(&rp.name);
+            CompletionItem {
+                label: camel_name.clone(),
+                kind: Some(CompletionItemKind::PROPERTY),
+                detail: Some(format!(": {}", map_rust_type_to_ts(&rp.type_name))),
+                insert_text: Some(format!("{camel_name}: ")),
+                ..Default::default()
+            }
+        })
+        .collect();
+
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
+}
+
+fn complete_command_event_names(
+    prefix: &str,
+    project_index: &ProjectIndex,
+) -> Option<Vec<CompletionItem>> {
     // Check if in completion context
-    // Support both direct calls: invoke("...") and generic calls: invoke<Type>("...")
     let in_context = COMPLETION_TRIGGERS.iter().any(|name| {
         if let Some(pos) = prefix.rfind(name) {
             let rest = &prefix[pos + name.len()..];
-
             rest.starts_with('(') || rest.starts_with('<')
         } else {
             false
@@ -210,10 +219,10 @@ pub fn handle_completion(
     }
 
     if items.is_empty() {
-        return None;
+        None
+    } else {
+        Some(items)
     }
-
-    Some(CompletionResponse::Array(items))
 }
 
 #[must_use]
