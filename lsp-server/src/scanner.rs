@@ -26,10 +26,7 @@ const TARGET_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "sve
 /// Returns true if the path should be IGNORED based on project settings
 #[must_use]
 pub fn is_ignored(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     if path.is_dir() {
         EXCLUDED_DIRS.contains(&name)

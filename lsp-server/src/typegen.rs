@@ -290,7 +290,7 @@ pub fn write_types_file(
 
     // 1. Find the actual Tauri configuration file to locate the project
     let tauri_config = crate::scanner::find_src_tauri_dir(workspace_root);
-    
+
     // 2. Determine the project root (where the frontend usually lives)
     // find_src_tauri_dir returns the folder containing the config (e.g., .../src-tauri)
     let project_root = if let Some(ref path) = tauri_config {

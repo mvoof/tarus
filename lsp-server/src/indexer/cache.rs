@@ -4,7 +4,7 @@ use super::{IndexKey, LocationInfo};
 use dashmap::DashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
-use tower_lsp_server::lsp_types::Range;
+use tower_lsp_server::ls_types::Range;
 
 type CommandNamesCache = RwLock<Option<Vec<(String, Option<LocationInfo>)>>>;
 type LensDataCache = DashMap<PathBuf, Vec<(Range, String, Vec<LocationInfo>)>>;

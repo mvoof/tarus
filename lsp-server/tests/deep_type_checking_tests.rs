@@ -6,7 +6,7 @@ use common_paths::test_path;
 use lsp_server::capabilities::diagnostics::compute_file_diagnostics;
 use lsp_server::indexer::{FileIndex, Finding, Parameter, ProjectIndex};
 use lsp_server::syntax::{Behavior, EntityType};
-use tower_lsp_server::lsp_types::{DiagnosticSeverity, Position, Range};
+use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range};
 
 #[test]
 fn test_deep_type_mismatch_return_type() {

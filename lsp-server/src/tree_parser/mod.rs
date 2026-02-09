@@ -3,7 +3,7 @@
 //! This module provides a single entry point for parsing all supported file types
 //! using Tree-sitter queries defined in external .scm files.
 
-mod extractors;
+pub mod extractors;
 pub mod frontend_parser;
 pub mod patterns;
 pub mod query_helpers;
@@ -11,12 +11,7 @@ pub mod rust_parser;
 mod sfc;
 mod utils;
 
-#[allow(unused_imports)]
-pub use extractors::FindingBuilder;
-#[allow(unused_imports)]
-pub use query_helpers::CaptureIndices;
-#[allow(unused_imports)]
-pub use utils::{LangType, NodeTextExt};
+pub use utils::LangType;
 
 use crate::indexer::{FileIndex, Finding};
 use crate::syntax::ParseResult;

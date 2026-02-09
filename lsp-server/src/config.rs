@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tower_lsp_server::lsp_types::{ConfigurationItem, ConfigurationParams, MessageType};
+use tower_lsp_server::ls_types::{ConfigurationItem, ConfigurationParams, MessageType};
 use tower_lsp_server::Client;
 
 use crate::indexer::ProjectIndex;

@@ -12,7 +12,7 @@ use dashmap::DashMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tower_lsp_server::lsp_types::{Position, Range, SymbolInformation};
+use tower_lsp_server::ls_types::{Position, Range, SymbolInformation};
 
 /// A single occurrence in a file (parser result)
 #[derive(Debug, Clone)]
@@ -245,7 +245,6 @@ impl ProjectIndex {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     /// Preparing data for `CodeLens`
     pub fn get_lens_data(&self, path: &PathBuf) -> Vec<(Range, String, Vec<LocationInfo>)> {
         // Check cache first

@@ -3,7 +3,7 @@ use lsp_server::tree_parser::frontend_parser::process_interface_match;
 use lsp_server::tree_parser::rust_parser::{
     process_command_matches, process_enum_match, process_struct_match,
 };
-use lsp_server::tree_parser::{CaptureIndices, LangType};
+use lsp_server::tree_parser::{query_helpers::CaptureIndices, LangType};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
 

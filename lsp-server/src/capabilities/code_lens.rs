@@ -3,8 +3,7 @@
 use crate::indexer::ProjectIndex;
 use serde_json::json;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{CodeLens, CodeLensParams, Uri};
-use tower_lsp_server::UriExt;
+use tower_lsp_server::ls_types::{CodeLens, CodeLensParams, Uri};
 
 /// Handle code lens request (pure function)
 pub fn handle_code_lens(
@@ -14,7 +13,7 @@ pub fn handle_code_lens(
     let uri = params.text_document.uri;
 
     let path_cow = uri.to_file_path()?;
-    let path: PathBuf = path_cow.to_path_buf();
+    let path: PathBuf = path_cow.into_owned();
     let lens_data = project_index.get_lens_data(&path);
 
     if lens_data.is_empty() {
@@ -61,7 +60,7 @@ pub fn handle_code_lens(
 
             Some(CodeLens {
                 range,
-                command: Some(tower_lsp_server::lsp_types::Command {
+                command: Some(tower_lsp_server::ls_types::Command {
                     title,
                     command: "tarus.show_references".to_string(),
                     arguments,

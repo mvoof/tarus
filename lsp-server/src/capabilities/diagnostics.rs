@@ -7,9 +7,8 @@ use crate::syntax::{
     map_rust_type_to_ts, should_rename_to_camel, snake_to_camel, Behavior, EntityType,
 };
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
+use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity};
 
-#[allow(clippy::too_many_lines)]
 /// Compute diagnostics for a specific file
 pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();

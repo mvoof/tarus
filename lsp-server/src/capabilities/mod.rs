@@ -12,7 +12,7 @@ pub mod hover;
 pub mod references;
 pub mod symbols;
 
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CodeActionProviderCapability, CodeLensOptions, CompletionOptions, HoverProviderCapability,
     OneOf, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextDocumentSyncOptions, TextDocumentSyncSaveOptions,

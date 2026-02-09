@@ -1,7 +1,7 @@
 use lsp_server::indexer::Parameter;
 use lsp_server::syntax::{Behavior, EntityType};
-use lsp_server::tree_parser::FindingBuilder;
-use tower_lsp_server::lsp_types::{Position, Range};
+use lsp_server::tree_parser::extractors::FindingBuilder;
+use tower_lsp_server::ls_types::{Position, Range};
 
 fn create_test_range() -> Range {
     Range {

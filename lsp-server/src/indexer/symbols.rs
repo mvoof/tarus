@@ -6,8 +6,42 @@ use dashmap::DashMap;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{Location, SymbolInformation, SymbolKind, Uri};
-use tower_lsp_server::UriExt;
+use tower_lsp_server::ls_types::{Location, SymbolInformation, SymbolKind, Uri};
+
+/// Helper function to create a `SymbolInformation` from key and location
+fn create_symbol_information(key: &IndexKey, loc: &LocationInfo, uri: Uri) -> SymbolInformation {
+    let kind = match key.entity {
+        EntityType::Command => SymbolKind::FUNCTION,
+        EntityType::Event => SymbolKind::EVENT,
+        EntityType::Struct => SymbolKind::STRUCT,
+        EntityType::Enum => SymbolKind::ENUM,
+        EntityType::Interface => SymbolKind::INTERFACE,
+    };
+
+    let behavior_label = match loc.behavior {
+        Behavior::Definition => "command",
+        Behavior::Call => "invoke",
+        Behavior::Emit => "emit",
+        Behavior::Listen => "listen",
+    };
+
+    SymbolInformation {
+        name: format!("{} ({})", key.name, behavior_label),
+        kind,
+        tags: None,
+        location: Location {
+            uri,
+            range: loc.range,
+        },
+        container_name: Some(format!("{:?}", key.entity)),
+        // NOTE: The `deprecated` field is marked as deprecated in the LSP spec (recommends using `tags`),
+        // but it's still a required field in the SymbolInformation struct.
+        // We explicitly set it to None since we use `tags: None` instead.
+        // #[allow(deprecated)] suppresses the compiler warning.
+        #[allow(deprecated)]
+        deprecated: None,
+    }
+}
 
 /// Get document symbols for outline view
 pub fn get_document_symbols(
@@ -28,34 +62,7 @@ pub fn get_document_symbols(
     for key in keys.value() {
         if let Some(locations) = map.get(key) {
             for loc in locations.iter().filter(|l| l.path == *path) {
-                let kind = match key.entity {
-                    EntityType::Command => SymbolKind::FUNCTION,
-                    EntityType::Event => SymbolKind::EVENT,
-                    EntityType::Struct => SymbolKind::STRUCT,
-                    EntityType::Enum => SymbolKind::ENUM,
-                    EntityType::Interface => SymbolKind::INTERFACE,
-                };
-
-                // Use behavior terms
-                let behavior_label = match loc.behavior {
-                    Behavior::Definition => "command",
-                    Behavior::Call => "invoke",
-                    Behavior::Emit => "emit",
-                    Behavior::Listen => "listen",
-                };
-
-                #[allow(deprecated)]
-                symbols.push(SymbolInformation {
-                    name: format!("{} ({})", key.name, behavior_label),
-                    kind,
-                    tags: None,
-                    deprecated: None,
-                    location: Location {
-                        uri: uri.clone(),
-                        range: loc.range,
-                    },
-                    container_name: Some(format!("{:?}", key.entity)),
-                });
+                symbols.push(create_symbol_information(key, loc, uri.clone()));
             }
         }
     }
@@ -85,33 +92,7 @@ pub fn search_workspace_symbols(
                 continue;
             };
 
-            let kind = match key.entity {
-                EntityType::Command => SymbolKind::FUNCTION,
-                EntityType::Event => SymbolKind::EVENT,
-                EntityType::Struct => SymbolKind::STRUCT,
-                EntityType::Enum => SymbolKind::ENUM,
-                EntityType::Interface => SymbolKind::INTERFACE,
-            };
-
-            let behavior_label = match loc.behavior {
-                Behavior::Definition => "command",
-                Behavior::Call => "invoke",
-                Behavior::Emit => "emit",
-                Behavior::Listen => "listen",
-            };
-
-            #[allow(deprecated)]
-            symbols.push(SymbolInformation {
-                name: format!("{} ({})", key.name, behavior_label),
-                kind,
-                tags: None,
-                deprecated: None,
-                location: Location {
-                    uri,
-                    range: loc.range,
-                },
-                container_name: Some(format!("{:?}", key.entity)),
-            });
+            symbols.push(create_symbol_information(key, loc, uri));
         }
     }
 

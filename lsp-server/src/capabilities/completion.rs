@@ -5,10 +5,9 @@ use crate::syntax::{map_rust_type_to_ts, snake_to_camel, Behavior, EntityType};
 use dashmap::DashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse,
 };
-use tower_lsp_server::UriExt;
 
 const COMPLETION_TRIGGERS: &[&str] = &[
     "invoke",
@@ -25,7 +24,6 @@ const COMPLETION_TRIGGERS: &[&str] = &[
     "once_any",
 ];
 
-#[allow(clippy::too_many_lines)]
 /// Handle completion request (pure function)
 pub fn handle_completion(
     params: &CompletionParams,
@@ -34,7 +32,7 @@ pub fn handle_completion(
 ) -> Option<CompletionResponse> {
     let uri = &params.text_document_position.text_document.uri;
     let path_cow = uri.to_file_path()?;
-    let path: PathBuf = path_cow.to_path_buf();
+    let path: PathBuf = path_cow.into_owned();
 
     // Try to get content from cache first, fallback to reading from disk
     let content = document_cache

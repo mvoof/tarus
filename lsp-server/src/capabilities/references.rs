@@ -4,8 +4,7 @@
 
 use crate::indexer::ProjectIndex;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{Location, ReferenceParams, Uri};
-use tower_lsp_server::UriExt;
+use tower_lsp_server::ls_types::{Location, ReferenceParams, Uri};
 
 /// Handle find references request (pure function)
 pub fn handle_references(

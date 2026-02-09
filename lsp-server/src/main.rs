@@ -6,15 +6,15 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, CompletionParams,
     CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverParams, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, OneOf, ReferenceParams, ServerCapabilities,
-    SymbolInformation, Uri, WorkspaceSymbol, WorkspaceSymbolParams,
+    InitializedParams, Location, MessageType, ReferenceParams, ServerCapabilities, Uri,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
-use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
+use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 // Refactored modules
 mod capabilities;
@@ -218,8 +218,7 @@ impl LanguageServer for Backend {
             if let Some(path) = params
                 .root_uri
                 .as_ref()
-                .and_then(tower_lsp_server::UriExt::to_file_path)
-                .map(|p| p.to_path_buf())
+                .and_then(|uri| uri.to_file_path().map(std::borrow::Cow::into_owned))
             {
                 roots.push(path);
             }
@@ -450,7 +449,7 @@ impl LanguageServer for Backend {
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
-    ) -> Result<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
+    ) -> Result<Option<WorkspaceSymbolResponse>> {
         self.log_dev_info(&format!(
             "➡️ Request: WorkspaceSymbol query: '{}'",
             params.query
@@ -461,11 +460,11 @@ impl LanguageServer for Backend {
 
         if let Some(ref response) = result {
             match response {
-                OneOf::Left(syms) => {
+                WorkspaceSymbolResponse::Flat(syms) => {
                     self.log_dev_info(&format!("✅ Found {} workspace symbols", syms.len()))
                         .await;
                 }
-                OneOf::Right(syms) => {
+                WorkspaceSymbolResponse::Nested(syms) => {
                     self.log_dev_info(&format!("✅ Found {} workspace symbols", syms.len()))
                         .await;
                 }

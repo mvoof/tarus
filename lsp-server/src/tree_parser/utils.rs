@@ -1,6 +1,6 @@
 //! Common utilities for tree-sitter parsing
 
-use tower_lsp_server::lsp_types::{Position, Range};
+use tower_lsp_server::ls_types::{Position, Range};
 use tree_sitter::Node;
 
 /// Extension trait for convenient text extraction from tree-sitter nodes

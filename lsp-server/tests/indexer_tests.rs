@@ -5,7 +5,7 @@ mod common_paths;
 use common_paths::test_path;
 use lsp_server::indexer::{FileIndex, Finding, IndexKey, ProjectIndex};
 use lsp_server::syntax::{Behavior, EntityType};
-use tower_lsp_server::lsp_types::{Position, Range};
+use tower_lsp_server::ls_types::{Position, Range};
 
 fn create_test_finding(key: &str, entity: EntityType, behavior: Behavior) -> Finding {
     Finding {

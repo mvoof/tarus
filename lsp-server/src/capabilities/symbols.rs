@@ -2,10 +2,9 @@
 
 use crate::indexer::ProjectIndex;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{
-    DocumentSymbolParams, DocumentSymbolResponse, OneOf, SymbolInformation, WorkspaceSymbolParams,
+use tower_lsp_server::ls_types::{
+    DocumentSymbolParams, DocumentSymbolResponse, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
-use tower_lsp_server::UriExt;
 
 /// Handle document symbol request (pure function)
 pub fn handle_document_symbol(
@@ -29,12 +28,12 @@ pub fn handle_document_symbol(
 pub fn handle_workspace_symbol(
     params: &WorkspaceSymbolParams,
     project_index: &ProjectIndex,
-) -> Option<OneOf<Vec<SymbolInformation>, Vec<tower_lsp_server::lsp_types::WorkspaceSymbol>>> {
+) -> Option<WorkspaceSymbolResponse> {
     let symbols = project_index.search_workspace_symbols(&params.query);
 
     if symbols.is_empty() {
         return None;
     }
 
-    Some(OneOf::Left(symbols))
+    Some(WorkspaceSymbolResponse::Flat(symbols))
 }

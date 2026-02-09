@@ -4,7 +4,7 @@ use crate::indexer::Finding;
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use std::collections::HashMap;
 use streaming_iterator::StreamingIterator;
-use tower_lsp_server::lsp_types::Range;
+use tower_lsp_server::ls_types::Range;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 use super::extractors::{
@@ -156,7 +156,6 @@ pub fn process_event_match<S: std::hash::BuildHasher>(
     )
 }
 
-#[allow(clippy::too_many_lines)]
 /// Parse Rust source code
 ///
 /// # Errors

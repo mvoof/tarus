@@ -8,8 +8,8 @@ use crate::typegen;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tower_lsp_server::lsp_types::{MessageType, Uri};
-use tower_lsp_server::{Client, UriExt};
+use tower_lsp_server::ls_types::{MessageType, Uri};
+use tower_lsp_server::Client;
 
 /// Spawn background indexing task for multiple roots
 pub fn spawn_background_indexing(

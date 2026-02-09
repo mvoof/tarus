@@ -3,7 +3,7 @@
 use super::{IndexKey, LocationInfo};
 use dashmap::DashMap;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{Position, Range};
+use tower_lsp_server::ls_types::{Position, Range};
 
 /// Build a sorted position index for a file to enable binary search
 pub fn build_position_index(

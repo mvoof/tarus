@@ -4,7 +4,7 @@ use crate::indexer::Finding;
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use std::collections::HashMap;
 use streaming_iterator::StreamingIterator;
-use tower_lsp_server::lsp_types::Range;
+use tower_lsp_server::ls_types::Range;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 use super::extractors::{extract_ts_interface_fields, extract_ts_params, FindingBuilder};
@@ -152,7 +152,6 @@ pub fn process_function_call_match<S: std::hash::BuildHasher>(
 /// *   The language could not be set for the parser.
 /// *   The content could not be parsed.
 /// *   The tree-sitter query could not be created.
-#[allow(clippy::too_many_lines)]
 pub fn parse_frontend(
     path: &std::path::Path,
     content: &str,

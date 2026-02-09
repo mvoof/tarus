@@ -5,10 +5,7 @@
 use crate::indexer::{LocationInfo, ProjectIndex};
 use crate::syntax::Behavior;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{
-    GotoDefinitionParams, GotoDefinitionResponse, LocationLink, Uri,
-};
-use tower_lsp_server::UriExt;
+use tower_lsp_server::ls_types::{GotoDefinitionParams, GotoDefinitionResponse, LocationLink, Uri};
 
 /// Handle go to definition request (pure function)
 pub fn handle_goto_definition(
@@ -19,7 +16,7 @@ pub fn handle_goto_definition(
     let position = params.text_document_position_params.position;
 
     let path_cow = uri.to_file_path()?;
-    let path: PathBuf = path_cow.to_path_buf();
+    let path: PathBuf = path_cow.into_owned();
 
     if let Some((key, origin_loc)) = project_index.get_key_at_position(&path, position) {
         let all_refs = project_index.get_locations(key.entity, &key.name);

@@ -5,8 +5,7 @@ use crate::syntax::{Behavior, EntityType};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
-use tower_lsp_server::UriExt;
+use tower_lsp_server::ls_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 
 /// Get file icon and filename for display purposes
 fn file_icon_and_name(path: &Path) -> (&'static str, &str) {
@@ -20,7 +19,6 @@ fn file_icon_and_name(path: &Path) -> (&'static str, &str) {
     (icon, name)
 }
 
-#[allow(clippy::too_many_lines)]
 /// Handle hover request (pure function)
 pub fn handle_hover(params: HoverParams, project_index: &ProjectIndex) -> Option<Hover> {
     let uri = params.text_document_position_params.text_document.uri;

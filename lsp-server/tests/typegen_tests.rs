@@ -28,7 +28,7 @@ fn test_generate_invoke_types_with_structs() {
                 key: "User".to_string(),
                 entity: EntityType::Struct,
                 behavior: Behavior::Definition,
-                range: tower_lsp_server::lsp_types::Range::default(),
+                range: tower_lsp_server::ls_types::Range::default(),
                 parameters: None,
                 return_type: None,
                 fields: Some(vec![
@@ -47,7 +47,7 @@ fn test_generate_invoke_types_with_structs() {
                 key: "get_user".to_string(),
                 entity: EntityType::Command,
                 behavior: Behavior::Definition,
-                range: tower_lsp_server::lsp_types::Range::default(),
+                range: tower_lsp_server::ls_types::Range::default(),
                 parameters: None,
                 return_type: Some("User".to_string()),
                 fields: None,

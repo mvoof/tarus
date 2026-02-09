@@ -6,12 +6,11 @@ use crate::syntax::{
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     DocumentChanges, OneOf, OptionalVersionedTextDocumentIdentifier, Position, Range,
     TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
 };
-use tower_lsp_server::UriExt;
 
 /// Rust file candidate for command insertion
 #[derive(Debug, Clone)]
@@ -27,7 +26,7 @@ pub fn handle_code_action(
     project_index: &ProjectIndex,
     workspace_root: Option<&Path>,
 ) -> Option<CodeActionResponse> {
-    let path = params.text_document.uri.to_file_path()?.to_path_buf();
+    let path = params.text_document.uri.to_file_path()?.into_owned();
     let root = workspace_root?;
     let (key, loc) = project_index.get_key_at_position(&path, params.range.start)?;
 
@@ -196,7 +195,7 @@ fn create_sync_to_dts_action(
     name: &str,
     fields: &[crate::indexer::Parameter],
     workspace_root: &Path,
-    diagnostics: &[tower_lsp_server::lsp_types::Diagnostic],
+    diagnostics: &[tower_lsp_server::ls_types::Diagnostic],
 ) -> Option<CodeActionOrCommand> {
     let dts_path = find_or_create_dts_path(workspace_root);
 
@@ -231,7 +230,7 @@ fn create_sync_enum_to_dts_action(
     name: &str,
     variants: &[crate::indexer::Parameter],
     workspace_root: &Path,
-    diagnostics: &[tower_lsp_server::lsp_types::Diagnostic],
+    diagnostics: &[tower_lsp_server::ls_types::Diagnostic],
 ) -> Option<CodeActionOrCommand> {
     let dts_path = find_or_create_dts_path(workspace_root);
 
@@ -268,7 +267,7 @@ fn create_copy_interface_to_dts_action(
     name: &str,
     fields: &[crate::indexer::Parameter],
     workspace_root: &Path,
-    diagnostics: &[tower_lsp_server::lsp_types::Diagnostic],
+    diagnostics: &[tower_lsp_server::ls_types::Diagnostic],
 ) -> Option<CodeActionOrCommand> {
     let dts_path = find_or_create_dts_path(workspace_root);
 
@@ -353,7 +352,7 @@ fn create_rust_struct_action(
     name: &str,
     fields: &[crate::indexer::Parameter],
     candidate: &RustFileCandidate,
-    diagnostics: &[tower_lsp_server::lsp_types::Diagnostic],
+    diagnostics: &[tower_lsp_server::ls_types::Diagnostic],
 ) -> Option<CodeActionOrCommand> {
     let mut rust_struct =
         format!("\n#[derive(serde::Deserialize, serde::Serialize)]\npub struct {name} {{\n");
@@ -385,7 +384,7 @@ fn create_rust_struct_action(
 fn create_rust_command_action(
     name: &str,
     candidate: &RustFileCandidate,
-    diagnostics: &[tower_lsp_server::lsp_types::Diagnostic],
+    diagnostics: &[tower_lsp_server::ls_types::Diagnostic],
 ) -> CodeActionOrCommand {
     let command_template = format!(
         "\n#[tauri::command]\nfn {name}() -> Result<String, String> {{\n    Ok(\"Not implemented\".to_string())\n}}\n"

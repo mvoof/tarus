@@ -5,6 +5,7 @@ use crate::indexer::Parameter;
 use tree_sitter::Node;
 
 /// Extract Rust function parameters
+#[must_use]
 pub fn extract_rust_params(node: Node, content: &str) -> Vec<Parameter> {
     let mut params = Vec::new();
     let mut cursor = node.walk();
@@ -26,6 +27,7 @@ pub fn extract_rust_params(node: Node, content: &str) -> Vec<Parameter> {
 }
 
 /// Extract Rust struct fields
+#[must_use]
 pub fn extract_rust_struct_fields(node: Node, content: &str) -> Vec<Parameter> {
     let mut fields = Vec::new();
     let mut cursor = node.walk();
@@ -55,6 +57,7 @@ pub fn extract_rust_struct_fields(node: Node, content: &str) -> Vec<Parameter> {
 }
 
 /// Extract Rust enum variants
+#[must_use]
 pub fn extract_rust_enum_variants(node: Node, content: &str) -> Vec<Parameter> {
     let mut variants = Vec::new();
     let mut cursor = node.walk();
@@ -82,6 +85,7 @@ pub fn extract_rust_enum_variants(node: Node, content: &str) -> Vec<Parameter> {
 }
 
 /// Extract TypeScript interface fields
+#[must_use]
 pub fn extract_ts_interface_fields(node: Node, content: &str) -> Vec<Parameter> {
     let mut fields = Vec::new();
     let mut cursor = node.walk();
@@ -119,6 +123,7 @@ pub fn extract_ts_interface_fields(node: Node, content: &str) -> Vec<Parameter> 
 }
 
 /// Extract TypeScript parameters from an object literal (invoke arguments)
+#[must_use]
 pub fn extract_ts_params(node: Node, content: &str) -> Vec<Parameter> {
     let mut params = Vec::new();
 
@@ -176,7 +181,7 @@ pub struct FindingBuilder {
     key: String,
     entity: crate::syntax::EntityType,
     behavior: crate::syntax::Behavior,
-    range: tower_lsp_server::lsp_types::Range,
+    range: tower_lsp_server::ls_types::Range,
     parameters: Option<Vec<Parameter>>,
     return_type: Option<String>,
     fields: Option<Vec<Parameter>>,
@@ -190,7 +195,7 @@ impl FindingBuilder {
         key: String,
         entity: crate::syntax::EntityType,
         behavior: crate::syntax::Behavior,
-        range: tower_lsp_server::lsp_types::Range,
+        range: tower_lsp_server::ls_types::Range,
     ) -> Self {
         Self {
             key,
