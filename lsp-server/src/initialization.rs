@@ -11,41 +11,47 @@ use std::sync::Arc;
 use tower_lsp_server::lsp_types::{MessageType, Uri};
 use tower_lsp_server::{Client, UriExt};
 
-/// Spawn background indexing task
+/// Spawn background indexing task for multiple roots
 pub fn spawn_background_indexing(
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     project_index: Arc<ProjectIndex>,
     client: Client,
     is_dev_mode: Arc<AtomicBool>,
 ) {
-    let root_for_scan = root.clone();
-    let root_for_typegen = root;
+    let roots_for_scan = roots.clone();
+    let primary_root = roots.first().cloned();
 
     tokio::spawn(async move {
         client
             .log_message(MessageType::INFO, "🚀 Starting background indexing...")
             .await;
 
-        let files = tokio::task::spawn_blocking(move || scan_workspace_files(&root_for_scan))
-            .await
-            .unwrap_or_default();
+        let mut all_files = Vec::new();
+        for root in roots_for_scan {
+            let files = tokio::task::spawn_blocking(move || scan_workspace_files(&root))
+                .await
+                .unwrap_or_default();
+            all_files.extend(files);
+        }
 
-        for path in files {
+        for path in all_files {
             file_processor::process_file_index(path, &project_index);
         }
 
-        // Generate TypeScript type definitions
-        if let Err(e) = typegen::write_types_file(&project_index, &root_for_typegen) {
-            client
-                .log_message(
-                    MessageType::WARNING,
-                    format!("Failed to generate type definitions: {e}"),
-                )
-                .await;
-        } else {
-            client
-                .log_message(MessageType::INFO, "📝 Generated tauri-commands.d.ts")
-                .await;
+        // Generate TypeScript type definitions (use primary root)
+        if let Some(root) = primary_root {
+            if let Err(e) = typegen::write_types_file(&project_index, &root) {
+                client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("Failed to generate type definitions: {e}"),
+                    )
+                    .await;
+            } else {
+                client
+                    .log_message(MessageType::INFO, "📝 Generated tauri-commands.d.ts")
+                    .await;
+            }
         }
 
         // Publish diagnostics for all indexed files

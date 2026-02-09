@@ -36,7 +36,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 struct Backend {
     client: Client,
-    workspace_root: OnceCell<PathBuf>,
+    workspace_roots: OnceCell<Vec<PathBuf>>,
     project_index: Arc<ProjectIndex>,
     is_developer_mode_active: Arc<AtomicBool>,
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
@@ -47,7 +47,7 @@ struct Backend {
 impl Backend {
     /// Helper: Checks if the server is fully initialized (workspace root set)
     fn is_ready(&self) -> bool {
-        self.workspace_root.get().is_some()
+        self.workspace_roots.get().is_some()
     }
 
     async fn on_change(&self, path: PathBuf) {
@@ -63,10 +63,13 @@ impl Backend {
 
             // Regenerate type definitions when Rust files change
             if is_rust_file {
-                if let Some(root) = self.workspace_root.get() {
-                    if let Err(e) = typegen::write_types_file(&self.project_index, root) {
-                        self.log_dev_info(&format!("Failed to regenerate types: {e}"))
-                            .await;
+                if let Some(roots) = self.workspace_roots.get() {
+                    // Use the first root (usually the primary one) to store generated types
+                    if let Some(primary_root) = roots.first() {
+                        if let Err(e) = typegen::write_types_file(&self.project_index, primary_root) {
+                            self.log_dev_info(&format!("Failed to regenerate types: {e}"))
+                                .await;
+                        }
                     }
                 }
             }
@@ -176,10 +179,10 @@ impl Backend {
         .await;
     }
 
-    /// Spawn background indexing task
-    fn spawn_background_indexing(&self, root: PathBuf) {
+    /// Spawn background indexing task for all roots
+    fn spawn_background_indexing(&self, roots: Vec<PathBuf>) {
         initialization::spawn_background_indexing(
-            root,
+            roots,
             self.project_index.clone(),
             self.client.clone(),
             self.is_developer_mode_active.clone(),
@@ -197,36 +200,43 @@ fn extract_change_params(params: DidChangeTextDocumentParams) -> Option<(PathBuf
 
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        let root_path = params
-            .workspace_folders
-            .as_ref()
-            .and_then(|folders| folders.first())
-            .and_then(|folder| folder.uri.to_file_path())
-            .map(|path_cow| path_cow.to_path_buf())
-            .or_else(|| {
-                #[allow(deprecated)]
-                params
-                    .root_uri
-                    .and_then(|uri| uri.to_file_path().map(|path_cow| path_cow.to_path_buf()))
-            });
+        // Collect all potential workspace roots
+        let mut roots = Vec::new();
 
-        let mut is_tauri = false;
-
-        if let Some(root) = root_path {
-            if is_tauri_project(&root) {
-                is_tauri = true;
-                let _ = self.workspace_root.set(root.clone());
-
-                self.client
-                    .log_message(
-                        MessageType::INFO,
-                        "✅ Tauri project detected. Tree-sitter parser ready.",
-                    )
-                    .await;
+        if let Some(folders) = &params.workspace_folders {
+            for folder in folders {
+                if let Some(path) = folder.uri.to_file_path().map(|p| p.to_path_buf()) {
+                    roots.push(path);
+                }
             }
         }
 
-        if !is_tauri {
+        // Fallback to root_uri
+        if roots.is_empty() {
+            #[allow(deprecated)]
+            if let Some(path) = params
+                .root_uri
+                .as_ref()
+                .and_then(|u| u.to_file_path())
+                .map(|p| p.to_path_buf())
+            {
+                roots.push(path);
+            }
+        }
+
+        // Check if ANY root contains a Tauri project
+        let is_tauri = roots.iter().any(|r| is_tauri_project(r));
+
+        if is_tauri {
+            let _ = self.workspace_roots.set(roots);
+
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    "✅ Tauri project detected. Indexing workspace...",
+                )
+                .await;
+        } else {
             return Ok(InitializeResult {
                 capabilities: ServerCapabilities::default(),
                 server_info: None,
@@ -248,10 +258,10 @@ impl LanguageServer for Backend {
         self.load_configuration().await;
 
         // Start background indexing
-        let Some(root) = self.workspace_root.get() else {
+        let Some(roots) = self.workspace_roots.get() else {
             return;
         };
-        self.spawn_background_indexing(root.clone());
+        self.spawn_background_indexing(roots.clone());
     }
 
     async fn goto_definition(
@@ -353,7 +363,7 @@ impl LanguageServer for Backend {
         let result = capabilities::code_actions::handle_code_action(
             &params,
             &self.project_index,
-            self.workspace_root.get().map(PathBuf::as_path),
+            self.workspace_roots.get().and_then(|r| r.first().map(PathBuf::as_path)),
         );
 
         if let Some(ref actions) = result {
@@ -458,11 +468,6 @@ impl LanguageServer for Backend {
     // =============================================================================
     // Text Document Synchronization
     // =============================================================================
-    // NOTE: These handlers are kept inline (not extracted to a module) because
-    // they require complex orchestration with Backend's state (client,
-    // debounce_tasks, developer_mode) and cross-file diagnostic propagation.
-    // Extracting them would duplicate Backend's responsibilities.
-
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         if !self.is_ready() {
             return;
@@ -533,7 +538,7 @@ async fn main() {
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
-        workspace_root: OnceCell::new(),
+        workspace_roots: OnceCell::new(),
         project_index,
         is_developer_mode_active: initial_dev_mode_state.clone(),
         debounce_tasks: Arc::new(DashMap::new()),
