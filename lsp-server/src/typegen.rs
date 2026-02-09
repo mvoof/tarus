@@ -288,10 +288,25 @@ pub fn write_types_file(
 ) -> std::io::Result<()> {
     let content = generate_invoke_types(project_index);
 
-    // Try to find src directory for frontend
+    // 1. Find the actual Tauri configuration file to locate the project
+    let tauri_config = crate::scanner::find_src_tauri_dir(workspace_root);
+    
+    // 2. Determine the project root (where the frontend usually lives)
+    // find_src_tauri_dir returns the folder containing the config (e.g., .../src-tauri)
+    let project_root = if let Some(ref path) = tauri_config {
+        if path.file_name().and_then(|n| n.to_str()) == Some("src-tauri") {
+            path.parent().unwrap_or(workspace_root)
+        } else {
+            path
+        }
+    } else {
+        workspace_root
+    };
+
+    // 3. Try to find the best place for the .d.ts file
     let possible_paths = [
-        workspace_root.join("src/tauri-commands.d.ts"),
-        workspace_root.join("tauri-commands.d.ts"),
+        project_root.join("src/tauri-commands.d.ts"),
+        project_root.join("tauri-commands.d.ts"),
     ];
 
     // Use first path that has parent directory existing
@@ -299,7 +314,7 @@ pub fn write_types_file(
         .iter()
         .find(|p| p.parent().is_some_and(std::path::Path::exists))
         .cloned()
-        .unwrap_or_else(|| workspace_root.join("tauri-commands.d.ts"));
+        .unwrap_or_else(|| project_root.join("tauri-commands.d.ts"));
 
     std::fs::write(&target_path, content)?;
 
