@@ -75,4 +75,3 @@ impl CaptureIndices {
         captures.iter().filter(|c| c.index == idx).collect()
     }
 }
-

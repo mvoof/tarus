@@ -32,6 +32,7 @@ use indexer::{IndexKey, ProjectIndex};
 use scanner::is_tauri_project;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use typegen::TypegenConfig;
 
 #[derive(Debug)]
 struct Backend {
@@ -42,6 +43,8 @@ struct Backend {
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
     /// Cache of open document contents for completion and other features
     document_cache: Arc<DashMap<PathBuf, String>>,
+    /// Type generation configuration (loaded from client settings)
+    typegen_config: Arc<tokio::sync::RwLock<TypegenConfig>>,
 }
 
 impl Backend {
@@ -66,8 +69,12 @@ impl Backend {
                 if let Some(roots) = self.workspace_roots.get() {
                     // Use the first root (usually the primary one) to store generated types
                     if let Some(primary_root) = roots.first() {
-                        if let Err(e) = typegen::write_types_file(&self.project_index, primary_root)
-                        {
+                        let config = self.typegen_config.read().await.clone();
+                        if let Err(e) = typegen::write_types_file_with_config(
+                            &self.project_index,
+                            primary_root,
+                            &config,
+                        ) {
                             self.log_dev_info(&format!("Failed to regenerate types: {e}"))
                                 .await;
                         }
@@ -176,6 +183,7 @@ impl Backend {
             &self.client,
             &self.is_developer_mode_active,
             &self.project_index,
+            &self.typegen_config,
         )
         .await;
     }
@@ -589,6 +597,7 @@ async fn main() {
 
     let project_index = Arc::new(ProjectIndex::new());
     let initial_dev_mode_state = Arc::new(AtomicBool::new(false));
+    let typegen_config = Arc::new(tokio::sync::RwLock::new(TypegenConfig::default()));
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
@@ -597,6 +606,7 @@ async fn main() {
         is_developer_mode_active: initial_dev_mode_state.clone(),
         debounce_tasks: Arc::new(DashMap::new()),
         document_cache: Arc::new(DashMap::new()),
+        typegen_config,
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;

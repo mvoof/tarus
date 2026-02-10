@@ -11,9 +11,36 @@ use std::collections::{HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::path::Path;
 
+/// Configuration for type generation
+#[derive(Debug, Clone)]
+pub struct TypegenConfig {
+    /// Custom output path for .d.ts file (None = auto-detect)
+    pub dts_output_path: Option<String>,
+    /// If true, no fallback overload is generated (strict mode)
+    pub strict_type_safety: bool,
+}
+
+impl Default for TypegenConfig {
+    fn default() -> Self {
+        Self {
+            dts_output_path: None,
+            strict_type_safety: false,
+        }
+    }
+}
+
 /// Generate TypeScript declaration content for all commands and events
 #[must_use]
 pub fn generate_invoke_types(project_index: &ProjectIndex) -> String {
+    generate_invoke_types_with_config(project_index, &TypegenConfig::default())
+}
+
+/// Generate TypeScript declaration content with custom configuration
+#[must_use]
+pub fn generate_invoke_types_with_config(
+    project_index: &ProjectIndex,
+    config: &TypegenConfig,
+) -> String {
     let mut output = String::new();
 
     // Collect all commands and events
@@ -32,7 +59,8 @@ pub fn generate_invoke_types(project_index: &ProjectIndex) -> String {
     }
 
     // Discover and generate custom types
-    let (discovered_types, mut custom_types_to_process) = initial_type_discovery(&commands);
+    let (discovered_types, mut custom_types_to_process) =
+        initial_type_discovery(&commands, &sorted_events, project_index);
     generate_custom_type_interfaces(
         project_index,
         &mut output,
@@ -44,10 +72,10 @@ pub fn generate_invoke_types(project_index: &ProjectIndex) -> String {
     generate_command_arg_interfaces(&mut output, &commands);
 
     // Generate module augmentation for commands
-    generate_invoke_overloads(&mut output, &commands);
+    generate_invoke_overloads(&mut output, &commands, config);
 
     // Generate module augmentation for events
-    generate_event_overloads(&mut output, &sorted_events);
+    generate_event_overloads(&mut output, &sorted_events, project_index);
 
     output
 }
@@ -86,7 +114,11 @@ fn collect_commands_and_events(project_index: &ProjectIndex) -> (Vec<CommandInfo
     (commands, sorted_events)
 }
 
-fn initial_type_discovery(commands: &[CommandInfo]) -> (HashSet<String>, VecDeque<String>) {
+fn initial_type_discovery(
+    commands: &[CommandInfo],
+    events: &[String],
+    project_index: &ProjectIndex,
+) -> (HashSet<String>, VecDeque<String>) {
     let mut custom_types_to_process = VecDeque::new();
     let mut discovered_types = HashSet::new();
 
@@ -117,6 +149,25 @@ fn initial_type_discovery(commands: &[CommandInfo]) -> (HashSet<String>, VecDequ
             }
         }
     }
+
+    // Discover event payload types from Rust emit definitions
+    for event_name in events {
+        let locations = project_index.get_locations(EntityType::Event, event_name);
+        for loc in &locations {
+            if loc.behavior == Behavior::Emit || loc.behavior == Behavior::Definition {
+                if let Some(rt) = &loc.return_type {
+                    let base = get_base_rust_type(rt);
+                    if !is_primitive_rust_type(&base)
+                        && !base.is_empty()
+                        && discovered_types.insert(base.clone())
+                    {
+                        custom_types_to_process.push_back(base);
+                    }
+                }
+            }
+        }
+    }
+
     (discovered_types, custom_types_to_process)
 }
 
@@ -174,14 +225,13 @@ fn generate_custom_type_interfaces(
             .find(|l| l.behavior == Behavior::Definition)
         {
             if let Some(variants) = &def.fields {
-                let _ = write!(output, "export type {t_name} = ");
-                for (i, variant) in variants.iter().enumerate() {
-                    if i > 0 {
-                        output.push_str(" | ");
-                    }
-                    let _ = write!(output, "'{}'", variant.name);
-                }
-                output.push_str(";\n\n");
+                generate_enum_type(
+                    output,
+                    &t_name,
+                    variants,
+                    &mut discovered_types,
+                    custom_types_to_process,
+                );
                 continue;
             }
         }
@@ -190,6 +240,57 @@ fn generate_custom_type_interfaces(
         let _ = writeln!(output, "export interface {t_name} {{");
         output.push_str("  // TODO: Define fields for this custom type\n");
         output.push_str("}\n\n");
+    }
+}
+
+/// Generate TypeScript type for a Rust enum
+///
+/// Handles both unit variants (string literal union) and variants with data (tagged union).
+fn generate_enum_type(
+    output: &mut String,
+    name: &str,
+    variants: &[crate::indexer::Parameter],
+    discovered_types: &mut HashSet<String>,
+    custom_types_to_process: &mut VecDeque<String>,
+) {
+    let has_data_variants = variants.iter().any(|v| v.type_name != "enum_variant");
+
+    if has_data_variants {
+        // Tagged union: at least one variant has associated data
+        // Uses "externally tagged" serde format (default): { "VariantName": data }
+        let _ = writeln!(output, "export type {name} =");
+        for (i, variant) in variants.iter().enumerate() {
+            let separator = if i == 0 { "  " } else { "  | " };
+            if variant.type_name == "enum_variant" {
+                // Unit variant
+                let _ = writeln!(output, "{separator}'{}'", variant.name);
+            } else {
+                // Variant with data
+                let ts_type = map_rust_type_to_ts(&variant.type_name);
+
+                // Discover nested custom types in variant data
+                let base = get_base_rust_type(&variant.type_name);
+                if !is_primitive_rust_type(&base)
+                    && !base.is_empty()
+                    && discovered_types.insert(base.clone())
+                {
+                    custom_types_to_process.push_back(base);
+                }
+
+                let _ = writeln!(output, "{separator}{{ {}: {ts_type} }}", variant.name);
+            }
+        }
+        output.push_str(";\n\n");
+    } else {
+        // Simple string literal union (all unit variants)
+        let _ = write!(output, "export type {name} = ");
+        for (i, variant) in variants.iter().enumerate() {
+            if i > 0 {
+                output.push_str(" | ");
+            }
+            let _ = write!(output, "'{}'", variant.name);
+        }
+        output.push_str(";\n\n");
     }
 }
 
@@ -221,7 +322,11 @@ fn generate_command_arg_interfaces(output: &mut String, commands: &[CommandInfo]
     }
 }
 
-fn generate_invoke_overloads(output: &mut String, commands: &[CommandInfo]) {
+fn generate_invoke_overloads(
+    output: &mut String,
+    commands: &[CommandInfo],
+    config: &TypegenConfig,
+) {
     output.push_str("// Typed invoke overloads\n");
     output.push_str("declare module '@tauri-apps/api/core' {\n");
 
@@ -239,25 +344,40 @@ fn generate_invoke_overloads(output: &mut String, commands: &[CommandInfo]) {
             .iter()
             .any(|p| !is_tauri_internal_type(&p.type_name));
 
+        // Generate overload with default generic return type
         if has_params {
             let interface_name = format!("{}Args", to_pascal_case(&cmd.name));
             let _ = writeln!(
                 output,
-                "  function invoke(cmd: '{}', args: {interface_name}): Promise<{return_ts}>;",
+                "  function invoke<R = {return_ts}>(cmd: '{}', args: {interface_name}): Promise<R>;",
                 cmd.name
             );
         } else {
             let _ = writeln!(
                 output,
-                "  function invoke(cmd: '{}'): Promise<{return_ts}>;",
+                "  function invoke<R = {return_ts}>(cmd: '{}'): Promise<R>;",
                 cmd.name
             );
         }
     }
+
+    // Fallback overload for unknown commands (unless strict mode)
+    if !config.strict_type_safety && !commands.is_empty() {
+        output.push_str("  // Fallback for untyped commands\n");
+        let _ = writeln!(
+            output,
+            "  function invoke<R = unknown>(cmd: string, args?: Record<string, unknown>): Promise<R>;"
+        );
+    }
+
     output.push_str("}\n\n");
 }
 
-fn generate_event_overloads(output: &mut String, sorted_events: &[String]) {
+fn generate_event_overloads(
+    output: &mut String,
+    sorted_events: &[String],
+    project_index: &ProjectIndex,
+) {
     if sorted_events.is_empty() {
         return;
     }
@@ -266,16 +386,38 @@ fn generate_event_overloads(output: &mut String, sorted_events: &[String]) {
     output.push_str("declare module '@tauri-apps/api/event' {\n");
 
     for event in sorted_events {
+        // Try to find payload type from Rust emit/event definitions
+        let payload_ts = get_event_payload_type(event, project_index);
+
         let _ = writeln!(
             output,
-            "  function emit(event: '{event}', payload?: any): Promise<void>;"
+            "  function emit(event: '{event}', payload?: {payload_ts}): Promise<void>;"
         );
         let _ = writeln!(
             output,
-            "  function listen<T = any>(event: '{event}', handler: (event: {{ payload: T }}) => void): Promise<() => void>;"
+            "  function listen<T = {payload_ts}>(event: '{event}', handler: (event: {{ payload: T }}) => void): Promise<() => void>;"
         );
     }
     output.push_str("}\n");
+}
+
+/// Resolve payload type for an event from project index
+fn get_event_payload_type(event_name: &str, project_index: &ProjectIndex) -> String {
+    let locations = project_index.get_locations(EntityType::Event, event_name);
+
+    // Look for a definition or emit with a return_type (used as payload type)
+    for loc in &locations {
+        if (loc.behavior == Behavior::Emit || loc.behavior == Behavior::Definition)
+            && loc.return_type.is_some()
+        {
+            if let Some(rt) = &loc.return_type {
+                let inner = extract_result_ok_type(rt);
+                return map_rust_type_to_ts(inner);
+            }
+        }
+    }
+
+    "unknown".to_string()
 }
 
 /// Write the generated types to a file
@@ -286,13 +428,42 @@ pub fn write_types_file(
     project_index: &ProjectIndex,
     workspace_root: &Path,
 ) -> std::io::Result<()> {
-    let content = generate_invoke_types(project_index);
+    write_types_file_with_config(project_index, workspace_root, &TypegenConfig::default())
+}
 
-    // 1. Find the actual Tauri configuration file to locate the project
+/// Write the generated types to a file with custom configuration
+///
+/// # Errors
+/// Returns an error if writing the file fails
+pub fn write_types_file_with_config(
+    project_index: &ProjectIndex,
+    workspace_root: &Path,
+    config: &TypegenConfig,
+) -> std::io::Result<()> {
+    let content = generate_invoke_types_with_config(project_index, config);
+
+    // If custom path is configured, use it
+    if let Some(custom_path) = &config.dts_output_path {
+        if !custom_path.is_empty() && custom_path != "auto" {
+            let target = if Path::new(custom_path).is_absolute() {
+                std::path::PathBuf::from(custom_path)
+            } else {
+                workspace_root.join(custom_path)
+            };
+
+            // Ensure parent directory exists
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            return std::fs::write(&target, content);
+        }
+    }
+
+    // Auto-detect: Find the actual Tauri configuration file to locate the project
     let tauri_config = crate::scanner::find_src_tauri_dir(workspace_root);
 
-    // 2. Determine the project root (where the frontend usually lives)
-    // find_src_tauri_dir returns the folder containing the config (e.g., .../src-tauri)
+    // Determine the project root (where the frontend usually lives)
     let project_root = if let Some(ref path) = tauri_config {
         if path.file_name().and_then(|n| n.to_str()) == Some("src-tauri") {
             path.parent().unwrap_or(workspace_root)
@@ -303,7 +474,7 @@ pub fn write_types_file(
         workspace_root
     };
 
-    // 3. Try to find the best place for the .d.ts file
+    // Try to find the best place for the .d.ts file
     let possible_paths = [
         project_root.join("src/tauri-commands.d.ts"),
         project_root.join("tauri-commands.d.ts"),

@@ -6,12 +6,14 @@ use tower_lsp_server::ls_types::{ConfigurationItem, ConfigurationParams, Message
 use tower_lsp_server::Client;
 
 use crate::indexer::ProjectIndex;
+use crate::typegen::TypegenConfig;
 
 /// Load and apply configuration settings from the client
 pub async fn load_configuration(
     client: &Client,
     is_developer_mode_active: &Arc<AtomicBool>,
     project_index: &Arc<ProjectIndex>,
+    typegen_config: &Arc<tokio::sync::RwLock<TypegenConfig>>,
 ) {
     let ext_config_request = ConfigurationParams {
         items: vec![
@@ -22,6 +24,14 @@ pub async fn load_configuration(
             ConfigurationItem {
                 scope_uri: None,
                 section: Some("tarus.referenceLimit".to_string()),
+            },
+            ConfigurationItem {
+                scope_uri: None,
+                section: Some("tarus.dtsOutputPath".to_string()),
+            },
+            ConfigurationItem {
+                scope_uri: None,
+                section: Some("tarus.strictTypeSafety".to_string()),
             },
         ],
     };
@@ -59,6 +69,32 @@ pub async fn load_configuration(
                     MessageType::INFO,
                     &format!("Reference Limit initialized to: {limit}"),
                 )
+                .await;
+        }
+    }
+
+    // Handle dtsOutputPath and strictTypeSafety
+    let dts_path = iter.next().and_then(|v| v.as_str().map(String::from));
+    let strict_mode = iter.next().and_then(|v| v.as_bool());
+
+    {
+        let mut config = typegen_config.write().await;
+        if let Some(path) = dts_path {
+            if !path.is_empty() {
+                config.dts_output_path = Some(path.clone());
+                client
+                    .log_message(
+                        MessageType::INFO,
+                        &format!("DTS output path set to: {path}"),
+                    )
+                    .await;
+            }
+        }
+
+        if let Some(strict) = strict_mode {
+            config.strict_type_safety = strict;
+            client
+                .log_message(MessageType::INFO, &format!("Strict type safety: {strict}"))
                 .await;
         }
     }

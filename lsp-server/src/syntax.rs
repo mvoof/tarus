@@ -186,7 +186,38 @@ pub fn map_rust_type_to_ts(rust_type: &str) -> String {
     }
 
     if rt.starts_with("HashMap<") {
+        let inner = &rt[8..rt.len() - 1];
+        // Find comma separating K and V at depth 0
+        let mut depth = 0;
+        for (i, c) in inner.char_indices() {
+            match c {
+                '<' => depth += 1,
+                '>' => depth -= 1,
+                ',' if depth == 0 => {
+                    let value_type = inner[i + 1..].trim();
+                    let ts_value = map_rust_type_to_ts(value_type);
+                    return format!("Record<string, {ts_value}>");
+                }
+                _ => {}
+            }
+        }
         return "Record<string, any>".to_string();
+    }
+
+    if rt.starts_with("HashSet<") {
+        let inner = &rt[8..rt.len() - 1];
+        return format!("Set<{}>", map_rust_type_to_ts(inner));
+    }
+
+    // Tuples: (A, B, C) -> [A, B, C]
+    if rt.starts_with('(') && rt.ends_with(')') {
+        let inner = &rt[1..rt.len() - 1];
+        let parts = split_at_depth_zero(inner, ',');
+        let ts_parts: Vec<String> = parts
+            .iter()
+            .map(|p| map_rust_type_to_ts(p.trim()))
+            .collect();
+        return format!("[{}]", ts_parts.join(", "));
     }
 
     if rt == "Value" || rt == "serde_json::Value" {
@@ -194,6 +225,27 @@ pub fn map_rust_type_to_ts(rust_type: &str) -> String {
     }
 
     rt.to_string()
+}
+
+/// Split a string at commas that are at depth 0 (not inside angle brackets)
+fn split_at_depth_zero(s: &str, delimiter: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth -= 1,
+            c if c == delimiter && depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
 }
 
 /// Map TypeScript types to Rust types
@@ -251,7 +303,16 @@ pub fn is_primitive_rust_type(rust_type: &str) -> bool {
         return true;
     }
 
-    if rt.starts_with("Vec<") || rt.starts_with("Option<") || rt.starts_with("HashMap<") {
+    if rt.starts_with("Vec<")
+        || rt.starts_with("Option<")
+        || rt.starts_with("HashMap<")
+        || rt.starts_with("HashSet<")
+    {
+        return true;
+    }
+
+    // Tuples
+    if rt.starts_with('(') && rt.ends_with(')') {
         return true;
     }
 
@@ -287,4 +348,129 @@ pub fn get_base_rust_type(rust_type: &str) -> String {
     }
 
     rt.to_string()
+}
+
+/// Result of comparing a Rust type against a TypeScript type
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeMatch {
+    /// Types are exactly equivalent
+    Exact,
+    /// Types are compatible (e.g., custom type names match, or 'any')
+    Compatible,
+    /// Types don't match
+    Mismatch(String),
+}
+
+/// Deep recursive comparison of a Rust type against a TypeScript type
+///
+/// Returns `TypeMatch::Exact` or `TypeMatch::Compatible` if types match,
+/// or `TypeMatch::Mismatch` with a description of the difference.
+#[must_use]
+pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
+    let ts = ts_type.trim();
+    let rt = extract_result_ok_type(rust_type);
+    let rt = rt
+        .trim()
+        .trim_start_matches('&')
+        .trim_start_matches("mut ")
+        .trim();
+
+    // Skip comparison for 'any' or 'unknown'
+    if ts == "any" || ts == "unknown" {
+        return TypeMatch::Compatible;
+    }
+
+    // Direct primitive match
+    let expected_ts = map_rust_type_to_ts(rt);
+    if ts == expected_ts {
+        return TypeMatch::Exact;
+    }
+
+    // Option<T> vs T | null
+    if rt.starts_with("Option<") {
+        let inner_rust = &rt[7..rt.len() - 1];
+        if ts.ends_with(" | null") {
+            let ts_inner = &ts[..ts.len() - 7];
+            return compare_types(inner_rust, ts_inner);
+        }
+        // Also accept the inner type without null (less strict)
+        return compare_types(inner_rust, ts);
+    }
+
+    // Vec<T> vs T[]
+    if rt.starts_with("Vec<") {
+        let inner_rust = &rt[4..rt.len() - 1];
+        if ts.ends_with("[]") {
+            let ts_inner = &ts[..ts.len() - 2];
+            return compare_types(inner_rust, ts_inner);
+        }
+        // Also accept Array<T>
+        if ts.starts_with("Array<") && ts.ends_with('>') {
+            let ts_inner = &ts[6..ts.len() - 1];
+            return compare_types(inner_rust, ts_inner);
+        }
+    }
+
+    // HashMap<K, V> vs Record<string, V>
+    if rt.starts_with("HashMap<") {
+        let inner = &rt[8..rt.len() - 1];
+        let mut depth = 0;
+        for (i, c) in inner.char_indices() {
+            match c {
+                '<' => depth += 1,
+                '>' => depth -= 1,
+                ',' if depth == 0 => {
+                    let rust_value = inner[i + 1..].trim();
+                    if ts.starts_with("Record<string,") && ts.ends_with('>') {
+                        let ts_value = ts["Record<string,".len()..ts.len() - 1].trim();
+                        return compare_types(rust_value, ts_value);
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // HashSet<T> vs Set<T>
+    if rt.starts_with("HashSet<") {
+        let inner_rust = &rt[8..rt.len() - 1];
+        if ts.starts_with("Set<") && ts.ends_with('>') {
+            let ts_inner = &ts[4..ts.len() - 1];
+            return compare_types(inner_rust, ts_inner);
+        }
+    }
+
+    // Tuples: (A, B) vs [A, B]
+    if rt.starts_with('(') && rt.ends_with(')') {
+        let rust_inner = &rt[1..rt.len() - 1];
+        if ts.starts_with('[') && ts.ends_with(']') {
+            let ts_inner = &ts[1..ts.len() - 1];
+            let rust_parts = split_at_depth_zero(rust_inner, ',');
+            let ts_parts = split_at_depth_zero(ts_inner, ',');
+
+            if rust_parts.len() != ts_parts.len() {
+                return TypeMatch::Mismatch(format!(
+                    "tuple length mismatch: expected {} elements, got {}",
+                    rust_parts.len(),
+                    ts_parts.len()
+                ));
+            }
+
+            for (rp, tp) in rust_parts.iter().zip(ts_parts.iter()) {
+                let result = compare_types(rp.trim(), tp.trim());
+                if let TypeMatch::Mismatch(msg) = result {
+                    return TypeMatch::Mismatch(msg);
+                }
+            }
+            return TypeMatch::Exact;
+        }
+    }
+
+    // Custom type name match (same name = compatible)
+    if rt == ts {
+        return TypeMatch::Compatible;
+    }
+
+    TypeMatch::Mismatch(format!("expected {expected_ts}, got {ts}"))
 }

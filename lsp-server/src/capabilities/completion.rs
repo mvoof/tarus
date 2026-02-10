@@ -1,7 +1,10 @@
 //! Completion capability - autocomplete commands and events
 
 use crate::indexer::ProjectIndex;
-use crate::syntax::{map_rust_type_to_ts, snake_to_camel, Behavior, EntityType};
+use crate::syntax::{
+    extract_result_ok_type, get_base_rust_type, is_primitive_rust_type, map_rust_type_to_ts,
+    should_rename_to_camel, snake_to_camel, Behavior, EntityType,
+};
 use dashmap::DashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -197,7 +200,43 @@ fn complete_command_event_names(
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown");
-            format!("Command defined in {filename}")
+
+            // Build rich detail with return type info
+            let mut detail = format!("Command defined in {filename}");
+
+            if let Some(rt) = &l.return_type {
+                let inner = extract_result_ok_type(rt);
+                let ts_type = map_rust_type_to_ts(inner);
+                detail.push_str(&format!(" → {ts_type}"));
+
+                // If it's a custom struct type, show fields
+                let base = get_base_rust_type(rt);
+                if !is_primitive_rust_type(&base) {
+                    let struct_locs = project_index.get_locations(EntityType::Struct, &base);
+                    if let Some(sd) = struct_locs
+                        .iter()
+                        .find(|sl| sl.behavior == Behavior::Definition)
+                    {
+                        if let Some(fields) = &sd.fields {
+                            let rename = should_rename_to_camel(sd.attributes.as_ref());
+                            let field_strs: Vec<String> = fields
+                                .iter()
+                                .map(|f| {
+                                    let fname = if rename {
+                                        snake_to_camel(&f.name)
+                                    } else {
+                                        f.name.clone()
+                                    };
+                                    format!("{}: {}", fname, map_rust_type_to_ts(&f.type_name))
+                                })
+                                .collect();
+                            detail = format!("Command → {} {{ {} }}", base, field_strs.join(", "));
+                        }
+                    }
+                }
+            }
+
+            detail
         });
 
         items.push(CompletionItem {

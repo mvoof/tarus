@@ -4,7 +4,8 @@
 
 use crate::indexer::{DiagnosticInfo, IndexKey, ProjectIndex};
 use crate::syntax::{
-    map_rust_type_to_ts, should_rename_to_camel, snake_to_camel, Behavior, EntityType,
+    compare_types, map_rust_type_to_ts, should_rename_to_camel, snake_to_camel, Behavior,
+    EntityType, TypeMatch,
 };
 use std::path::PathBuf;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity};
@@ -148,25 +149,22 @@ fn check_parameters_diagnostics(
                 .find(|rp| snake_to_camel(&rp.name) == ts_p.name || rp.name == ts_p.name);
 
             if let Some(rp) = found {
-                // Only check primitive types - skip custom types
-                let expected_ts_type = map_rust_type_to_ts(&rp.type_name);
-                // Skip if:
-                // - TS type is "any" (unknown/variable reference)
-                // - Rust type maps to "any" (custom type)
-                if ts_p.type_name != "any"
-                    && expected_ts_type != "any"
-                    && ts_p.type_name != expected_ts_type
-                {
-                    diagnostics.push(Diagnostic {
-                        range: loc.range,
-                        severity: Some(DiagnosticSeverity::WARNING),
-                        source: Some("tarus".to_string()),
-                        message: format!(
-                            "Type mismatch for argument '{}': expected {}, got {}",
-                            ts_p.name, expected_ts_type, ts_p.type_name
-                        ),
-                        ..Default::default()
-                    });
+                // Use deep type comparison
+                if ts_p.type_name != "any" {
+                    let result = compare_types(&rp.type_name, &ts_p.type_name);
+                    if let TypeMatch::Mismatch(detail) = result {
+                        let _expected_ts_type = map_rust_type_to_ts(&rp.type_name);
+                        diagnostics.push(Diagnostic {
+                            range: loc.range,
+                            severity: Some(DiagnosticSeverity::WARNING),
+                            source: Some("tarus".to_string()),
+                            message: format!(
+                                "Type mismatch for argument '{}': {detail}",
+                                ts_p.name
+                            ),
+                            ..Default::default()
+                        });
+                    }
                 }
             } else {
                 diagnostics.push(Diagnostic {
@@ -227,7 +225,7 @@ fn check_return_type_diagnostics(
             return diagnostics;
         }
 
-        // Check if it's a custom type (struct)
+        // Check if it's a custom struct type
         let struct_locs = project_index.get_locations(EntityType::Struct, rust_ret);
         if !struct_locs.is_empty() {
             // Try to find the interface and struct definitions
@@ -255,22 +253,21 @@ fn check_return_type_diagnostics(
                         });
 
                         if let Some(st_f) = st_f {
-                            let expected_f_type = map_rust_type_to_ts(&st_f.type_name);
-
-                            if if_f.type_name != "any"
-                                && expected_f_type != "any"
-                                && if_f.type_name != expected_f_type
-                            {
-                                diagnostics.push(Diagnostic {
-                                    range: loc.range,
-                                    severity: Some(DiagnosticSeverity::WARNING),
-                                    source: Some("tarus".to_string()),
-                                    message: format!(
-                                        "Type mismatch for field '{}' in return type '{}': expected {}, got {}",
-                                        if_f.name, ts_type, expected_f_type, if_f.type_name
-                                    ),
-                                    ..Default::default()
-                                });
+                            // Use deep type comparison for struct fields
+                            if if_f.type_name != "any" {
+                                let result = compare_types(&st_f.type_name, &if_f.type_name);
+                                if let TypeMatch::Mismatch(detail) = result {
+                                    diagnostics.push(Diagnostic {
+                                        range: loc.range,
+                                        severity: Some(DiagnosticSeverity::WARNING),
+                                        source: Some("tarus".to_string()),
+                                        message: format!(
+                                            "Type mismatch for field '{}' in return type '{}': {detail}",
+                                            if_f.name, ts_type
+                                        ),
+                                        ..Default::default()
+                                    });
+                                }
                             }
                         }
                     }
@@ -279,16 +276,33 @@ fn check_return_type_diagnostics(
             return diagnostics;
         }
 
-        // Only warn for primitive type mismatches
-        if ts_type != expected_ts_type {
+        // Check if it's an enum type
+        let enum_locs = project_index.get_locations(EntityType::Enum, rust_ret);
+        if !enum_locs.is_empty() {
+            // Enum return type: just check that TS type name matches
+            if ts_type != rust_ret && ts_type != expected_ts_type {
+                diagnostics.push(Diagnostic {
+                    range: loc.range,
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    source: Some("tarus".to_string()),
+                    message: format!(
+                        "Return type mismatch for command '{}': expected {}, got {}",
+                        key.name, rust_ret, ts_type
+                    ),
+                    ..Default::default()
+                });
+            }
+            return diagnostics;
+        }
+
+        // Use deep comparison for primitive and container types
+        let result = compare_types(rust_ret, ts_type);
+        if let TypeMatch::Mismatch(detail) = result {
             diagnostics.push(Diagnostic {
                 range: loc.range,
                 severity: Some(DiagnosticSeverity::WARNING),
                 source: Some("tarus".to_string()),
-                message: format!(
-                    "Return type mismatch for command '{}': expected {}, got {}",
-                    key.name, expected_ts_type, ts_type
-                ),
+                message: format!("Return type mismatch for command '{}': {detail}", key.name),
                 ..Default::default()
             });
         }
