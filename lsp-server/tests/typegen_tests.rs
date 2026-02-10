@@ -72,11 +72,8 @@ mod tests {
         let index = create_mock_project_index();
         let output = typegen::generate_invoke_types(&index);
 
-        // println!("{}", output); // For debugging
-
-        assert!(
-            output.contains("invoke<string>('simple_cmd', args: SimpleCmdArgs): Promise<string>")
-        );
+        assert!(output
+            .contains("invoke<R = string>(cmd: 'simple_cmd', args: SimpleCmdArgs): Promise<R>"));
         assert!(output.contains("export interface SimpleCmdArgs {"));
         assert!(output.contains("name: string;"));
         // Current implementation might map Result<T, E> to Promise<T>

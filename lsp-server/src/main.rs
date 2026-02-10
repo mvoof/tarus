@@ -9,10 +9,10 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
     CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, CompletionParams,
     CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverParams, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, ReferenceParams, ServerCapabilities, Uri,
-    WorkspaceSymbolParams, WorkspaceSymbolResponse,
+    DidSaveTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InitializeParams,
+    InitializeResult, InitializedParams, Location, MessageType, ReferenceParams,
+    ServerCapabilities, Uri, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -623,6 +623,34 @@ impl LanguageServer for Backend {
             let path: PathBuf = path_cow.into_owned();
             self.on_change(path.clone()).await;
             self.publish_diagnostics_for_file(&path).await;
+        }
+    }
+
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        self.log_dev_info(&format!("➡️ Request: ExecuteCommand {}", params.command))
+            .await;
+
+        let roots = self.workspace_roots.get().cloned().unwrap_or_default();
+        let config = self.typegen_config.read().await;
+
+        match capabilities::commands::handle_execute_command(
+            params,
+            &self.project_index,
+            &roots,
+            &config,
+        ) {
+            Ok(res) => {
+                self.log_dev_info("✅ Command executed successfully").await;
+                Ok(res)
+            }
+            Err(e) => {
+                self.log_dev_info(&format!("❌ Command execution failed: {:?}", e))
+                    .await;
+                Err(e)
+            }
         }
     }
 

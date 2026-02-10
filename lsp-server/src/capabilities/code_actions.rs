@@ -33,9 +33,25 @@ pub fn handle_code_action(
     let mut actions = Vec::new();
 
     // Handle each entity type with dedicated functions
+    // Always offer "Sync all types" if strict type safety is enabled or just generally
+    // It's a useful utility.
+    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+        title: "Sync all types (Regenerate .d.ts)".to_string(),
+        kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS), // Or Empty/QuickFix? SOURCE is good for regeneration
+        command: Some(tower_lsp_server::ls_types::Command {
+            title: "Sync all types".to_string(),
+            command: "tarus.syncTypes".to_string(),
+            arguments: None,
+        }),
+        ..Default::default()
+    }));
+
     match (key.entity, loc.behavior) {
         (EntityType::Command, Behavior::Call) => {
-            handle_undefined_command(&key, root, params, project_index, &mut actions);
+            handle_command_call(&key, &loc, root, params, project_index, &mut actions);
+        }
+        (EntityType::Command, Behavior::Definition) => {
+            // handle_command_definition...
         }
         (EntityType::Struct, Behavior::Definition) => {
             handle_struct_definition(&key, &loc, root, params, &mut actions);
@@ -54,15 +70,77 @@ pub fn handle_code_action(
                 &mut actions,
             );
         }
+        (EntityType::Event, Behavior::Call) => {
+            handle_event_call(&key, &loc, root, params, project_index, &mut actions);
+        }
         _ => {} // No actions for other combinations
     }
 
     (!actions.is_empty()).then_some(actions)
 }
 
-/// Handle undefined command call - offer to create Rust command
-fn handle_undefined_command(
+/// Handle event call (emit) - offer to create Rust handler (listen)
+fn handle_event_call(
     key: &IndexKey,
+    _loc: &crate::indexer::LocationInfo,
+    root: &Path,
+    params: &CodeActionParams,
+    project_index: &ProjectIndex,
+    actions: &mut Vec<CodeActionOrCommand>,
+) {
+    // Check if any Rust file "listens" to this event
+    // We assume Rust parser extracts "listen" as Behavior::Definition or similar for Events?
+    // Actually patterns.rs defines behavior.
+    // If we assume Definition means "handler exists" or "defined", we check that.
+
+    let info = project_index.get_diagnostic_info(key);
+
+    // If no definition found (or no Rust files usage that looks like definition)
+    // We offer to create a handler.
+    if !info.has_definition() {
+        let candidates = find_rust_file_candidates(root);
+        for candidate in rank_and_limit(candidates) {
+            let event_name = &key.name;
+            let handler_name = format!("handle_{}", crate::syntax::camel_to_snake(event_name));
+
+            // snippet to append
+            let snippet = format!(
+                "\n// Generated event handler for '{}'\npub fn {}<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {{\n    app.listen(\"{}\", |event| {{\n        println!(\"Received event: {{:?}}\", event.payload());\n    }});\n}}\n",
+                event_name, handler_name, event_name, 
+            );
+
+            let target_uri = match Uri::from_file_path(&candidate.path) {
+                Some(u) => u,
+                None => continue,
+            };
+
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!(
+                    "Generate handler '{}' in {}",
+                    handler_name,
+                    candidate
+                        .path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                ),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(params.context.diagnostics.clone()),
+                edit: Some(create_workspace_edit(
+                    target_uri,
+                    u32::MAX, // Append
+                    snippet,
+                )),
+                ..Default::default()
+            }));
+        }
+    }
+}
+
+/// Handle command call - offer to create it (if missing) or wrap it (if exists)
+fn handle_command_call(
+    key: &IndexKey,
+    loc: &crate::indexer::LocationInfo,
     root: &Path,
     params: &CodeActionParams,
     project_index: &ProjectIndex,
@@ -70,19 +148,76 @@ fn handle_undefined_command(
 ) {
     let info = project_index.get_diagnostic_info(key);
 
-    if info.has_definition() {
-        return;
-    }
+    if !info.has_definition() {
+        // Undefined: Offer to create in Rust
+        let candidates = find_rust_file_candidates(root);
+        let rust_args = infer_rust_args(loc);
 
-    let candidates = find_rust_file_candidates(root);
-
-    for candidate in rank_and_limit(candidates) {
-        actions.push(create_rust_command_action(
-            &key.name,
-            &candidate,
-            &params.context.diagnostics,
-        ));
+        for candidate in rank_and_limit(candidates) {
+            actions.push(create_rust_command_action(
+                &key.name,
+                &rust_args,
+                &candidate,
+                &params.context.diagnostics,
+            ));
+        }
+    } else {
+        // Defined: Offer to generate TS wrapper
+        let locations = project_index.get_locations(EntityType::Command, &key.name);
+        if let Some(def) = locations
+            .iter()
+            .find(|l| l.behavior == Behavior::Definition)
+        {
+            let ts_candidates = find_ts_file_candidates(root);
+            for candidate in rank_and_limit_ts(ts_candidates) {
+                if let Some(action) = create_ts_wrapper_action(
+                    &key.name,
+                    def,
+                    &candidate,
+                    &params.context.diagnostics,
+                ) {
+                    actions.push(action);
+                }
+            }
+        }
     }
+}
+
+fn infer_rust_args(loc: &crate::indexer::LocationInfo) -> String {
+    if let Some(params) = &loc.parameters {
+        // Typically Tauri invokation: invoke('cmd', { args })
+        // frontend_parser extraction might return 1 param with type "{ key: val }"
+        // OR multiple params if using legacy invoke(cmd, arg1, arg2) - but Tarus focuses on object style
+
+        if let Some(first_param) = params.first() {
+            if first_param.type_name.starts_with('{') {
+                // Object style: { x: 1, y: "s" }
+                let fields = crate::syntax::parse_ts_object_string(&first_param.type_name);
+
+                if fields.is_empty() {
+                    return String::new();
+                }
+
+                let mut args_strs = Vec::new();
+                // Sort by key for deterministic output
+                let mut sorted_keys: Vec<_> = fields.keys().collect();
+                sorted_keys.sort();
+
+                for key in sorted_keys {
+                    let ts_type = fields.get(key).unwrap();
+                    let rust_type = crate::syntax::map_ts_type_to_rust(ts_type);
+                    let rust_name = crate::syntax::camel_to_snake(key);
+                    args_strs.push(format!("{rust_name}: {rust_type}"));
+                }
+
+                return args_strs.join(", ");
+            }
+            // Primitive style or otherwise?
+            // If implicit args object: invoke('cmd', { val }) -> param name might be 'val'?
+            // But extractors.rs usually extracts the whole object as one param "args" or similar.
+        }
+    }
+    String::new()
 }
 
 /// Handle struct definition - offer to sync to .d.ts
@@ -383,11 +518,12 @@ fn create_rust_struct_action(
 /// Helper to create "Create Rust Command" action
 fn create_rust_command_action(
     name: &str,
+    args: &str,
     candidate: &RustFileCandidate,
     diagnostics: &[tower_lsp_server::ls_types::Diagnostic],
 ) -> CodeActionOrCommand {
     let command_template = format!(
-        "\n#[tauri::command]\nfn {name}() -> Result<String, String> {{\n    Ok(\"Not implemented\".to_string())\n}}\n"
+        "\n#[tauri::command]\nfn {name}({args}) -> Result<String, String> {{\n    Ok(\"Not implemented\".to_string())\n}}\n"
     );
 
     let target_uri = Uri::from_file_path(&candidate.path).unwrap();
@@ -500,4 +636,149 @@ fn find_insertion_line(content: &str) -> usize {
 fn rank_and_limit(mut candidates: Vec<RustFileCandidate>) -> Vec<RustFileCandidate> {
     candidates.sort_by(|a, b| b.priority.cmp(&a.priority));
     candidates.into_iter().take(5).collect()
+}
+
+/// TS file candidate for wrapper insertion
+#[derive(Debug, Clone)]
+pub struct TsFileCandidate {
+    pub path: PathBuf,
+    pub priority: u8,
+}
+
+fn find_ts_file_candidates(workspace_root: &Path) -> Vec<TsFileCandidate> {
+    let src_dir = workspace_root.join("src");
+    if !src_dir.exists() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+
+    // Recursive search or just top-level?
+    // Let's do top-level + 1 level deep for now to avoid scanning node_modules
+    // Ideally we use `find_src_tauri_dir` equivalent for frontend but frontend structure varies.
+    // We assume standard Vite/Tauri structure: src/
+
+    if let Ok(entries) = std::fs::read_dir(&src_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                    if ["ts", "js", "tsx", "jsx"].contains(&ext) {
+                        candidates.push(create_ts_candidate(path));
+                    }
+                }
+            } else if path.is_dir() {
+                // Check subdir
+                if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                    for sub in sub_entries.flatten() {
+                        let sub_path = sub.path();
+                        if sub_path.is_file() {
+                            if let Some(ext) = sub_path.extension().and_then(|s| s.to_str()) {
+                                if ["ts", "js", "tsx", "jsx"].contains(&ext) {
+                                    candidates.push(create_ts_candidate(sub_path));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    candidates
+}
+
+fn create_ts_candidate(path: PathBuf) -> TsFileCandidate {
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let priority = if file_name.starts_with("api") || file_name.starts_with("tauri") {
+        100
+    } else if file_name == "main.ts" || file_name == "index.ts" {
+        80
+    } else if file_name.contains("command") {
+        90
+    } else {
+        50
+    };
+
+    TsFileCandidate { path, priority }
+}
+
+fn rank_and_limit_ts(mut candidates: Vec<TsFileCandidate>) -> Vec<TsFileCandidate> {
+    candidates.sort_by(|a, b| b.priority.cmp(&a.priority));
+    candidates.into_iter().take(5).collect()
+}
+
+fn create_ts_wrapper_action(
+    cmd_name: &str,
+    def: &crate::indexer::LocationInfo,
+    candidate: &TsFileCandidate,
+    diagnostics: &[tower_lsp_server::ls_types::Diagnostic],
+) -> Option<CodeActionOrCommand> {
+    let return_type = def.return_type.as_deref().unwrap_or("void");
+    let ts_ret = crate::syntax::map_rust_type_to_ts(return_type);
+
+    let params_str = if let Some(params) = &def.parameters {
+        let p_strs: Vec<String> = params
+            .iter()
+            .filter(|p| {
+                !["State", "AppHandle", "Window"]
+                    .iter()
+                    .any(|&s| p.type_name.contains(s))
+            })
+            .map(|p| {
+                let name = crate::syntax::snake_to_camel(&p.name);
+                let ty = crate::syntax::map_rust_type_to_ts(&p.type_name);
+                format!("{name}: {ty}")
+            })
+            .collect();
+        p_strs.join(", ")
+    } else {
+        String::new()
+    };
+
+    let args_obj_str = if let Some(params) = &def.parameters {
+        let p_strs: Vec<String> = params
+            .iter()
+            .filter(|p| {
+                !["State", "AppHandle", "Window"]
+                    .iter()
+                    .any(|&s| p.type_name.contains(s))
+            })
+            .map(|p| {
+                // Tauri maps { camelName } -> snake_name automatically?
+                // Yes, invoke('cmd', { camelName: val }) -> fn cmd(camel_name: Type)
+                // So we can just use the name as is (camelCase for TS object key)
+                crate::syntax::snake_to_camel(&p.name)
+            })
+            .collect();
+        if p_strs.is_empty() {
+            "".to_string()
+        } else {
+            format!("{{ {} }}", p_strs.join(", "))
+        }
+    } else {
+        "".to_string()
+    };
+
+    let wrapper_name = crate::syntax::snake_to_camel(cmd_name);
+    let sep = if args_obj_str.is_empty() { "" } else { ", " };
+
+    let template = format!(
+        "\nexport async function {wrapper_name}({params_str}): Promise<{ts_ret}> {{\n  return await invoke('{cmd_name}'{sep}{args_obj_str});\n}}\n"
+    );
+
+    let target_uri = Uri::from_file_path(&candidate.path)?;
+    let file_name = candidate.path.file_name()?.to_str()?;
+
+    Some(CodeActionOrCommand::CodeAction(CodeAction {
+        title: format!("Generate wrapper '{wrapper_name}' in {file_name}"),
+        kind: Some(CodeActionKind::REFACTOR),
+        diagnostics: Some(diagnostics.to_vec()),
+        edit: Some(create_workspace_edit(
+            target_uri,
+            u32::MAX, // Append
+            template,
+        )),
+        ..Default::default()
+    }))
 }

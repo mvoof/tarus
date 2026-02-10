@@ -478,3 +478,49 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
 
     TypeMatch::Mismatch(format!("expected {expected_ts}, got {ts}"))
 }
+
+/// Simple parser for "{ key: value, ... }" string produced by extractors.rs
+pub fn parse_ts_object_string(s: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let content = s.trim_start_matches('{').trim_end_matches('}').trim();
+    if content.is_empty() {
+        return map;
+    }
+
+    // Split by comma, but be careful about nested braces.
+    let mut depth = 0;
+    let mut current_field = String::new();
+
+    for c in content.chars() {
+        match c {
+            '{' => {
+                depth += 1;
+                current_field.push(c);
+            }
+            '}' => {
+                depth -= 1;
+                current_field.push(c);
+            }
+            ',' if depth == 0 => {
+                if !current_field.trim().is_empty() {
+                    parse_kv_pair(&current_field, &mut map);
+                }
+                current_field.clear();
+            }
+            _ => current_field.push(c),
+        }
+    }
+    if !current_field.trim().is_empty() {
+        parse_kv_pair(&current_field, &mut map);
+    }
+
+    map
+}
+
+pub fn parse_kv_pair(s: &str, map: &mut std::collections::HashMap<String, String>) {
+    if let Some(idx) = s.find(':') {
+        let key = s[..idx].trim().to_string();
+        let value = s[idx + 1..].trim().to_string();
+        map.insert(key, value);
+    }
+}

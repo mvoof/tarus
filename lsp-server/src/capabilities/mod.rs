@@ -5,6 +5,7 @@
 
 pub mod code_actions;
 pub mod code_lens;
+pub mod commands;
 pub mod completion;
 pub mod definition;
 pub mod diagnostics;
@@ -44,6 +45,10 @@ pub fn build_server_capabilities() -> ServerCapabilities {
                 ..Default::default()
             },
         )),
+        execute_command_provider: Some(tower_lsp_server::ls_types::ExecuteCommandOptions {
+            commands: vec!["tarus.syncTypes".to_string()],
+            work_done_progress_options: Default::default(),
+        }),
         ..Default::default()
     }
 }

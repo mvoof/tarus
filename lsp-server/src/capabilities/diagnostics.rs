@@ -4,8 +4,8 @@
 
 use crate::indexer::{DiagnosticInfo, IndexKey, ProjectIndex};
 use crate::syntax::{
-    compare_types, map_rust_type_to_ts, should_rename_to_camel, snake_to_camel, Behavior,
-    EntityType, TypeMatch,
+    compare_types, map_rust_type_to_ts, parse_ts_object_string, should_rename_to_camel,
+    snake_to_camel, Behavior, EntityType, TypeMatch,
 };
 use std::path::PathBuf;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity};
@@ -62,10 +62,65 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                     diagnostics.extend(check_return_type_diagnostics(key, loc, def, project_index));
                 }
             }
+
+            // 3. Duplicate Type Detection for Interfaces
+            if loc.behavior == Behavior::Definition && key.entity == EntityType::Interface {
+                if let Some(diag) = check_duplicate_types(key, &loc, project_index) {
+                    diagnostics.push(diag);
+                }
+            }
         }
     }
 
     diagnostics
+}
+
+fn check_duplicate_types(
+    key: &IndexKey,
+    loc: &crate::indexer::LocationInfo,
+    project_index: &ProjectIndex,
+) -> Option<Diagnostic> {
+    let locations = project_index.get_locations(EntityType::Interface, &key.name);
+    // If only one definition (this one), no conflict
+    if locations.len() <= 1 {
+        return None;
+    }
+
+    // Heuristic: generated files often named tauri-commands.d.ts or located in bindings/
+    let current_path_str = loc.path.to_string_lossy();
+    let current_is_generated = current_path_str.contains("tauri-commands.d.ts")
+        || current_path_str.contains("bindings.d.ts");
+
+    // If current file IS generated, we don't warn here (we warn on the manual one)
+    if current_is_generated {
+        return None;
+    }
+
+    let conflict = locations.iter().find(|l| {
+        l.path != loc.path
+            && (l.path.to_string_lossy().contains("tauri-commands.d.ts")
+                || l.path.to_string_lossy().contains("bindings.d.ts"))
+    });
+
+    if let Some(conflict_loc) = conflict {
+        let file_name = conflict_loc
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_else(|| "generated file".into());
+
+        return Some(Diagnostic {
+             range: loc.range,
+             severity: Some(DiagnosticSeverity::WARNING),
+             source: Some("tarus".to_string()),
+             message: format!(
+                 "Type '{}' is also defined in generated file '{}'. This may cause 'Duplicate identifier' errors.",
+                 key.name, file_name
+             ),
+             ..Default::default()
+         });
+    }
+    None
 }
 
 fn check_structural_diagnostics(
@@ -459,50 +514,4 @@ fn recursive_type_check(
 
     // Default to strict mismatch if structure analysis failed
     basic_match
-}
-
-/// Simple parser for "{ key: value, ... }" string produced by extractors.rs
-fn parse_ts_object_string(s: &str) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    let content = s.trim_start_matches('{').trim_end_matches('}').trim();
-    if content.is_empty() {
-        return map;
-    }
-
-    // Split by comma, but be careful about nested braces.
-    let mut depth = 0;
-    let mut current_field = String::new();
-
-    for c in content.chars() {
-        match c {
-            '{' => {
-                depth += 1;
-                current_field.push(c);
-            }
-            '}' => {
-                depth -= 1;
-                current_field.push(c);
-            }
-            ',' if depth == 0 => {
-                if !current_field.trim().is_empty() {
-                    parse_kv_pair(&current_field, &mut map);
-                }
-                current_field.clear();
-            }
-            _ => current_field.push(c),
-        }
-    }
-    if !current_field.trim().is_empty() {
-        parse_kv_pair(&current_field, &mut map);
-    }
-
-    map
-}
-
-fn parse_kv_pair(s: &str, map: &mut std::collections::HashMap<String, String>) {
-    if let Some(idx) = s.find(':') {
-        let key = s[..idx].trim().to_string();
-        let value = s[idx + 1..].trim().to_string();
-        map.insert(key, value);
-    }
 }
