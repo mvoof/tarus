@@ -6,8 +6,10 @@ use tower_lsp_server::ls_types::ExecuteCommandParams;
 use crate::indexer::ProjectIndex;
 use crate::typegen::{self, TypegenConfig};
 
+/// # Errors
+/// Returns an error if command execution fails.
 pub fn handle_execute_command(
-    params: ExecuteCommandParams,
+    params: &ExecuteCommandParams,
     project_index: &ProjectIndex,
     roots: &[PathBuf],
     typegen_config: &TypegenConfig,
@@ -15,7 +17,7 @@ pub fn handle_execute_command(
     match params.command.as_str() {
         "tarus.syncTypes" => {
             if let Some(root) = roots.first() {
-                if let Err(e) =
+                if let Err(_e) =
                     typegen::write_types_file_with_config(project_index, root, typegen_config)
                 {
                     return Err(Error::internal_error()); // Or custom error with message

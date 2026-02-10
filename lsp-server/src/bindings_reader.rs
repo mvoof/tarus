@@ -51,7 +51,7 @@ pub fn find_bindings_file(project_root: &Path) -> Option<PathBuf> {
         let walker = WalkDir::new(src_tauri).max_depth(3);
         for entry in walker.into_iter().filter_map(Result::ok) {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "rs") {
+            if path.extension().is_some_and(|ext| ext == "rs") {
                 if let Ok(content) = std::fs::read_to_string(path) {
                     // Look for `ts::export(..., "path/to/bindings.ts")`
                     // or `export(..., "path/to/bindings.ts")`
@@ -61,7 +61,9 @@ pub fn find_bindings_file(project_root: &Path) -> Option<PathBuf> {
                             let rest_quoted = &rest[quote_start + 1..];
                             if let Some(quote_end) = rest_quoted.find('"') {
                                 let path_str = &rest_quoted[..quote_end];
-                                if path_str.ends_with(".ts") || path_str.ends_with(".js") {
+                                if Path::new(path_str).extension().is_some_and(|ext| {
+                                    ext.eq_ignore_ascii_case("ts") || ext.eq_ignore_ascii_case("js")
+                                }) {
                                     // Resolve relative path from src-tauri base
                                     // Usually it's like "../src/bindings.ts"
                                     let resolved = project_root.join("src-tauri").join(path_str);
@@ -100,6 +102,8 @@ pub fn find_bindings_file(project_root: &Path) -> Option<PathBuf> {
 }
 
 /// Read and index bindings from the specified file
+/// # Errors
+/// Returns an error if file reading fails.
 pub fn read_bindings(path: &Path, project_index: &ProjectIndex) -> std::io::Result<()> {
     let content = std::fs::read_to_string(path)?;
 
@@ -137,7 +141,6 @@ pub fn read_bindings(path: &Path, project_index: &ProjectIndex) -> std::io::Resu
 
                     // Basic extraction successful
                     let entry = BindingEntry {
-                        command_name: name.to_string(),
                         args: vec![],      // TODO: Parse args
                         return_type: None, // TODO: Parse return type
                     };

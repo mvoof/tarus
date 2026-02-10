@@ -50,9 +50,7 @@ pub fn handle_code_action(
         (EntityType::Command, Behavior::Call) => {
             handle_command_call(&key, &loc, root, params, project_index, &mut actions);
         }
-        (EntityType::Command, Behavior::Definition) => {
-            // handle_command_definition...
-        }
+
         (EntityType::Struct, Behavior::Definition) => {
             handle_struct_definition(&key, &loc, root, params, &mut actions);
         }
@@ -105,13 +103,11 @@ fn handle_event_call(
 
             // snippet to append
             let snippet = format!(
-                "\n// Generated event handler for '{}'\npub fn {}<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {{\n    app.listen(\"{}\", |event| {{\n        println!(\"Received event: {{:?}}\", event.payload());\n    }});\n}}\n",
-                event_name, handler_name, event_name, 
+                "\n// Generated event handler for '{event_name}'\npub fn {handler_name}<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {{\n    app.listen(\"{event_name}\", |event| {{\n        println!(\"Received event: {{:?}}\", event.payload());\n    }});\n}}\n", 
             );
 
-            let target_uri = match Uri::from_file_path(&candidate.path) {
-                Some(u) => u,
-                None => continue,
+            let Some(target_uri) = Uri::from_file_path(&candidate.path) else {
+                continue;
             };
 
             actions.push(CodeActionOrCommand::CodeAction(CodeAction {
@@ -148,20 +144,7 @@ fn handle_command_call(
 ) {
     let info = project_index.get_diagnostic_info(key);
 
-    if !info.has_definition() {
-        // Undefined: Offer to create in Rust
-        let candidates = find_rust_file_candidates(root);
-        let rust_args = infer_rust_args(loc);
-
-        for candidate in rank_and_limit(candidates) {
-            actions.push(create_rust_command_action(
-                &key.name,
-                &rust_args,
-                &candidate,
-                &params.context.diagnostics,
-            ));
-        }
-    } else {
+    if info.has_definition() {
         // Defined: Offer to generate TS wrapper
         let locations = project_index.get_locations(EntityType::Command, &key.name);
         if let Some(def) = locations
@@ -179,6 +162,19 @@ fn handle_command_call(
                     actions.push(action);
                 }
             }
+        }
+    } else {
+        // Undefined: Offer to create in Rust
+        let candidates = find_rust_file_candidates(root);
+        let rust_args = infer_rust_args(loc);
+
+        for candidate in rank_and_limit(candidates) {
+            actions.push(create_rust_command_action(
+                &key.name,
+                &rust_args,
+                &candidate,
+                &params.context.diagnostics,
+            ));
         }
     }
 }
@@ -752,12 +748,12 @@ fn create_ts_wrapper_action(
             })
             .collect();
         if p_strs.is_empty() {
-            "".to_string()
+            String::new()
         } else {
             format!("{{ {} }}", p_strs.join(", "))
         }
     } else {
-        "".to_string()
+        String::new()
     };
 
     let wrapper_name = crate::syntax::snake_to_camel(cmd_name);

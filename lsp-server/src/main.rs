@@ -215,7 +215,7 @@ impl Backend {
         };
 
         if let Some(path) = bindings_path {
-            self.log_dev_info(&format!("Loading bindings from {:?}", path))
+            self.log_dev_info(&format!("Loading bindings from {}", path.display()))
                 .await;
             if let Err(e) = bindings_reader::read_bindings(&path, &self.project_index) {
                 self.log_dev_info(&format!("Failed to read bindings: {e}"))
@@ -263,6 +263,7 @@ impl LanguageServer for Backend {
 
         // Fallback to root_uri
         if roots.is_empty() {
+            // root_uri is deprecated, but we still support it for backward compatibility
             #[allow(deprecated)]
             if let Some(path) = params
                 .root_uri
@@ -637,7 +638,7 @@ impl LanguageServer for Backend {
         let config = self.typegen_config.read().await;
 
         match capabilities::commands::handle_execute_command(
-            params,
+            &params,
             &self.project_index,
             &roots,
             &config,
@@ -647,7 +648,7 @@ impl LanguageServer for Backend {
                 Ok(res)
             }
             Err(e) => {
-                self.log_dev_info(&format!("❌ Command execution failed: {:?}", e))
+                self.log_dev_info(&format!("❌ Command execution failed: {e:?}"))
                     .await;
                 Err(e)
             }

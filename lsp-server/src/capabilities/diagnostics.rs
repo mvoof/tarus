@@ -65,7 +65,7 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
 
             // 3. Duplicate Type Detection for Interfaces
             if loc.behavior == Behavior::Definition && key.entity == EntityType::Interface {
-                if let Some(diag) = check_duplicate_types(key, &loc, project_index) {
+                if let Some(diag) = check_duplicate_types(key, loc, project_index) {
                     diagnostics.push(diag);
                 }
             }
@@ -106,8 +106,7 @@ fn check_duplicate_types(
         let file_name = conflict_loc
             .path
             .file_name()
-            .map(|n| n.to_string_lossy())
-            .unwrap_or_else(|| "generated file".into());
+            .map_or_else(|| "generated file".into(), |n| n.to_string_lossy());
 
         return Some(Diagnostic {
              range: loc.range,
@@ -178,6 +177,7 @@ fn check_structural_diagnostics(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn check_parameters_diagnostics(
     key: &IndexKey,
     loc: &crate::indexer::LocationInfo,
@@ -315,19 +315,18 @@ fn check_parameters_diagnostics(
             if !ts_params
                 .iter()
                 .any(|p| p.name == camel_name || p.name == rp.name)
+                && !rp.type_name.contains("Option")
             {
-                if !rp.type_name.contains("Option") {
-                    diagnostics.push(Diagnostic {
-                        range: loc.range,
-                        severity: Some(DiagnosticSeverity::WARNING),
-                        source: Some("tarus".to_string()),
-                        message: format!(
-                            "Missing required argument '{}' for command '{}'",
-                            camel_name, key.name
-                        ),
-                        ..Default::default()
-                    });
-                }
+                diagnostics.push(Diagnostic {
+                    range: loc.range,
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    source: Some("tarus".to_string()),
+                    message: format!(
+                        "Missing required argument '{}' for command '{}'",
+                        camel_name, key.name
+                    ),
+                    ..Default::default()
+                });
             }
         }
     }
@@ -487,10 +486,7 @@ fn recursive_type_check(
                                 ts_field_type,
                             );
                             if let TypeMatch::Mismatch(msg) = match_result {
-                                return TypeMatch::Mismatch(format!(
-                                    "field '{}': {}",
-                                    field_name, msg
-                                ));
+                                return TypeMatch::Mismatch(format!("field '{field_name}': {msg}"));
                             }
                         }
                         None => {
@@ -499,8 +495,7 @@ fn recursive_type_check(
                             // Currently we assume required unless explicit Option.
                             if !field.type_name.starts_with("Option<") {
                                 return TypeMatch::Mismatch(format!(
-                                    "missing required field '{}'",
-                                    field_name
+                                    "missing required field '{field_name}'"
                                 ));
                             }
                         }

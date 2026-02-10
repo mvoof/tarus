@@ -6,6 +6,7 @@ use crate::syntax::{
     should_rename_to_camel, snake_to_camel, Behavior, EntityType,
 };
 use dashmap::DashMap;
+use std::fmt::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tower_lsp_server::ls_types::{
@@ -173,7 +174,7 @@ fn complete_invoke_arguments(
         .map(|rp| {
             let camel_name = snake_to_camel(&rp.name);
             let ts_type = map_rust_type_to_ts(&rp.type_name);
-            let mut detail = format!(": {}", ts_type);
+            let mut detail = format!(": {ts_type}");
 
             // Enhance detail with struct fields if available
             let base = get_base_rust_type(&rp.type_name);
@@ -196,7 +197,7 @@ fn complete_invoke_arguments(
                                 format!("{}: {}", fname, map_rust_type_to_ts(&f.type_name))
                             })
                             .collect();
-                        use std::fmt::Write;
+
                         let _ = write!(detail, " {{ {} }}", field_strs.join(", "));
                     }
                 }
@@ -241,7 +242,7 @@ fn complete_command_event_names(
     let mut items = Vec::new();
 
     // Add commands from bindings
-    for entry in project_index.bindings_cache.iter() {
+    for entry in &project_index.bindings_cache {
         let name = entry.key();
         let binding = entry.value();
         items.push(CompletionItem {
@@ -274,7 +275,7 @@ fn complete_command_event_names(
             if let Some(rt) = &l.return_type {
                 let inner = extract_result_ok_type(rt);
                 let ts_type = map_rust_type_to_ts(inner);
-                use std::fmt::Write;
+
                 let _ = write!(detail, " → {ts_type}");
 
                 // If it's a custom struct type, show fields

@@ -47,7 +47,8 @@ pub fn build_server_capabilities() -> ServerCapabilities {
         )),
         execute_command_provider: Some(tower_lsp_server::ls_types::ExecuteCommandOptions {
             commands: vec!["tarus.syncTypes".to_string()],
-            work_done_progress_options: Default::default(),
+            work_done_progress_options:
+                tower_lsp_server::ls_types::WorkDoneProgressOptions::default(),
         }),
         ..Default::default()
     }

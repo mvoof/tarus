@@ -60,7 +60,6 @@ pub struct LocationInfo {
 
 #[derive(Debug, Clone)]
 pub struct BindingEntry {
-    pub command_name: String,
     pub args: Vec<Parameter>,
     pub return_type: Option<String>,
 }

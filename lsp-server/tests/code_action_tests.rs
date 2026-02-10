@@ -3,8 +3,8 @@ use lsp_server::indexer::{IndexKey, LocationInfo, Parameter, ProjectIndex};
 use lsp_server::syntax::{Behavior, EntityType};
 use std::path::PathBuf;
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionContext, CodeActionOrCommand, CodeActionParams, DocumentChanges, OneOf,
-    Position, Range, TextDocumentIdentifier, Uri,
+    CodeActionContext, CodeActionOrCommand, CodeActionParams, DocumentChanges, OneOf, Position,
+    Range, TextDocumentIdentifier, Uri,
 };
 
 fn create_mock_project_index() -> ProjectIndex {

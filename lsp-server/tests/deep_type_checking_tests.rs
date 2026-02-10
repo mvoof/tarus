@@ -11,7 +11,7 @@ mod tests {
 
     #[test]
     fn test_recursive_struct_validation() {
-        let mut index = create_mock_project_index();
+        let index = create_mock_project_index();
         let file_path = PathBuf::from("src/test.ts");
 
         // 1. Define Struct "User" { name: String, age: i32 }

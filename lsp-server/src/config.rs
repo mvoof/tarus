@@ -10,6 +10,7 @@ use crate::indexer::ProjectIndex;
 use crate::typegen::TypegenConfig;
 
 /// Load and apply configuration settings from the client
+#[allow(clippy::too_many_lines)]
 pub async fn load_configuration(
     client: &Client,
     is_developer_mode_active: &Arc<AtomicBool>,

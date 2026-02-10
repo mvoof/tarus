@@ -480,6 +480,7 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
 }
 
 /// Simple parser for "{ key: value, ... }" string produced by extractors.rs
+#[must_use]
 pub fn parse_ts_object_string(s: &str) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let content = s.trim_start_matches('{').trim_end_matches('}').trim();
@@ -517,7 +518,10 @@ pub fn parse_ts_object_string(s: &str) -> std::collections::HashMap<String, Stri
     map
 }
 
-pub fn parse_kv_pair(s: &str, map: &mut std::collections::HashMap<String, String>) {
+pub fn parse_kv_pair<S: std::hash::BuildHasher>(
+    s: &str,
+    map: &mut std::collections::HashMap<String, String, S>,
+) {
     if let Some(idx) = s.find(':') {
         let key = s[..idx].trim().to_string();
         let value = s[idx + 1..].trim().to_string();

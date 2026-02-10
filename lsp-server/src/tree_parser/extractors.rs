@@ -184,11 +184,11 @@ fn infer_ts_type(node: Node, content: &str) -> String {
                     ) {
                         let k_name = k.text_or_default(content);
                         let v_type = infer_ts_type(v, content);
-                        fields.push(format!("{}: {}", k_name, v_type));
+                        fields.push(format!("{k_name}: {v_type}"));
                     }
                 } else if child.kind() == "shorthand_property_identifier" {
                     let name = child.text_or_default(content);
-                    fields.push(format!("{}: any", name));
+                    fields.push(format!("{name}: any"));
                 }
             }
             if fields.is_empty() {
@@ -197,7 +197,7 @@ fn infer_ts_type(node: Node, content: &str) -> String {
                 format!("{{ {} }}", fields.join(", "))
             }
         }
-        "identifier" => "any".to_string(), // Variable reference
+        // Variable reference
         _ => "any".to_string(),
     }
 }

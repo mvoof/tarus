@@ -20,15 +20,7 @@ pub struct TypegenConfig {
     pub strict_type_safety: bool,
 }
 
-/// Generate TypeScript declaration content for all commands and events
-#[must_use]
-#[allow(dead_code)]
-pub fn generate_invoke_types(project_index: &ProjectIndex) -> String {
-    generate_invoke_types_with_config(project_index, &TypegenConfig::default())
-}
-
 /// Generate TypeScript declaration content with custom configuration
-#[must_use]
 pub fn generate_invoke_types_with_config(
     project_index: &ProjectIndex,
     config: &TypegenConfig,

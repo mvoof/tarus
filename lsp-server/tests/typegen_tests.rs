@@ -4,7 +4,6 @@ mod tests {
     use lsp_server::syntax::{Behavior, EntityType};
     use lsp_server::typegen::{self, TypegenConfig};
     use std::path::PathBuf;
-    use std::sync::Arc;
 
     fn create_mock_project_index() -> ProjectIndex {
         let index = ProjectIndex::default();
@@ -70,7 +69,7 @@ mod tests {
     #[test]
     fn test_generate_simple_types() {
         let index = create_mock_project_index();
-        let output = typegen::generate_invoke_types(&index);
+        let output = typegen::generate_invoke_types_with_config(&index, &TypegenConfig::default());
 
         assert!(output
             .contains("invoke<R = string>(cmd: 'simple_cmd', args: SimpleCmdArgs): Promise<R>"));
@@ -101,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_tagged_union() {
-        let mut index = create_mock_project_index();
+        let index = create_mock_project_index();
 
         // Add tagged union: enum TaggedEnum { #[serde(tag = "type")] VariantA, VariantB { x: i32 } }
         index.map.insert(
@@ -166,7 +165,7 @@ mod tests {
             }],
         );
 
-        let output = typegen::generate_invoke_types(&index);
+        let output = typegen::generate_invoke_types_with_config(&index, &TypegenConfig::default());
 
         // Check for TaggedEnum with internal tag 'kind'
         // VariantA: { kind: 'VariantA' }
