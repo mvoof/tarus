@@ -17,6 +17,7 @@ use tower_lsp_server::ls_types::{
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 // Refactored modules
+mod bindings_reader;
 mod capabilities;
 mod config;
 mod file_processor;
@@ -27,6 +28,7 @@ mod syntax;
 mod tree_parser;
 mod typegen;
 
+use bindings_reader::BindingsConfig;
 use capabilities::{build_server_capabilities, diagnostics};
 use indexer::{IndexKey, ProjectIndex};
 use scanner::is_tauri_project;
@@ -45,6 +47,8 @@ struct Backend {
     document_cache: Arc<DashMap<PathBuf, String>>,
     /// Type generation configuration (loaded from client settings)
     typegen_config: Arc<tokio::sync::RwLock<TypegenConfig>>,
+    /// Bindings configuration (loaded from client settings)
+    bindings_config: Arc<tokio::sync::RwLock<BindingsConfig>>,
 }
 
 impl Backend {
@@ -184,8 +188,45 @@ impl Backend {
             &self.is_developer_mode_active,
             &self.project_index,
             &self.typegen_config,
+            &self.bindings_config,
         )
         .await;
+
+        self.reload_bindings().await;
+    }
+
+    /// Reload bindings based on configuration and discovery
+    async fn reload_bindings(&self) {
+        let roots = self.workspace_roots.get();
+        let Some(root) = roots.and_then(|r| r.first()) else {
+            return;
+        };
+
+        let config = self.bindings_config.read().await;
+        if !config.type_safety_enabled {
+            return;
+        }
+
+        // Determine path to bindings
+        let bindings_path = if let Some(paths) = &config.type_bindings_paths {
+            paths.first().map(PathBuf::from)
+        } else {
+            bindings_reader::find_bindings_file(root)
+        };
+
+        if let Some(path) = bindings_path {
+            self.log_dev_info(&format!("Loading bindings from {:?}", path))
+                .await;
+            if let Err(e) = bindings_reader::read_bindings(&path, &self.project_index) {
+                self.log_dev_info(&format!("Failed to read bindings: {e}"))
+                    .await;
+            } else {
+                let count = self.project_index.bindings_cache.len();
+                self.log_dev_info(&format!("Loaded {count} bindings")).await;
+            }
+        } else {
+            self.log_dev_info("No bindings file found").await;
+        }
     }
 
     /// Spawn background indexing task for all roots
@@ -598,6 +639,7 @@ async fn main() {
     let project_index = Arc::new(ProjectIndex::new());
     let initial_dev_mode_state = Arc::new(AtomicBool::new(false));
     let typegen_config = Arc::new(tokio::sync::RwLock::new(TypegenConfig::default()));
+    let bindings_config = Arc::new(tokio::sync::RwLock::new(BindingsConfig::default()));
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
@@ -607,6 +649,7 @@ async fn main() {
         debounce_tasks: Arc::new(DashMap::new()),
         document_cache: Arc::new(DashMap::new()),
         typegen_config,
+        bindings_config,
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;

@@ -58,6 +58,20 @@
           "default": false,
           "description": "When enabled, no fallback invoke overload is generated — only typed commands are allowed. Provides stricter type checking at the cost of flexibility.",
           "scope": "resource"
+        },
+
+        "tarus.typeBindingsPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Manual paths to Specta or Typegen output files (relative to project root). If empty, auto-discovery is used.",
+          "scope": "resource"
+        },
+        "tarus.typeSafetyEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable advanced type safety features using external bindings (Specta/Typegen).",
+          "scope": "resource"
         }
       }
     }

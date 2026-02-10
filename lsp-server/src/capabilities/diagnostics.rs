@@ -58,7 +58,7 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                     .find(|l| l.behavior == Behavior::Definition);
 
                 if let Some(def) = definition {
-                    diagnostics.extend(check_parameters_diagnostics(key, loc, def));
+                    diagnostics.extend(check_parameters_diagnostics(key, loc, def, project_index));
                     diagnostics.extend(check_return_type_diagnostics(key, loc, def, project_index));
                 }
             }
@@ -127,11 +127,84 @@ fn check_parameters_diagnostics(
     key: &IndexKey,
     loc: &crate::indexer::LocationInfo,
     def: &crate::indexer::LocationInfo,
+    project_index: &crate::indexer::ProjectIndex,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
+    // 1. Check if we have external bindings for this command
+    if let Some(binding) = project_index.bindings_cache.get(&key.name) {
+        if let Some(ts_params) = &loc.parameters {
+            // Check for unexpected TS parameters
+            for ts_p in ts_params {
+                let found = binding.args.iter().find(|bp| bp.name == ts_p.name);
+
+                if let Some(bp) = found {
+                    if ts_p.type_name != "any" {
+                        // Compare TS usage type vs Binding TS type
+                        // Bindings already have TS types, so recursive check might need adjustment or just work if types match
+                        // But binding.args[].type_name is TS type. recursive_type_check expects Rust type as first arg usually.
+                        // However, recursive_type_check calls compare_types(rust, ts).
+                        // If binding type is "MyInterface" and usage is "{ x: 1 }", compare_types("MyInterface", "{...}") -> Mismatch.
+                        // recursive_type_check then tries to look up "MyInterface" as Rust struct.
+                        // But "MyInterface" is TS type.
+                        // We need to know the underlying Rust type for the binding if possible.
+                        // But binding entry only knows TS type.
+                        // So for bindings, we can only do shallow check unless we map TS type back to Rust type.
+                        // For now, let's keep basic compare_types for bindings, OR use recursive_type_check assuming direct match.
+                        // If binding says "MyStruct", it likely maps to Rust "MyStruct".
+                        let result =
+                            recursive_type_check(project_index, &bp.type_name, &ts_p.type_name);
+                        if let TypeMatch::Mismatch(detail) = result {
+                            diagnostics.push(Diagnostic {
+                                range: loc.range,
+                                severity: Some(DiagnosticSeverity::WARNING),
+                                source: Some("tarus".to_string()),
+                                message: format!(
+                                    "Type mismatch for argument '{}': {detail}",
+                                    ts_p.name
+                                ),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                } else {
+                    diagnostics.push(Diagnostic {
+                        range: loc.range,
+                        severity: Some(DiagnosticSeverity::WARNING),
+                        source: Some("tarus".to_string()),
+                        message: format!(
+                            "Command '{}' does not expect argument '{}'",
+                            key.name, ts_p.name
+                        ),
+                        ..Default::default()
+                    });
+                }
+            }
+
+            // Check for missing required parameters
+            for bp in &binding.args {
+                let is_optional =
+                    bp.type_name.contains("undefined") || bp.type_name.contains("null");
+
+                if !is_optional && !ts_params.iter().any(|p| p.name == bp.name) {
+                    diagnostics.push(Diagnostic {
+                        range: loc.range,
+                        severity: Some(DiagnosticSeverity::WARNING),
+                        source: Some("tarus".to_string()),
+                        message: format!(
+                            "Missing required argument '{}' for command '{}'",
+                            bp.name, key.name
+                        ),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        return diagnostics;
+    }
+
+    // 2. Fallback: Use Rust definition
     if let (Some(ts_params), Some(rust_params)) = (&loc.parameters, &def.parameters) {
-        // Filter rust params that are likely backend-only
         let filtered_rust_params: Vec<_> = rust_params
             .iter()
             .filter(|p| {
@@ -149,11 +222,11 @@ fn check_parameters_diagnostics(
                 .find(|rp| snake_to_camel(&rp.name) == ts_p.name || rp.name == ts_p.name);
 
             if let Some(rp) = found {
-                // Use deep type comparison
                 if ts_p.type_name != "any" {
-                    let result = compare_types(&rp.type_name, &ts_p.type_name);
+                    // Use recursive check for deep validation
+                    let result =
+                        recursive_type_check(project_index, &rp.type_name, &ts_p.type_name);
                     if let TypeMatch::Mismatch(detail) = result {
-                        let _expected_ts_type = map_rust_type_to_ts(&rp.type_name);
                         diagnostics.push(Diagnostic {
                             range: loc.range,
                             severity: Some(DiagnosticSeverity::WARNING),
@@ -188,7 +261,6 @@ fn check_parameters_diagnostics(
                 .iter()
                 .any(|p| p.name == camel_name || p.name == rp.name)
             {
-                // Check if the Rust type is Option (optional parameter)
                 if !rp.type_name.contains("Option") {
                     diagnostics.push(Diagnostic {
                         range: loc.range,
@@ -204,6 +276,7 @@ fn check_parameters_diagnostics(
             }
         }
     }
+
     diagnostics
 }
 
@@ -309,4 +382,127 @@ fn check_return_type_diagnostics(
     }
 
     diagnostics
+}
+
+/// Recursively check if a Rust type matches a TS type representation
+fn recursive_type_check(
+    project_index: &ProjectIndex,
+    rust_type: &str,
+    ts_type_repr: &str,
+) -> TypeMatch {
+    // 1. Basic check first
+    let basic_match = compare_types(rust_type, ts_type_repr);
+    if matches!(basic_match, TypeMatch::Exact | TypeMatch::Compatible) {
+        return basic_match;
+    }
+
+    // 2. If TS type is an object literal "{ key: type, ... }", check against Rust struct
+    if ts_type_repr.starts_with('{') && ts_type_repr.ends_with('}') {
+        // Look up Rust struct definition
+        let struct_name = crate::syntax::extract_result_ok_type(rust_type);
+        // Handle Option<MyStruct> wrapper
+        let rust_base = if struct_name.starts_with("Option<") {
+            &struct_name[7..struct_name.len() - 1]
+        } else {
+            struct_name
+        };
+
+        let struct_locs = project_index.get_locations(EntityType::Struct, rust_base);
+        if let Some(def) = struct_locs
+            .iter()
+            .find(|l| l.behavior == Behavior::Definition)
+        {
+            if let Some(fields) = &def.fields {
+                let ts_fields = parse_ts_object_string(ts_type_repr);
+                let should_rename = should_rename_to_camel(def.attributes.as_ref());
+
+                for field in fields {
+                    let field_name = if should_rename {
+                        snake_to_camel(&field.name)
+                    } else {
+                        field.name.clone()
+                    };
+
+                    match ts_fields.get(&field_name) {
+                        Some(ts_field_type) => {
+                            // Recursively check field type
+                            let match_result = recursive_type_check(
+                                project_index,
+                                &field.type_name,
+                                ts_field_type,
+                            );
+                            if let TypeMatch::Mismatch(msg) = match_result {
+                                return TypeMatch::Mismatch(format!(
+                                    "field '{}': {}",
+                                    field_name, msg
+                                ));
+                            }
+                        }
+                        None => {
+                            // Field missing in TS object.
+                            // However, we only warn if strict checking is enabled or if field is not Option.
+                            // Currently we assume required unless explicit Option.
+                            if !field.type_name.starts_with("Option<") {
+                                return TypeMatch::Mismatch(format!(
+                                    "missing required field '{}'",
+                                    field_name
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                return TypeMatch::Exact;
+            }
+        }
+    }
+
+    // Default to strict mismatch if structure analysis failed
+    basic_match
+}
+
+/// Simple parser for "{ key: value, ... }" string produced by extractors.rs
+fn parse_ts_object_string(s: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let content = s.trim_start_matches('{').trim_end_matches('}').trim();
+    if content.is_empty() {
+        return map;
+    }
+
+    // Split by comma, but be careful about nested braces.
+    let mut depth = 0;
+    let mut current_field = String::new();
+
+    for c in content.chars() {
+        match c {
+            '{' => {
+                depth += 1;
+                current_field.push(c);
+            }
+            '}' => {
+                depth -= 1;
+                current_field.push(c);
+            }
+            ',' if depth == 0 => {
+                if !current_field.trim().is_empty() {
+                    parse_kv_pair(&current_field, &mut map);
+                }
+                current_field.clear();
+            }
+            _ => current_field.push(c),
+        }
+    }
+    if !current_field.trim().is_empty() {
+        parse_kv_pair(&current_field, &mut map);
+    }
+
+    map
+}
+
+fn parse_kv_pair(s: &str, map: &mut std::collections::HashMap<String, String>) {
+    if let Some(idx) = s.find(':') {
+        let key = s[..idx].trim().to_string();
+        let value = s[idx + 1..].trim().to_string();
+        map.insert(key, value);
+    }
 }

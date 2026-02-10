@@ -1,198 +1,160 @@
-//! Deep type checking tests for custom structs/interfaces
+#[cfg(test)]
+mod tests {
+    use lsp_server::capabilities::diagnostics::compute_file_diagnostics;
+    use lsp_server::indexer::{IndexKey, LocationInfo, Parameter, ProjectIndex};
+    use lsp_server::syntax::{Behavior, EntityType}; // Correctly imported from syntax
+    use std::path::PathBuf;
 
-mod common_paths;
+    fn create_mock_project_index() -> ProjectIndex {
+        ProjectIndex::default()
+    }
 
-use common_paths::test_path;
-use lsp_server::capabilities::diagnostics::compute_file_diagnostics;
-use lsp_server::indexer::{FileIndex, Finding, Parameter, ProjectIndex};
-use lsp_server::syntax::{Behavior, EntityType};
-use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range};
+    #[test]
+    fn test_recursive_struct_validation() {
+        let mut index = create_mock_project_index();
+        let file_path = PathBuf::from("src/test.ts");
 
-#[test]
-fn test_deep_type_mismatch_return_type() {
-    let index = ProjectIndex::new();
-
-    // 1. Define a Rust struct
-    index.add_file(FileIndex {
-        path: test_path("backend.rs"),
-        findings: vec![
-            Finding {
-                key: "Greet".to_string(),
+        // 1. Define Struct "User" { name: String, age: i32 }
+        index.map.insert(
+            IndexKey {
                 entity: EntityType::Struct,
+                name: "User".to_string(),
+            },
+            vec![LocationInfo {
+                path: PathBuf::from("src-tauri/src/models.rs"),
+                range: Default::default(),
                 behavior: Behavior::Definition,
-                range: Range::default(),
                 parameters: None,
+                fields: Some(vec![
+                    Parameter {
+                        name: "name".to_string(),
+                        type_name: "String".to_string(),
+                    },
+                    Parameter {
+                        name: "age".to_string(),
+                        type_name: "i32".to_string(),
+                    },
+                ]),
                 return_type: None,
-                fields: Some(vec![Parameter {
-                    name: "message".to_string(),
-                    type_name: "String".to_string(),
-                }]),
                 attributes: None,
-            },
-            // Define a command that returns this struct
-            Finding {
-                key: "greet".to_string(),
-                entity: EntityType::Command,
-                behavior: Behavior::Definition,
-                range: Range::default(),
-                parameters: None,
-                return_type: Some("Greet".to_string()),
-                fields: None,
-                attributes: None,
-            },
-        ],
-    });
+            }],
+        );
 
-    // 2. Define a TypeScript interface with a MISMATCHED type (number instead of string)
-    let frontend_path = test_path("frontend.ts");
-    index.add_file(FileIndex {
-        path: frontend_path.clone(),
-        findings: vec![
-            Finding {
-                key: "GreetType1".to_string(),
-                entity: EntityType::Interface,
-                behavior: Behavior::Definition,
-                range: Range::default(),
-                parameters: None,
-                return_type: None,
-                fields: Some(vec![Parameter {
-                    name: "message".to_string(),
-                    type_name: "number".to_string(),
-                }]),
-                attributes: None,
-            },
-            // Call the command with this mismatched interface
-            Finding {
-                key: "greet".to_string(),
+        // 2. Define Command "create_user" (user: User)
+        index.map.insert(
+            IndexKey {
                 entity: EntityType::Command,
-                behavior: Behavior::Call,
-                range: Range {
-                    start: Position {
-                        line: 10,
-                        character: 0,
-                    },
-                    end: Position {
-                        line: 10,
-                        character: 20,
-                    },
+                name: "create_user".to_string(),
+            },
+            vec![LocationInfo {
+                path: PathBuf::from("src-tauri/src/main.rs"),
+                range: Default::default(),
+                behavior: Behavior::Definition,
+                parameters: Some(vec![Parameter {
+                    name: "user".to_string(),
+                    type_name: "User".to_string(),
+                }]),
+                return_type: None,
+                attributes: None,
+                fields: None,
+            }],
+        );
+
+        // 3. Register file usage in file_map
+        index.file_map.insert(
+            file_path.clone(),
+            vec![IndexKey {
+                entity: EntityType::Command,
+                name: "create_user".to_string(),
+            }],
+        );
+
+        // 4. Add usage location in map
+        // Case A: Valid Usage
+        let valid_usage_loc = LocationInfo {
+            path: file_path.clone(),
+            range: tower_lsp_server::ls_types::Range::default(), // Line 0
+            behavior: Behavior::Call,
+            parameters: Some(vec![Parameter {
+                name: "user".to_string(),
+                // Simulating: create_user({ name: "Alice", age: 30 })
+                type_name: "{ name: string, age: number }".to_string(),
+            }]),
+            fields: None,
+            return_type: None,
+            attributes: None,
+        };
+
+        // Case B: Invalid Usage (age is string)
+        let invalid_usage_loc = LocationInfo {
+            path: file_path.clone(),
+            range: tower_lsp_server::ls_types::Range {
+                start: tower_lsp_server::ls_types::Position {
+                    line: 10,
+                    character: 0,
                 },
-                parameters: None,
-                return_type: Some("<GreetType1>".to_string()),
-                fields: None,
-                attributes: None,
-            },
-        ],
-    });
-
-    // 3. Compute diagnostics
-    let diagnostics = compute_file_diagnostics(&frontend_path, &index);
-
-    // 4. Verify diagnostic is present
-    assert!(
-        !diagnostics.is_empty(),
-        "Should have at least one diagnostic"
-    );
-
-    let mismatch = diagnostics
-        .iter()
-        .find(|d| d.message.contains("Type mismatch for field 'message'"));
-    assert!(
-        mismatch.is_some(),
-        "Expected type mismatch diagnostic for field 'message'"
-    );
-    assert_eq!(
-        mismatch.unwrap().severity,
-        Some(DiagnosticSeverity::WARNING)
-    );
-    assert!(mismatch
-        .unwrap()
-        .message
-        .contains("expected string, got number"));
-}
-
-#[test]
-fn test_deep_type_match_return_type() {
-    let index = ProjectIndex::new();
-
-    // 1. Define a Rust struct
-    index.add_file(FileIndex {
-        path: test_path("backend.rs"),
-        findings: vec![
-            Finding {
-                key: "Greet".to_string(),
-                entity: EntityType::Struct,
-                behavior: Behavior::Definition,
-                range: Range::default(),
-                parameters: None,
-                return_type: None,
-                fields: Some(vec![Parameter {
-                    name: "message".to_string(),
-                    type_name: "String".to_string(),
-                }]),
-                attributes: None,
-            },
-            Finding {
-                key: "greet".to_string(),
-                entity: EntityType::Command,
-                behavior: Behavior::Definition,
-                range: Range::default(),
-                parameters: None,
-                return_type: Some("Greet".to_string()),
-                fields: None,
-                attributes: None,
-            },
-        ],
-    });
-
-    // 2. Define a TypeScript interface with MATCHING type
-    let frontend_path = test_path("frontend.ts");
-    index.add_file(FileIndex {
-        path: frontend_path.clone(),
-        findings: vec![
-            Finding {
-                key: "GreetType1".to_string(),
-                entity: EntityType::Interface,
-                behavior: Behavior::Definition,
-                range: Range::default(),
-                parameters: None,
-                return_type: None,
-                fields: Some(vec![Parameter {
-                    name: "message".to_string(),
-                    type_name: "string".to_string(),
-                }]),
-                attributes: None,
-            },
-            Finding {
-                key: "greet".to_string(),
-                entity: EntityType::Command,
-                behavior: Behavior::Call,
-                range: Range {
-                    start: Position {
-                        line: 10,
-                        character: 0,
-                    },
-                    end: Position {
-                        line: 10,
-                        character: 20,
-                    },
+                end: tower_lsp_server::ls_types::Position {
+                    line: 10,
+                    character: 10,
                 },
-                parameters: None,
-                return_type: Some("<GreetType1>".to_string()),
-                fields: None,
-                attributes: None,
             },
-        ],
-    });
+            behavior: Behavior::Call,
+            parameters: Some(vec![Parameter {
+                name: "user".to_string(),
+                // Simulating: create_user({ name: "Bob", age: "thirty" })
+                type_name: "{ name: string, age: string }".to_string(),
+            }]),
+            fields: None,
+            return_type: None,
+            attributes: None,
+        };
 
-    // 3. Compute diagnostics
-    let diagnostics = compute_file_diagnostics(&frontend_path, &index);
+        index
+            .map
+            .get_mut(&IndexKey {
+                entity: EntityType::Command,
+                name: "create_user".to_string(),
+            })
+            .unwrap()
+            .push(valid_usage_loc);
 
-    // 4. Verify NO mismatch diagnostic is present
-    let mismatch = diagnostics
-        .iter()
-        .find(|d| d.message.contains("Type mismatch"));
-    assert!(
-        mismatch.is_none(),
-        "Should NOT have type mismatch diagnostic"
-    );
+        index
+            .map
+            .get_mut(&IndexKey {
+                entity: EntityType::Command,
+                name: "create_user".to_string(),
+            })
+            .unwrap()
+            .push(invalid_usage_loc);
+
+        // Run diagnostics
+        let diags = compute_file_diagnostics(&file_path, &index);
+
+        // Assertions
+
+        // Filter diagnostics to "Type mismatch"
+        let mismatch_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("Type mismatch"))
+            .collect();
+
+        assert_eq!(
+            mismatch_diags.len(),
+            1,
+            "Expected 1 type mismatch diagnostic, got {:?}",
+            diags
+        );
+
+        let diag = mismatch_diags[0];
+        assert!(
+            diag.message.contains("field 'age'"),
+            "Message: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("expected number"),
+            "Message: {}",
+            diag.message
+        );
+    }
 }

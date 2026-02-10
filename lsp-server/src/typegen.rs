@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 /// Configuration for type generation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TypegenConfig {
     /// Custom output path for .d.ts file (None = auto-detect)
     pub dts_output_path: Option<String>,
@@ -20,17 +20,9 @@ pub struct TypegenConfig {
     pub strict_type_safety: bool,
 }
 
-impl Default for TypegenConfig {
-    fn default() -> Self {
-        Self {
-            dts_output_path: None,
-            strict_type_safety: false,
-        }
-    }
-}
-
 /// Generate TypeScript declaration content for all commands and events
 #[must_use]
+#[allow(dead_code)]
 pub fn generate_invoke_types(project_index: &ProjectIndex) -> String {
     generate_invoke_types_with_config(project_index, &TypegenConfig::default())
 }
@@ -229,6 +221,7 @@ fn generate_custom_type_interfaces(
                     output,
                     &t_name,
                     variants,
+                    def.attributes.as_deref(),
                     &mut discovered_types,
                     custom_types_to_process,
                 );
@@ -245,17 +238,72 @@ fn generate_custom_type_interfaces(
 
 /// Generate TypeScript type for a Rust enum
 ///
-/// Handles both unit variants (string literal union) and variants with data (tagged union).
+/// Handles unit variants, externally tagged (default), and internally tagged (serde `tag = ...`).
 fn generate_enum_type(
     output: &mut String,
     name: &str,
     variants: &[crate::indexer::Parameter],
+    attributes: Option<&[String]>,
     discovered_types: &mut HashSet<String>,
     custom_types_to_process: &mut VecDeque<String>,
 ) {
+    // Check for `#[serde(tag = "...")]`
+    let mut internal_tag = None;
+    if let Some(attrs) = attributes {
+        for attr in attrs {
+            if attr.contains("serde") && attr.contains("tag") {
+                // simple parsing: look for tag = "value"
+                if let Some(start) = attr.find("tag") {
+                    let rest = &attr[start..];
+                    if let Some(quote_start) = rest.find('"') {
+                        if let Some(quote_end) = rest[quote_start + 1..].find('"') {
+                            internal_tag =
+                                Some(&rest[quote_start + 1..quote_start + 1 + quote_end]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let has_data_variants = variants.iter().any(|v| v.type_name != "enum_variant");
 
-    if has_data_variants {
+    if let Some(tag) = internal_tag {
+        // Internally Tagged: { "type": "Variant", "field": "value" }
+        let _ = writeln!(output, "export type {name} =");
+        for (i, variant) in variants.iter().enumerate() {
+            let separator = if i == 0 { "  " } else { "  | " };
+
+            if variant.type_name == "enum_variant" {
+                // Unit variant: { type: 'Name' }
+                let _ = writeln!(output, "{separator}{{ {tag}: '{}' }}", variant.name);
+            } else {
+                // Variant with data.
+                // For internally tagged, the data MUST be a struct or map.
+                // We assume it maps to a TS interface/object.
+                // TS: { type: 'Name' } & VariantType
+
+                let ts_type = map_rust_type_to_ts(&variant.type_name);
+
+                // Discover nested custom types
+                let base = get_base_rust_type(&variant.type_name);
+                if !is_primitive_rust_type(&base)
+                    && !base.is_empty()
+                    && discovered_types.insert(base.clone())
+                {
+                    custom_types_to_process.push_back(base);
+                }
+
+                // If ts_type is an interface/type name, we can intersect
+                let _ = writeln!(
+                    output,
+                    "{separator}({{ {tag}: '{}' }} & {ts_type})",
+                    variant.name
+                );
+            }
+        }
+        output.push_str(";\n\n");
+    } else if has_data_variants {
         // Tagged union: at least one variant has associated data
         // Uses "externally tagged" serde format (default): { "VariantName": data }
         let _ = writeln!(output, "export type {name} =");

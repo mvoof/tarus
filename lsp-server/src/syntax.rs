@@ -22,10 +22,11 @@ pub enum EntityType {
 }
 
 /// Behavior of the entity - how it's used in code
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash, Copy)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash, Copy, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum Behavior {
     /// Command definition (Rust: #[`tauri::command`] fn `name()`)
+    #[default]
     Definition,
     /// Command call (Frontend: invoke("name"))
     Call,
@@ -380,6 +381,11 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
         return TypeMatch::Compatible;
     }
 
+    // Direct match (useful for TS-to-TS comparison from bindings)
+    if rt == ts {
+        return TypeMatch::Exact;
+    }
+
     // Direct primitive match
     let expected_ts = map_rust_type_to_ts(rt);
     if ts == expected_ts {
@@ -389,8 +395,7 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
     // Option<T> vs T | null
     if rt.starts_with("Option<") {
         let inner_rust = &rt[7..rt.len() - 1];
-        if ts.ends_with(" | null") {
-            let ts_inner = &ts[..ts.len() - 7];
+        if let Some(ts_inner) = ts.strip_suffix(" | null") {
             return compare_types(inner_rust, ts_inner);
         }
         // Also accept the inner type without null (less strict)
@@ -400,8 +405,7 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
     // Vec<T> vs T[]
     if rt.starts_with("Vec<") {
         let inner_rust = &rt[4..rt.len() - 1];
-        if ts.ends_with("[]") {
-            let ts_inner = &ts[..ts.len() - 2];
+        if let Some(ts_inner) = ts.strip_suffix("[]") {
             return compare_types(inner_rust, ts_inner);
         }
         // Also accept Array<T>

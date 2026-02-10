@@ -141,36 +141,65 @@ pub fn extract_ts_params(node: Node, content: &str) -> Vec<Parameter> {
                     let mut type_name = "any".to_string();
 
                     if let Some(v) = value_node {
-                        // Very basic type inference from literal values
-                        type_name = match v.kind() {
-                            "string" => "string",
-                            "number" => "number",
-                            "true" | "false" => "boolean",
-                            "array" => "any[]",
-                            "object" => "object",
-                            _ => "any",
-                        }
-                        .to_string();
+                        type_name = infer_ts_type(v, content);
                     }
 
                     params.push(Parameter { name, type_name });
                 }
             }
-            // Handle { name } shorthand syntax (shorthand_property_identifier)
+            // Handle { name } shorthand syntax
             else if child.kind() == "shorthand_property_identifier"
                 || child.kind() == "shorthand_property_identifier_pattern"
             {
                 let name = child.text_or_default(content);
-
-                // For shorthand, we can't infer type from literal - it's a variable reference
                 params.push(Parameter {
                     name,
-                    type_name: "any".to_string(),
+                    type_name: "any".to_string(), // Variable reference, treat as any
                 });
             }
         }
     }
     params
+}
+
+fn infer_ts_type(node: Node, content: &str) -> String {
+    match node.kind() {
+        "string" => "string".to_string(),
+        "number" => "number".to_string(),
+        "true" | "false" => "boolean".to_string(),
+        "array" => {
+            // Try to infer array inner type if all elements are same
+            // Simplification: just use any[] for now, or maybe check first element?
+            "any[]".to_string()
+        }
+        "object" => {
+            // Recursively build { key: type, ... }
+            let mut fields = Vec::new();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "pair" {
+                    if let (Some(k), Some(v)) = (
+                        child.child_by_field_name("key"),
+                        child.child_by_field_name("value"),
+                    ) {
+                        let k_name = k.text_or_default(content);
+                        let v_type = infer_ts_type(v, content);
+                        fields.push(format!("{}: {}", k_name, v_type));
+                    }
+                } else if child.kind() == "shorthand_property_identifier" {
+                    let name = child.text_or_default(content);
+                    fields.push(format!("{}: any", name));
+                }
+            }
+            if fields.is_empty() {
+                "{}".to_string() // Empty object or treat as 'object'
+            } else {
+                format!("{{ {} }}", fields.join(", "))
+            }
+        }
+        "identifier" => "any".to_string(), // Variable reference
+        _ => "any".to_string(),
+    }
 }
 
 /// Builder for constructing Finding objects with optional fields

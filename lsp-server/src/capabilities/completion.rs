@@ -139,6 +139,23 @@ fn complete_invoke_arguments(
         return None;
     }
 
+    // 1. Try bindings first
+    if let Some(binding) = project_index.bindings_cache.get(cmd_name) {
+        let items: Vec<_> = binding
+            .args
+            .iter()
+            .map(|bp| CompletionItem {
+                label: bp.name.clone(),
+                kind: Some(CompletionItemKind::PROPERTY),
+                detail: Some(format!(": {}", bp.type_name)),
+                insert_text: Some(format!("{}: ", bp.name)),
+                ..Default::default()
+            })
+            .collect();
+        // Return bindings results if any (or empty list if binding exists but no args)
+        return Some(items);
+    }
+
     let locations = project_index.get_locations(EntityType::Command, cmd_name);
     let def = locations
         .iter()
@@ -155,10 +172,40 @@ fn complete_invoke_arguments(
         })
         .map(|rp| {
             let camel_name = snake_to_camel(&rp.name);
+            let ts_type = map_rust_type_to_ts(&rp.type_name);
+            let mut detail = format!(": {}", ts_type);
+
+            // Enhance detail with struct fields if available
+            let base = get_base_rust_type(&rp.type_name);
+            if !is_primitive_rust_type(&base) {
+                let struct_locs = project_index.get_locations(EntityType::Struct, &base);
+                if let Some(sd) = struct_locs
+                    .iter()
+                    .find(|sl| sl.behavior == Behavior::Definition)
+                {
+                    if let Some(fields) = &sd.fields {
+                        let rename = should_rename_to_camel(sd.attributes.as_ref());
+                        let field_strs: Vec<String> = fields
+                            .iter()
+                            .map(|f| {
+                                let fname = if rename {
+                                    snake_to_camel(&f.name)
+                                } else {
+                                    f.name.clone()
+                                };
+                                format!("{}: {}", fname, map_rust_type_to_ts(&f.type_name))
+                            })
+                            .collect();
+                        use std::fmt::Write;
+                        let _ = write!(detail, " {{ {} }}", field_strs.join(", "));
+                    }
+                }
+            }
+
             CompletionItem {
                 label: camel_name.clone(),
                 kind: Some(CompletionItemKind::PROPERTY),
-                detail: Some(format!(": {}", map_rust_type_to_ts(&rp.type_name))),
+                detail: Some(detail),
                 insert_text: Some(format!("{camel_name}: ")),
                 ..Default::default()
             }
@@ -190,10 +237,30 @@ fn complete_command_event_names(
         return None;
     }
 
+    // Add commands
     let mut items = Vec::new();
 
-    // Add commands
+    // Add commands from bindings
+    for entry in project_index.bindings_cache.iter() {
+        let name = entry.key();
+        let binding = entry.value();
+        items.push(CompletionItem {
+            label: name.clone(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some(format!(
+                "Command (binding) → {}",
+                binding.return_type.as_deref().unwrap_or("void")
+            )),
+            ..Default::default()
+        });
+    }
+
+    // Add commands from Rust index
     for (name, def_loc) in project_index.get_all_names(EntityType::Command) {
+        // Avoid duplicates if binding exists
+        if project_index.bindings_cache.contains_key(&name) {
+            continue;
+        }
         let detail = def_loc.as_ref().map(|l| {
             let filename = l
                 .path
@@ -207,7 +274,8 @@ fn complete_command_event_names(
             if let Some(rt) = &l.return_type {
                 let inner = extract_result_ok_type(rt);
                 let ts_type = map_rust_type_to_ts(inner);
-                detail.push_str(&format!(" → {ts_type}"));
+                use std::fmt::Write;
+                let _ = write!(detail, " → {ts_type}");
 
                 // If it's a custom struct type, show fields
                 let base = get_base_rust_type(rt);

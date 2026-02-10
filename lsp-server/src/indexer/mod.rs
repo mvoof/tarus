@@ -47,7 +47,7 @@ pub struct IndexKey {
 }
 
 /// Location Information (Value)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LocationInfo {
     pub path: PathBuf,
     pub range: Range,
@@ -58,10 +58,19 @@ pub struct LocationInfo {
     pub attributes: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct BindingEntry {
+    pub command_name: String,
+    pub args: Vec<Parameter>,
+    pub return_type: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct ProjectIndex {
     pub map: DashMap<IndexKey, Vec<LocationInfo>>,
     pub file_map: DashMap<PathBuf, Vec<IndexKey>>,
+    /// Cache of bindings found in external files (e.g. from Specta or Typegen)
+    pub bindings_cache: DashMap<String, BindingEntry>,
     cache: CacheManager,
     // Parse errors by file path
     pub parse_errors: DashMap<PathBuf, String>,
@@ -74,6 +83,7 @@ impl Default for ProjectIndex {
         Self {
             map: DashMap::new(),
             file_map: DashMap::new(),
+            bindings_cache: DashMap::new(),
             cache: CacheManager::new(),
             parse_errors: DashMap::new(),
             reference_limit: AtomicUsize::new(3),
