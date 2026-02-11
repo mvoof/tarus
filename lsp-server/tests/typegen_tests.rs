@@ -125,7 +125,6 @@ mod tests {
                 ]),
                 attributes: Some(vec!["#[serde(tag = \"kind\")]".to_string()]),
                 return_type: None,
-                ..Default::default()
             }],
         );
 
