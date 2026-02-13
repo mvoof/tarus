@@ -1,11 +1,12 @@
 //! Server initialization and background indexing
 
+use crate::bindings_reader::{find_bindings_files, read_bindings, BindingsConfig};
 use crate::capabilities::diagnostics;
 use crate::file_processor;
 use crate::indexer::ProjectIndex;
 use crate::scanner::scan_workspace_files;
 use crate::typegen;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tower_lsp_server::ls_types::{MessageType, Uri};
@@ -17,6 +18,7 @@ pub fn spawn_background_indexing(
     project_index: Arc<ProjectIndex>,
     client: Client,
     is_dev_mode: Arc<AtomicBool>,
+    bindings_config: BindingsConfig,
 ) {
     let roots_for_scan = roots.to_owned();
     let primary_root = roots.first().cloned();
@@ -36,6 +38,11 @@ pub fn spawn_background_indexing(
 
         for path in all_files {
             file_processor::process_file_index(path, &project_index);
+        }
+
+        // Load external bindings (Specta/Typegen)
+        if let Some(ref root) = primary_root {
+            load_external_bindings(root, &project_index, &bindings_config, &client).await;
         }
 
         // Generate TypeScript type definitions (use primary root)
@@ -75,4 +82,48 @@ pub fn spawn_background_indexing(
             .log_message(MessageType::INFO, "🏁 Indexing complete".to_string())
             .await;
     });
+}
+
+/// Load external bindings files (tauri-specta / tauri-plugin-typegen)
+pub async fn load_external_bindings(
+    project_root: &Path,
+    project_index: &ProjectIndex,
+    bindings_config: &BindingsConfig,
+    client: &Client,
+) {
+    if !bindings_config.type_safety_enabled {
+        return;
+    }
+
+    let bindings_files = find_bindings_files(project_root, bindings_config);
+
+    if bindings_files.is_empty() {
+        // No bindings found - this is normal if not using Specta/Typegen
+        return;
+    }
+
+    for bindings_file in &bindings_files {
+        match read_bindings(bindings_file, project_index) {
+            Ok(()) => {
+                let file_name = bindings_file
+                    .file_name()
+                    .map_or_else(|| "bindings file".into(), |n| n.to_string_lossy());
+                client
+                    .log_message(
+                        MessageType::INFO,
+                        format!("📦 Loaded bindings from {file_name}"),
+                    )
+                    .await;
+            }
+            Err(e) => {
+                let file_path = bindings_file.display();
+                client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("Failed to load bindings from {file_path}: {e}"),
+                    )
+                    .await;
+            }
+        }
+    }
 }

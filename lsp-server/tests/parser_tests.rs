@@ -77,6 +77,104 @@ mod rust_parser_tests {
         assert!(!emits.is_empty(), "Expected at least one emit");
         assert!(!listens.is_empty(), "Expected at least one listen");
     }
+
+    #[test]
+    fn test_event_payload_scoped_identifier() {
+        let content = load_fixture("rust/event_payloads.rs");
+        let path = test_path("event_payloads.rs");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let file_index = result.unwrap();
+        let emit = file_index
+            .findings
+            .iter()
+            .find(|f| f.key == "calc-status" && f.behavior == Behavior::Emit)
+            .expect("Expected calc-status emit");
+
+        assert_eq!(
+            emit.return_type.as_deref(),
+            Some("CalculationStatus"),
+            "Scoped identifier payload should infer to CalculationStatus"
+        );
+    }
+
+    #[test]
+    fn test_event_payload_struct_expression() {
+        let content = load_fixture("rust/event_payloads.rs");
+        let path = test_path("event_payloads.rs");
+
+        let result = tree_parser::parse(&path, &content).unwrap();
+        let emit = result
+            .findings
+            .iter()
+            .find(|f| f.key == "struct-event" && f.behavior == Behavior::Emit)
+            .expect("Expected struct-event emit");
+
+        assert_eq!(
+            emit.return_type.as_deref(),
+            Some("MyStruct"),
+            "Struct expression payload should infer to MyStruct"
+        );
+    }
+
+    #[test]
+    fn test_event_payload_string_literal() {
+        let content = load_fixture("rust/event_payloads.rs");
+        let path = test_path("event_payloads.rs");
+
+        let result = tree_parser::parse(&path, &content).unwrap();
+        let emit = result
+            .findings
+            .iter()
+            .find(|f| f.key == "string-event" && f.behavior == Behavior::Emit)
+            .expect("Expected string-event emit");
+
+        assert_eq!(
+            emit.return_type.as_deref(),
+            Some("String"),
+            "String literal payload should infer to String"
+        );
+    }
+
+    #[test]
+    fn test_event_payload_variable_typed() {
+        let content = load_fixture("rust/event_payloads.rs");
+        let path = test_path("event_payloads.rs");
+
+        let result = tree_parser::parse(&path, &content).unwrap();
+        let emit = result
+            .findings
+            .iter()
+            .find(|f| f.key == "typed-var-event" && f.behavior == Behavior::Emit)
+            .expect("Expected typed-var-event emit");
+
+        assert_eq!(
+            emit.return_type.as_deref(),
+            Some("CalculationStatus"),
+            "Typed variable payload should resolve to CalculationStatus"
+        );
+    }
+
+    #[test]
+    fn test_event_payload_variable_inferred() {
+        let content = load_fixture("rust/event_payloads.rs");
+        let path = test_path("event_payloads.rs");
+
+        let result = tree_parser::parse(&path, &content).unwrap();
+        let emit = result
+            .findings
+            .iter()
+            .find(|f| f.key == "inferred-var-event" && f.behavior == Behavior::Emit)
+            .expect("Expected inferred-var-event emit");
+
+        assert_eq!(
+            emit.return_type.as_deref(),
+            Some("CalculationStatus"),
+            "Inferred variable payload should resolve to CalculationStatus"
+        );
+    }
 }
 
 #[cfg(test)]

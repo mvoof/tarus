@@ -19,9 +19,12 @@
 
 ; === SIMPLE CALLS (no generics) ===
 
-; Simple function calls: invoke("cmd"), emit("event")
+; Simple function calls: invoke("cmd"), emit("event"), window.listen("event")
 (call_expression
-  function: (identifier) @func_name
+  function: [
+    (identifier) @func_name
+    (member_expression property: (property_identifier) @func_name)
+  ]
   !type_arguments
   arguments: (arguments
     (string
@@ -33,7 +36,10 @@
 ; Await expression with simple call: await invoke("cmd")
 (call_expression
   function: (await_expression
-    (identifier) @func_name)
+    [
+      (identifier) @func_name
+      (member_expression property: (property_identifier) @func_name)
+    ])
   !type_arguments
   arguments: (arguments
     (string
@@ -44,7 +50,10 @@
 
 ; Function calls with second string argument: emitTo("target", "event")
 (call_expression
-  function: (identifier) @func_name_second
+  function: [
+    (identifier) @func_name_second
+    (member_expression property: (property_identifier) @func_name_second)
+  ]
   !type_arguments
   arguments: (arguments
     (_)
@@ -57,7 +66,10 @@
 ; Await expression with second string argument: await emitTo("target", "event")
 (call_expression
   function: (await_expression
-    (identifier) @func_name_second)
+    [
+      (identifier) @func_name_second
+      (member_expression property: (property_identifier) @func_name_second)
+    ])
   !type_arguments
   arguments: (arguments
     (_)
@@ -71,7 +83,10 @@
 
 ; Generic function calls: invoke<T>("cmd"), emit<T>("event")
 (call_expression
-  function: (identifier) @func_name
+  function: [
+    (identifier) @func_name
+    (member_expression property: (property_identifier) @func_name)
+  ]
   type_arguments: (type_arguments) @type_args
   arguments: (arguments
     (string
@@ -83,7 +98,10 @@
 ; Await expression with generic call: await invoke<T>("cmd")
 (call_expression
   function: (await_expression
-    (identifier) @func_name)
+    [
+      (identifier) @func_name
+      (member_expression property: (property_identifier) @func_name)
+    ])
   type_arguments: (type_arguments) @type_args
   arguments: (arguments
     (string
@@ -94,7 +112,10 @@
 
 ; Generic calls with second string argument: emitTo<T>("target", "event")
 (call_expression
-  function: (identifier) @func_name_second
+  function: [
+    (identifier) @func_name_second
+    (member_expression property: (property_identifier) @func_name_second)
+  ]
   type_arguments: (type_arguments) @type_args
   arguments: (arguments
     (_)
@@ -107,7 +128,10 @@
 ; Await expression with second string argument and generics: await emitTo<T>("target", "event")
 (call_expression
   function: (await_expression
-    (identifier) @func_name_second)
+    [
+      (identifier) @func_name_second
+      (member_expression property: (property_identifier) @func_name_second)
+    ])
   type_arguments: (type_arguments) @type_args
   arguments: (arguments
     (_)
@@ -122,3 +146,18 @@
 (interface_declaration
   name: (type_identifier) @interface_name
 ) @interface_def
+
+; === BINDINGS - EXPORTED FUNCTIONS (for tauri-specta and tauri-plugin-typegen) ===
+
+; Exported async function with return type
+; export async function greet(name: string): Promise<string> { ... }
+(export_statement
+  declaration: (function_declaration
+    "async" ?
+    name: (identifier) @binding_func_name
+    parameters: (formal_parameters) @binding_func_params
+    return_type: (type_annotation
+      (_) ? @binding_return_type
+    ) ?
+  )
+) @binding_func_def

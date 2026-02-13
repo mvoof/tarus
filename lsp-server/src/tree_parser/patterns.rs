@@ -79,5 +79,11 @@ pub fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
             behavior: Behavior::Emit,
             arg_position: ArgPosition::Second,
         },
+        FunctionPatternWithPos {
+            name: "emit_to", // Support both camelCase and snake_case for JS if needed
+            entity: EntityType::Event,
+            behavior: Behavior::Emit,
+            arg_position: ArgPosition::Second,
+        },
     ]
 }

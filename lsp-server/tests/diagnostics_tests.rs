@@ -23,6 +23,7 @@ fn create_finding(key: &str, entity: EntityType, behavior: Behavior, line: u32) 
         return_type: None,
         fields: None,
         attributes: None,
+        variants: None,
     }
 }
 
@@ -207,4 +208,56 @@ fn test_complete_event_no_warnings() {
     let info = index.get_diagnostic_info(&key);
     assert!(info.has_emitters(), "Should have emitters");
     assert!(info.has_listeners(), "Should have listeners");
+}
+
+#[test]
+fn test_event_payload_type_mismatch() {
+    let index = ProjectIndex::new();
+
+    // Rust emitter with CalculationStatus payload type
+    let mut emit_finding = create_finding(
+        "status-update",
+        EntityType::Event,
+        Behavior::Emit,
+        5,
+    );
+    emit_finding.return_type = Some("CalculationStatus".to_string());
+
+    // TypeScript listener with string payload type
+    let mut listen_finding = create_finding(
+        "status-update",
+        EntityType::Event,
+        Behavior::Listen,
+        10,
+    );
+    listen_finding.return_type = Some("string".to_string());
+
+    let backend_path = test_path("backend.rs");
+    let frontend_path = test_path("frontend.ts");
+
+    index.add_file(FileIndex {
+        path: backend_path,
+        findings: vec![emit_finding],
+    });
+
+    index.add_file(FileIndex {
+        path: frontend_path.clone(),
+        findings: vec![listen_finding],
+    });
+
+    // Compute diagnostics for the frontend file (where the listener is)
+    let diagnostics =
+        lsp_server::capabilities::diagnostics::compute_file_diagnostics(&frontend_path, &index);
+
+    // Should have a payload type mismatch warning
+    let mismatch_diags: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.message.contains("Payload type mismatch"))
+        .collect();
+
+    assert!(
+        !mismatch_diags.is_empty(),
+        "Expected payload type mismatch diagnostic when listen<string> vs Rust CalculationStatus. Got diagnostics: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }

@@ -230,12 +230,15 @@ impl Backend {
     }
 
     /// Spawn background indexing task for all roots
-    fn spawn_background_indexing(&self, roots: &[PathBuf]) {
+    async fn spawn_background_indexing(&self, roots: &[PathBuf]) {
+        let bindings_config = self.bindings_config.read().await.clone();
+
         initialization::spawn_background_indexing(
             roots,
             self.project_index.clone(),
             self.client.clone(),
             self.is_developer_mode_active.clone(),
+            bindings_config,
         );
     }
 }
@@ -311,7 +314,7 @@ impl LanguageServer for Backend {
         let Some(roots) = self.workspace_roots.get() else {
             return;
         };
-        self.spawn_background_indexing(roots);
+        self.spawn_background_indexing(roots).await;
     }
 
     async fn goto_definition(

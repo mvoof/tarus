@@ -2,7 +2,8 @@ use crate::indexer::IndexKey;
 use crate::indexer::ProjectIndex;
 use crate::scanner::find_src_tauri_dir;
 use crate::syntax::{
-    camel_to_snake, map_rust_type_to_ts, map_ts_type_to_rust, snake_to_camel, Behavior, EntityType,
+    apply_serde_rename, camel_to_snake, map_rust_type_to_ts, map_ts_type_to_rust,
+    parse_serde_attributes, snake_to_camel, Behavior, EntityType,
 };
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -247,9 +248,13 @@ fn handle_enum_definition(
         return;
     };
 
-    if let Some(action) =
-        create_sync_enum_to_dts_action(&key.name, variants, root, &params.context.diagnostics)
-    {
+    if let Some(action) = create_sync_enum_to_dts_action(
+        &key.name,
+        variants,
+        loc.attributes.as_ref(),
+        root,
+        &params.context.diagnostics,
+    ) {
         actions.push(action);
     }
 }
@@ -356,16 +361,47 @@ fn create_sync_to_dts_action(
     }))
 }
 
-/// Create "Sync enum to tauri-commands.d.ts" action for Rust enum
+/// Create "Sync enum to tauri-commands.d.ts" action for Rust enum with serde support
 fn create_sync_enum_to_dts_action(
     name: &str,
     variants: &[crate::indexer::Parameter],
+    attributes: Option<&Vec<String>>,
     workspace_root: &Path,
     diagnostics: &[tower_lsp_server::ls_types::Diagnostic],
 ) -> Option<CodeActionOrCommand> {
     let dts_path = find_or_create_dts_path(workspace_root);
 
-    // Generate TypeScript type from Rust enum
+    // Parse serde attributes
+    let serde_attrs = parse_serde_attributes(attributes);
+
+    // Check if this is a discriminated union (has tag attribute)
+    let ts_code = if serde_attrs.tag.is_some() {
+        generate_discriminated_union(name, variants, &serde_attrs)
+    } else {
+        generate_simple_enum(name, variants, &serde_attrs)
+    };
+
+    let (target_uri, insertion_line) = prepare_dts_edit(&dts_path)?;
+
+    Some(CodeActionOrCommand::CodeAction(CodeAction {
+        title: format!("Generate TypeScript enum for '{name}' (with serde)"),
+        kind: Some(CodeActionKind::REFACTOR),
+        diagnostics: Some(diagnostics.to_vec()),
+        edit: Some(create_workspace_edit(
+            target_uri,
+            u32::try_from(insertion_line).unwrap_or(u32::MAX),
+            ts_code,
+        )),
+        ..Default::default()
+    }))
+}
+
+/// Generate a simple TypeScript string literal union
+fn generate_simple_enum(
+    name: &str,
+    variants: &[crate::indexer::Parameter],
+    serde_attrs: &crate::syntax::SerdeAttributes,
+) -> String {
     let mut ts_type = format!("\nexport type {name} = ");
 
     for (i, variant) in variants.iter().enumerate() {
@@ -373,24 +409,60 @@ fn create_sync_enum_to_dts_action(
             ts_type.push_str(" | ");
         }
 
-        let _ = write!(ts_type, "'{}'", variant.name);
+        // Apply serde rename transformation
+        let ts_name = apply_serde_rename(&variant.name, serde_attrs.rename_all.as_deref());
+        let _ = write!(ts_type, "'{ts_name}'");
     }
 
     ts_type.push_str(";\n");
+    ts_type
+}
 
-    let (target_uri, insertion_line) = prepare_dts_edit(&dts_path)?;
+/// Generate a TypeScript discriminated union
+fn generate_discriminated_union(
+    name: &str,
+    variants: &[crate::indexer::Parameter],
+    serde_attrs: &crate::syntax::SerdeAttributes,
+) -> String {
+    let tag_field = serde_attrs.tag.as_deref().unwrap_or("type");
+    let content_field = serde_attrs.content.as_deref();
 
-    Some(CodeActionOrCommand::CodeAction(CodeAction {
-        title: format!("Sync enum '{name}' to tauri-commands.d.ts"),
-        kind: Some(CodeActionKind::REFACTOR),
-        diagnostics: Some(diagnostics.to_vec()),
-        edit: Some(create_workspace_edit(
-            target_uri,
-            u32::try_from(insertion_line).unwrap_or(u32::MAX),
-            ts_type,
-        )),
-        ..Default::default()
-    }))
+    let mut ts_type = format!("\nexport type {name} =\n");
+
+    for (i, variant) in variants.iter().enumerate() {
+        if i > 0 {
+            ts_type.push_str("\n  | ");
+        } else {
+            ts_type.push_str("  | ");
+        }
+
+        // Apply serde rename transformation to variant name
+        let ts_name = apply_serde_rename(&variant.name, serde_attrs.rename_all.as_deref());
+
+        // Check if variant has fields (would need content field)
+        // For now, assume unit variants unless we have access to EnumVariant data
+        if let Some(content) = content_field {
+            // Discriminated union with content
+            // Note: Full implementation would need EnumVariant to know if variant has data
+            ts_type.push_str("{ ");
+            ts_type.push_str(tag_field);
+            ts_type.push_str(": '");
+            ts_type.push_str(&ts_name);
+            ts_type.push_str("'; ");
+            ts_type.push_str(content);
+            ts_type.push_str(": any }");
+        } else {
+            // Simple tagged union (unit variants)
+            ts_type.push_str("{ ");
+            ts_type.push_str(tag_field);
+            ts_type.push_str(": '");
+            ts_type.push_str(&ts_name);
+            ts_type.push_str("' }");
+        }
+    }
+
+    ts_type.push_str(";\n");
+    ts_type
 }
 
 /// Create "Copy interface to tauri-commands.d.ts" action for TS interface

@@ -112,6 +112,57 @@ fn test_multi_language_project() {
 }
 
 #[test]
+fn test_tauri_2_frontend_events() {
+    let index = ProjectIndex::new();
+
+    // Simulating Tauri 2 frontend code
+    let ts_content = r#"
+        import { emit, emitTo, listen } from '@tauri-apps/api/event';
+        import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+
+        async fn test() {
+            // Global emit
+            await emit('global-event', { data: 1 });
+            
+            // Targeted emit (Tauri 2)
+            await emitTo('main', 'targeted-event', 'payload');
+            
+            // Method call (Tauri 2)
+            const win = getCurrentWebviewWindow();
+            await win.emit('window-event', 42);
+            
+            await win.listen<string>('window-event', (e) => {});
+        }
+    "#;
+
+    let ts_path = test_path("tauri2.ts");
+    let ts_result = tree_parser::parse(&ts_path, ts_content);
+    assert!(ts_result.is_ok());
+    index.add_file(ts_result.unwrap());
+
+    // Verify global-event
+    let locs_global = index.get_locations(lsp_server::syntax::EntityType::Event, "global-event");
+    assert!(!locs_global.is_empty(), "Should find global-event");
+
+    // Verify targeted-event (second arg)
+    let locs_targeted =
+        index.get_locations(lsp_server::syntax::EntityType::Event, "targeted-event");
+    assert!(
+        !locs_targeted.is_empty(),
+        "Should find targeted-event from emitTo"
+    );
+
+    // Verify window-event (method call)
+    let locs_window = index.get_locations(lsp_server::syntax::EntityType::Event, "window-event");
+    // Should have 2 locations: one Emit and one Listen
+    assert_eq!(
+        locs_window.len(),
+        2,
+        "Should find window-event Emit and Listen"
+    );
+}
+
+#[test]
 fn test_project_update_cycle() {
     let index = ProjectIndex::new();
     let path = test_path("backend.rs");

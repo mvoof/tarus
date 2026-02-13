@@ -45,7 +45,7 @@
   )
 ) @struct_def
 
-; Enum definitions with attributes
+; Enum definitions with attributes (captures all variant types)
 (
   (attribute_item)* @enum_attr
   (enum_item
@@ -53,6 +53,17 @@
     body: (enum_variant_list
       (enum_variant
         name: (identifier) @variant_name
+        ; Struct variant fields: Name { field: Type }
+        (field_declaration_list
+          (field_declaration
+            name: (field_identifier) @variant_field_name
+            type: (_) @variant_field_type
+          )*
+        ) ?
+        ; Tuple variant fields: Name(Type1, Type2)
+        (ordered_field_declaration_list) ? @variant_tuple_fields
+        ; Alternative: (tuple_type) for inline tuple types
+        (tuple_type) ? @variant_tuple_type
       )*
     )
   )
@@ -66,7 +77,8 @@
   arguments: (arguments
     .
     (string_literal
-      (string_content) @event_name))
+      (string_content) @event_name)
+    (_) @event_args ? )
   (#any-of? @method_name "emit" "emit_str" "emit_filter" "emit_str_filter" "listen" "listen_any" "once" "once_any")
 )
 
@@ -78,6 +90,7 @@
     (_)
     .
     (string_literal
-      (string_content) @event_name))
+      (string_content) @event_name)
+    (_) @event_args ? )
   (#any-of? @method_name "emit_to" "emit_str_to")
 )

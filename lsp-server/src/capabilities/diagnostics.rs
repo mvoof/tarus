@@ -4,8 +4,9 @@
 
 use crate::indexer::{DiagnosticInfo, IndexKey, ProjectIndex};
 use crate::syntax::{
-    compare_types, map_rust_type_to_ts, parse_ts_object_string, should_rename_to_camel,
-    snake_to_camel, Behavior, EntityType, TypeMatch,
+    apply_serde_rename, compare_types, map_rust_type_to_ts, parse_serde_attributes,
+    parse_ts_enum_or_union, parse_ts_object_string, should_rename_to_camel, snake_to_camel,
+    Behavior, EntityType, TsEnumRepresentation, TypeMatch,
 };
 use std::path::PathBuf;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity};
@@ -60,6 +61,41 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                 if let Some(def) = definition {
                     diagnostics.extend(check_parameters_diagnostics(key, loc, def, project_index));
                     diagnostics.extend(check_return_type_diagnostics(key, loc, def, project_index));
+                }
+            }
+
+            // 4. Type checking for Listen (frontend event listener)
+            if loc.behavior == Behavior::Listen && info.has_emitters() {
+                let emitters = locations
+                    .iter()
+                    .filter(|l| l.behavior == Behavior::Emit)
+                    .collect::<Vec<_>>();
+
+                for em in emitters {
+                    diagnostics.extend(check_event_payload_diagnostics(
+                        key,
+                        loc,
+                        em,
+                        project_index,
+                    ));
+                }
+            }
+
+            // 5. Type checking for Emit (frontend event emitter)
+            if loc.behavior == Behavior::Emit && info.has_listeners() {
+                let listeners = locations
+                    .iter()
+                    .filter(|l| l.behavior == Behavior::Listen)
+                    .collect::<Vec<_>>();
+
+                for li in listeners {
+                    // Reuse event payload check (order: listener, emitter)
+                    diagnostics.extend(check_event_payload_diagnostics(
+                        key,
+                        li,
+                        loc,
+                        project_index,
+                    ));
                 }
             }
 
@@ -344,7 +380,7 @@ fn check_return_type_diagnostics(
 
     if let (Some(ts_ret), Some(rust_ret)) = (&loc.return_type, &def.return_type) {
         let ts_type = ts_ret.trim_start_matches('<').trim_end_matches('>').trim();
-        let expected_ts_type = map_rust_type_to_ts(rust_ret);
+        let _expected_ts_type = map_rust_type_to_ts(rust_ret);
 
         // Skip validation for:
         // - "any" in TS (user opts out)
@@ -403,22 +439,15 @@ fn check_return_type_diagnostics(
             return diagnostics;
         }
 
-        // Check if it's an enum type
-        let enum_locs = project_index.get_locations(EntityType::Enum, rust_ret);
-        if !enum_locs.is_empty() {
-            // Enum return type: just check that TS type name matches
-            if ts_type != rust_ret && ts_type != expected_ts_type {
-                diagnostics.push(Diagnostic {
-                    range: loc.range,
-                    severity: Some(DiagnosticSeverity::WARNING),
-                    source: Some("tarus".to_string()),
-                    message: format!(
-                        "Return type mismatch for command '{}': expected {}, got {}",
-                        key.name, rust_ret, ts_type
-                    ),
-                    ..Default::default()
-                });
-            }
+        // Check if it's an enum type - use enhanced enum serialization validation
+        if let Some(diag) = check_enum_serialization_match(
+            rust_ret,
+            ts_type,
+            loc.range,
+            project_index,
+            Some(&format!("Return type mismatch for command '{}'", key.name)),
+        ) {
+            diagnostics.push(diag);
             return diagnostics;
         }
 
@@ -509,4 +538,194 @@ fn recursive_type_check(
 
     // Default to strict mismatch if structure analysis failed
     basic_match
+}
+
+fn check_event_payload_diagnostics(
+    key: &IndexKey,
+    loc: &crate::indexer::LocationInfo,
+    em: &crate::indexer::LocationInfo,
+    project_index: &ProjectIndex,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    if let (Some(ts_payload), Some(rust_payload)) = (&loc.return_type, &em.return_type) {
+        let ts_type = ts_payload
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .trim();
+
+        // Skip validation for:
+        // - "any" in TS (user opts out)
+        if ts_type == "any" {
+            return diagnostics;
+        }
+
+        // Try enum validation first
+        if let Some(enum_diag) = check_enum_serialization_match(
+            rust_payload,
+            ts_type,
+            loc.range,
+            project_index,
+            Some(&format!("Payload type mismatch for event '{}'", key.name)),
+        ) {
+            diagnostics.push(enum_diag);
+            return diagnostics;
+        }
+
+        // Use recursive type checking for structs and deep comparison for other types
+        let result = recursive_type_check(project_index, rust_payload, ts_type);
+        if let TypeMatch::Mismatch(detail) = result {
+            diagnostics.push(Diagnostic {
+                range: loc.range,
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("tarus".to_string()),
+                message: format!("Payload type mismatch for event '{}': {detail}", key.name),
+                ..Default::default()
+            });
+        }
+    }
+
+    diagnostics
+}
+
+/// Check if a Rust enum matches a TypeScript enum/union, considering serde serialization
+///
+/// Returns Some(Diagnostic) if there's a mismatch, None if they match or if enum not found
+#[allow(clippy::too_many_lines)]
+fn check_enum_serialization_match(
+    rust_type: &str,
+    ts_type: &str,
+    range: tower_lsp_server::ls_types::Range,
+    project_index: &ProjectIndex,
+    message_prefix: Option<&str>,
+) -> Option<Diagnostic> {
+    // Extract base type name (unwrap Vec, Option, Result, etc.)
+    let rust_base = crate::syntax::get_base_rust_type(rust_type);
+
+    // Look up Rust enum definition
+    let enum_locs = project_index.get_locations(EntityType::Enum, &rust_base);
+    let enum_def = enum_locs
+        .iter()
+        .find(|l| l.behavior == Behavior::Definition)?;
+
+    // Parse serde attributes
+    let serde_attrs = parse_serde_attributes(enum_def.attributes.as_ref());
+
+    // Get enum variants (use legacy field for now, as variants field may not be populated yet)
+    let variants = enum_def.fields.as_ref()?;
+
+    // Try to parse TypeScript enum/union
+    let ts_repr = parse_ts_enum_or_union(ts_type)?;
+
+    let prefix = message_prefix.unwrap_or("Type mismatch");
+
+    match ts_repr {
+        TsEnumRepresentation::UnionType(ts_values) => {
+            // Simple string literal union: "add" | "subtract"
+            // Compare against Rust variant names with serde transformation
+
+            if variants.len() != ts_values.len() {
+                return Some(Diagnostic {
+                    range,
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    source: Some("tarus".to_string()),
+                    message: format!(
+                        "{}: enum '{}' has {} variants, but TypeScript union has {} values",
+                        prefix,
+                        rust_base,
+                        variants.len(),
+                        ts_values.len()
+                    ),
+                    ..Default::default()
+                });
+            }
+
+            // Check each variant
+            for variant in variants {
+                let expected_ts_name = apply_serde_rename(&variant.name, serde_attrs.rename_all.as_deref());
+
+                if !ts_values.contains(&expected_ts_name) {
+                    return Some(Diagnostic {
+                        range,
+                        severity: Some(DiagnosticSeverity::WARNING),
+                        source: Some("tarus".to_string()),
+                        message: format!(
+                            "{}: enum variant '{}' should serialize to '{}', but it's not in TypeScript union",
+                            prefix, variant.name, expected_ts_name
+                        ),
+                        ..Default::default()
+                    });
+                }
+            }
+
+            None // All variants match
+        }
+
+        TsEnumRepresentation::DiscriminatedUnion(ts_variants) => {
+            // Discriminated union: { type: "Success" } | { type: "Error", data: {...} }
+            // This requires serde(tag = "...", content = "...")
+
+            if serde_attrs.tag.is_none() {
+                return Some(Diagnostic {
+                    range,
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    source: Some("tarus".to_string()),
+                    message: format!(
+                        "{prefix}: enum '{rust_base}' needs #[serde(tag = \"...\")] to match discriminated union"
+                    ),
+                    ..Default::default()
+                });
+            }
+
+            if variants.len() != ts_variants.len() {
+                return Some(Diagnostic {
+                    range,
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    source: Some("tarus".to_string()),
+                    message: format!(
+                        "{}: enum '{}' has {} variants, but TypeScript has {} union variants",
+                        prefix,
+                        rust_base,
+                        variants.len(),
+                        ts_variants.len()
+                    ),
+                    ..Default::default()
+                });
+            }
+
+            // Check each Rust variant against TypeScript variants
+            for variant in variants {
+                let expected_tag = apply_serde_rename(&variant.name, serde_attrs.rename_all.as_deref());
+
+                let ts_variant = ts_variants
+                    .iter()
+                    .find(|tsv| tsv.tag_value == expected_tag);
+
+                if ts_variant.is_none() {
+                    return Some(Diagnostic {
+                        range,
+                        severity: Some(DiagnosticSeverity::WARNING),
+                        source: Some("tarus".to_string()),
+                        message: format!(
+                            "{}: enum variant '{}' with tag '{}' not found in TypeScript union",
+                            prefix, variant.name, expected_tag
+                        ),
+                        ..Default::default()
+                    });
+                }
+
+                // For struct/tuple variants, check if content field is present
+                // This is a simplified check - full validation would require EnumVariant with fields
+                // For now, just check consistency
+            }
+
+            None // All variants present
+        }
+
+        TsEnumRepresentation::StringEnum(_) => {
+            // TypeScript string enum - less common with Tauri
+            // Could add support later if needed
+            None
+        }
+    }
 }

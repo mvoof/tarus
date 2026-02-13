@@ -21,6 +21,27 @@ pub struct Parameter {
     pub type_name: String,
 }
 
+/// Enum variant type classification
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Infrastructure for future full enum variant support
+pub enum EnumVariantType {
+    /// Unit variant (e.g., `Success`)
+    Unit,
+    /// Tuple variant (e.g., `Error(String)`)
+    Tuple,
+    /// Struct variant (e.g., `Partial { warning: String }`)
+    Struct,
+}
+
+/// Enhanced enum variant with type information
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Infrastructure for future full enum variant support
+pub struct EnumVariant {
+    pub name: String,
+    pub variant_type: EnumVariantType,
+    pub fields: Option<Vec<Parameter>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Finding {
     pub key: String,        // Name ("save_file")
@@ -31,6 +52,8 @@ pub struct Finding {
     pub return_type: Option<String>,
     pub fields: Option<Vec<Parameter>>,
     pub attributes: Option<Vec<String>>,
+    #[allow(dead_code)] // Infrastructure for future full enum variant support
+    pub variants: Option<Vec<EnumVariant>>, // Enhanced enum variant info
 }
 
 #[derive(Debug)]

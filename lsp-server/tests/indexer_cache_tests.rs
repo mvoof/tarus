@@ -35,6 +35,7 @@ fn create_test_finding_with_range(
         return_type: None,
         fields: None,
         attributes: None,
+        variants: None,
     }
 }
 
