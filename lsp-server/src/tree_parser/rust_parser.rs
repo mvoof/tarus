@@ -172,9 +172,17 @@ fn infer_payload_type(node: tree_sitter::Node, content: &str) -> Option<String> 
             Some(path.text_or_default(content))
         }
         // MyStruct { field: value } -> "MyStruct"
+        // CalculationStatus::Partial { warning: ... } -> "CalculationStatus"
         "struct_expression" => {
             let name = node.child_by_field_name("name")?;
-            Some(name.text_or_default(content))
+            // For struct-like enum variants, the name is a scoped_identifier
+            // (e.g., CalculationStatus::Partial) — extract just the enum type
+            if name.kind() == "scoped_identifier" {
+                let path = name.child_by_field_name("path")?;
+                Some(path.text_or_default(content))
+            } else {
+                Some(name.text_or_default(content))
+            }
         }
         // Type::new() or Type::from(...) -> "Type"
         "call_expression" => {

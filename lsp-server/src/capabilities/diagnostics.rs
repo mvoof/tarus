@@ -439,6 +439,58 @@ fn check_return_type_diagnostics(
             return diagnostics;
         }
 
+        // Check if we have an external type definition from types_cache
+        if let Some(ext_type) = project_index.types_cache.get(ts_type) {
+            // If the external type has fields, compare against Rust struct fields
+            if let (Some(ext_fields), Some(struct_def)) = (
+                &ext_type.fields,
+                project_index
+                    .get_locations(EntityType::Struct, rust_ret)
+                    .iter()
+                    .find(|l| l.behavior == Behavior::Definition)
+                    .and_then(|l| l.fields.as_ref()),
+            ) {
+                let rename_to_camel = should_rename_to_camel(
+                    project_index
+                        .get_locations(EntityType::Struct, rust_ret)
+                        .iter()
+                        .find(|l| l.behavior == Behavior::Definition)
+                        .and_then(|l| l.attributes.as_ref()),
+                );
+
+                for ext_f in ext_fields {
+                    let st_f = struct_def.iter().find(|f| {
+                        if rename_to_camel {
+                            snake_to_camel(&f.name) == ext_f.name
+                        } else {
+                            f.name == ext_f.name
+                        }
+                    });
+
+                    if let Some(st_f) = st_f {
+                        if ext_f.type_name != "any" {
+                            let result = compare_types(&st_f.type_name, &ext_f.type_name);
+                            if let TypeMatch::Mismatch(detail) = result {
+                                diagnostics.push(Diagnostic {
+                                    range: loc.range,
+                                    severity: Some(DiagnosticSeverity::WARNING),
+                                    source: Some("tarus".to_string()),
+                                    message: format!(
+                                        "Type mismatch for field '{}' in return type '{}' (from {}): {detail}",
+                                        ext_f.name,
+                                        ts_type,
+                                        format!("{:?}", ext_type.source).to_lowercase()
+                                    ),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            return diagnostics;
+        }
+
         // Check if it's an enum type - use enhanced enum serialization validation
         if let Some(diag) = check_enum_serialization_match(
             rust_ret,
@@ -519,9 +571,6 @@ fn recursive_type_check(
                             }
                         }
                         None => {
-                            // Field missing in TS object.
-                            // However, we only warn if strict checking is enabled or if field is not Option.
-                            // Currently we assume required unless explicit Option.
                             if !field.type_name.starts_with("Option<") {
                                 return TypeMatch::Mismatch(format!(
                                     "missing required field '{field_name}'"
@@ -533,6 +582,56 @@ fn recursive_type_check(
 
                 return TypeMatch::Exact;
             }
+        }
+
+        // If struct not found in index, check types_cache for external type definitions
+        let rust_base_name = crate::syntax::extract_result_ok_type(rust_type);
+        let base = if rust_base_name.starts_with("Option<") {
+            &rust_base_name[7..rust_base_name.len() - 1]
+        } else {
+            rust_base_name
+        };
+
+        if let Some(ext_type) = project_index.types_cache.get(base) {
+            if let Some(ext_fields) = &ext_type.fields {
+                let ts_fields = parse_ts_object_string(ts_type_repr);
+
+                for ext_f in ext_fields {
+                    match ts_fields.get(&ext_f.name) {
+                        Some(ts_field_type) => {
+                            let result = compare_types(&ext_f.type_name, ts_field_type);
+                            if let TypeMatch::Mismatch(msg) = result {
+                                return TypeMatch::Mismatch(format!(
+                                    "field '{}': {msg}",
+                                    ext_f.name
+                                ));
+                            }
+                        }
+                        None => {
+                            if !ext_f.type_name.contains("null")
+                                && !ext_f.type_name.contains("undefined")
+                            {
+                                return TypeMatch::Mismatch(format!(
+                                    "missing required field '{}'",
+                                    ext_f.name
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                return TypeMatch::Exact;
+            }
+        }
+    }
+
+    // 3. Check types_cache by name match (when TS side uses type name directly)
+    if let Some(ext_type) = project_index.types_cache.get(ts_type_repr) {
+        // If the Rust type name matches the TS type name (possibly with rename),
+        // consider it compatible
+        let rust_base = crate::syntax::get_base_rust_type(rust_type);
+        if ext_type.ts_name == rust_base || ext_type.ts_name == ts_type_repr {
+            return TypeMatch::Compatible;
         }
     }
 
@@ -642,7 +741,8 @@ fn check_enum_serialization_match(
 
             // Check each variant
             for variant in variants {
-                let expected_ts_name = apply_serde_rename(&variant.name, serde_attrs.rename_all.as_deref());
+                let expected_ts_name =
+                    apply_serde_rename(&variant.name, serde_attrs.rename_all.as_deref());
 
                 if !ts_values.contains(&expected_ts_name) {
                     return Some(Diagnostic {
@@ -695,11 +795,10 @@ fn check_enum_serialization_match(
 
             // Check each Rust variant against TypeScript variants
             for variant in variants {
-                let expected_tag = apply_serde_rename(&variant.name, serde_attrs.rename_all.as_deref());
+                let expected_tag =
+                    apply_serde_rename(&variant.name, serde_attrs.rename_all.as_deref());
 
-                let ts_variant = ts_variants
-                    .iter()
-                    .find(|tsv| tsv.tag_value == expected_tag);
+                let ts_variant = ts_variants.iter().find(|tsv| tsv.tag_value == expected_tag);
 
                 if ts_variant.is_none() {
                     return Some(Diagnostic {

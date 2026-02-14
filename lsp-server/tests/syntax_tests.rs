@@ -70,6 +70,17 @@ fn test_map_rust_type_to_ts_extended() {
         map_rust_type_to_ts("(bool, String, u64)"),
         "[boolean, string, number]"
     );
+
+    // Enum variant paths should be stripped
+    assert_eq!(
+        map_rust_type_to_ts("CalculationStatus::Partial"),
+        "CalculationStatus"
+    );
+    assert_eq!(map_rust_type_to_ts("Foo::Bar"), "Foo");
+    // serde_json::Value is already handled as "any"
+    assert_eq!(map_rust_type_to_ts("serde_json::Value"), "any");
+    // Plain custom types pass through unchanged
+    assert_eq!(map_rust_type_to_ts("MyStruct"), "MyStruct");
 }
 
 #[test]

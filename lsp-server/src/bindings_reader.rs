@@ -3,7 +3,7 @@
 //! Handles auto-discovery of bindings files and parsing them to extract
 //! command signatures and types.
 
-use crate::indexer::{BindingEntry, ProjectIndex};
+use crate::indexer::{BindingEntry, BindingSource, ExternalTypeEntry, Parameter, ProjectIndex};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use streaming_iterator::StreamingIterator;
@@ -35,10 +35,7 @@ impl Default for BindingsConfig {
 /// 3. Scan src-tauri for `ts::export()` calls (tauri-specta)
 /// 4. Common fallback locations
 #[must_use]
-pub fn find_bindings_files(
-    project_root: &Path,
-    config: &BindingsConfig,
-) -> Vec<PathBuf> {
+pub fn find_bindings_files(project_root: &Path, config: &BindingsConfig) -> Vec<PathBuf> {
     let mut files = Vec::new();
 
     // 1. User-specified paths (highest priority)
@@ -82,7 +79,10 @@ pub fn find_bindings_files(
         }
     }
 
-    // 4. Fallback to common locations
+    // 4. Scan for ts-rs bindings directory
+    find_ts_rs_bindings(project_root, &mut files);
+
+    // 5. Fallback to common locations
     let common_paths = [
         "src/bindings.ts",
         "bindings.ts",
@@ -93,11 +93,12 @@ pub fn find_bindings_files(
 
     for p in common_paths {
         let path = project_root.join(p);
-        if path.exists() && !files.contains(&path) {
-            files.push(path);
+        if path.exists() {
+            if !files.contains(&path) {
+                files.push(path);
+            }
         }
     }
-
     files
 }
 
@@ -266,11 +267,11 @@ pub fn read_bindings(path: &Path, project_index: &ProjectIndex) -> std::io::Resu
     parse_bindings_with_tree_sitter(path, &content, project_index)
 }
 
-/// Parse bindings file with tree-sitter and extract function signatures
+/// Parse bindings file with tree-sitter and extract function signatures + type definitions
 /// # Errors
 /// Returns an error if tree-sitter parsing fails
 pub fn parse_bindings_with_tree_sitter(
-    _path: &Path,
+    path: &Path,
     content: &str,
     project_index: &ProjectIndex,
 ) -> std::io::Result<()> {
@@ -294,15 +295,28 @@ pub fn parse_bindings_with_tree_sitter(
     let mut cursor = tree_sitter::QueryCursor::new();
     let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
 
-    // Find capture indices for our bindings queries
+    // Find capture indices for function bindings
     let func_name_idx = query.capture_index_for_name("binding_func_name");
     let func_params_idx = query.capture_index_for_name("binding_func_params");
     let return_type_idx = query.capture_index_for_name("binding_return_type");
+
+    // Find capture indices for type definitions
+    let type_name_idx = query.capture_index_for_name("binding_type_name");
+    let type_value_idx = query.capture_index_for_name("binding_type_value");
+    let interface_name_idx = query.capture_index_for_name("binding_interface_name");
+    let interface_body_idx = query.capture_index_for_name("binding_interface_body");
+
+    // Determine binding source from file path
+    let source = detect_binding_source(path);
 
     while let Some(match_result) = matches.next() {
         let mut func_name = None;
         let mut params_node = None;
         let mut return_type_node = None;
+        let mut type_name = None;
+        let mut type_value_node = None;
+        let mut iface_name = None;
+        let mut iface_body_node = None;
 
         for capture in match_result.captures {
             if Some(capture.index) == func_name_idx {
@@ -313,9 +327,22 @@ pub fn parse_bindings_with_tree_sitter(
                 params_node = Some(capture.node);
             } else if Some(capture.index) == return_type_idx {
                 return_type_node = Some(capture.node);
+            } else if Some(capture.index) == type_name_idx {
+                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
+                    type_name = Some(text.to_string());
+                }
+            } else if Some(capture.index) == type_value_idx {
+                type_value_node = Some(capture.node);
+            } else if Some(capture.index) == interface_name_idx {
+                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
+                    iface_name = Some(text.to_string());
+                }
+            } else if Some(capture.index) == interface_body_idx {
+                iface_body_node = Some(capture.node);
             }
         }
 
+        // Process function bindings (existing logic)
         if let Some(name) = func_name {
             let args = if let Some(params) = params_node {
                 extract_function_parameters(params, content)
@@ -325,7 +352,6 @@ pub fn parse_bindings_with_tree_sitter(
 
             let return_type = if let Some(ret_node) = return_type_node {
                 if let Ok(ret_text) = ret_node.utf8_text(content.as_bytes()) {
-                    // Unwrap Promise<T> to get T
                     Some(unwrap_promise_type(ret_text))
                 } else {
                     None
@@ -335,10 +361,49 @@ pub fn parse_bindings_with_tree_sitter(
             };
 
             let entry = BindingEntry { args, return_type };
+            project_index.bindings_cache.insert(name.to_string(), entry);
+        }
 
-            project_index
-                .bindings_cache
-                .insert(name.to_string(), entry);
+        // Process type alias declarations: export type Foo = { ... } or export type Status = "a" | "b"
+        if let Some(name) = type_name {
+            if let Some(value_node) = type_value_node {
+                let raw_body = value_node
+                    .utf8_text(content.as_bytes())
+                    .unwrap_or("")
+                    .to_string();
+
+                let (fields, variants) = parse_type_body(&raw_body);
+
+                let entry = ExternalTypeEntry {
+                    source: source.clone(),
+                    ts_name: name.clone(),
+                    fields,
+                    variants,
+                    raw_ts_body: Some(raw_body),
+                };
+                project_index.types_cache.insert(name, entry);
+            }
+        }
+
+        // Process interface declarations: export interface Foo { ... }
+        if let Some(name) = iface_name {
+            if let Some(body_node) = iface_body_node {
+                let raw_body = body_node
+                    .utf8_text(content.as_bytes())
+                    .unwrap_or("{}")
+                    .to_string();
+
+                let fields = parse_interface_fields(&raw_body);
+
+                let entry = ExternalTypeEntry {
+                    source: source.clone(),
+                    ts_name: name.clone(),
+                    fields: Some(fields),
+                    variants: None,
+                    raw_ts_body: Some(raw_body),
+                };
+                project_index.types_cache.insert(name, entry);
+            }
         }
     }
 
@@ -359,10 +424,7 @@ fn extract_function_parameters(
             let type_node = child.child_by_field_name("type");
 
             if let (Some(pat), Some(ty)) = (pattern, type_node) {
-                let name = pat
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or("_")
-                    .to_string();
+                let name = pat.utf8_text(content.as_bytes()).unwrap_or("_").to_string();
 
                 // Extract type annotation (skip the colon)
                 let type_text = ty.utf8_text(content.as_bytes()).unwrap_or("any");
@@ -386,4 +448,125 @@ fn unwrap_promise_type(type_str: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// Find ts-rs generated bindings from the `bindings/` directory
+/// ts-rs outputs one `.ts` file per type (e.g. `bindings/MyType.ts`)
+/// The directory can be customized via `TS_RS_EXPORT_DIR` env variable
+fn find_ts_rs_bindings(project_root: &Path, files: &mut Vec<PathBuf>) {
+    // Check TS_RS_EXPORT_DIR env variable first
+    let ts_rs_dir = std::env::var("TS_RS_EXPORT_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project_root.join("bindings"));
+
+    if !ts_rs_dir.is_dir() {
+        return;
+    }
+
+    // Scan for .ts files in the ts-rs output directory
+    if let Ok(entries) = std::fs::read_dir(&ts_rs_dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "ts") && !files.contains(&path) {
+                files.push(path);
+            }
+        }
+    }
+}
+
+/// Detect the binding source tool based on file path heuristics
+fn detect_binding_source(path: &Path) -> BindingSource {
+    let path_str = path.to_string_lossy();
+    let file_name = path.file_name().map_or("", |n| n.to_str().unwrap_or(""));
+
+    // ts-rs typically outputs in bindings/ directory, one file per type
+    if path_str.contains("/bindings/") || path_str.contains("\\bindings\\") {
+        return BindingSource::TsRs;
+    }
+
+    // tauri-typegen typically outputs in src/generated/
+    if path_str.contains("/generated/") || path_str.contains("\\generated\\") {
+        return BindingSource::Typegen;
+    }
+
+    // tauri-specta typically outputs bindings.ts
+    if file_name == "bindings.ts" || file_name == "bindings.js" {
+        return BindingSource::Specta;
+    }
+
+    BindingSource::Custom
+}
+
+/// Parse a TypeScript type alias body to extract fields (for object types) or variants (for union types)
+///
+/// Examples:
+/// - `{ name: string; age: number }` → fields
+/// - `"active" | "inactive" | "pending"` → variants
+/// - `{ tag: "success"; value: T } | { tag: "error"; message: string }` → raw body only
+fn parse_type_body(body: &str) -> (Option<Vec<Parameter>>, Option<Vec<String>>) {
+    let trimmed = body.trim();
+
+    // Check if it's an object type: { ... }
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let fields = parse_interface_fields(trimmed);
+        if fields.is_empty() {
+            return (None, None);
+        }
+        return (Some(fields), None);
+    }
+
+    // Check if it's a string literal union: "a" | "b" | "c"
+    if trimmed.contains('|') {
+        let parts: Vec<&str> = trimmed.split('|').map(str::trim).collect();
+        let all_string_literals = parts.iter().all(|p| {
+            (p.starts_with('"') && p.ends_with('"')) || (p.starts_with('\'') && p.ends_with('\''))
+        });
+
+        if all_string_literals {
+            let variants: Vec<String> = parts
+                .iter()
+                .map(|p| p.trim_matches(|c: char| c == '"' || c == '\'').to_string())
+                .collect();
+            return (None, Some(variants));
+        }
+    }
+
+    (None, None)
+}
+
+/// Parse interface/object type fields from a body string like `{ name: string; age: number }`
+fn parse_interface_fields(body: &str) -> Vec<Parameter> {
+    let trimmed = body.trim();
+    let inner = if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+
+    let mut fields = Vec::new();
+
+    // Split by semicolons or newlines
+    for part in inner.split(|c: char| c == ';' || c == '\n') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        // Parse "name: type" or "name?: type"
+        if let Some(colon_idx) = part.find(':') {
+            let name = part[..colon_idx]
+                .trim()
+                .trim_end_matches('?')
+                .trim()
+                .to_string();
+            let type_name = part[colon_idx + 1..].trim().to_string();
+
+            if !name.is_empty() && !type_name.is_empty() {
+                fields.push(Parameter { name, type_name });
+            }
+        }
+    }
+
+    fields
 }

@@ -26,7 +26,6 @@ mod initialization;
 mod scanner;
 mod syntax;
 mod tree_parser;
-mod typegen;
 
 use bindings_reader::BindingsConfig;
 use capabilities::{build_server_capabilities, diagnostics};
@@ -34,7 +33,6 @@ use indexer::{IndexKey, ProjectIndex};
 use scanner::is_tauri_project;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use typegen::TypegenConfig;
 
 #[derive(Debug)]
 struct Backend {
@@ -45,8 +43,6 @@ struct Backend {
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
     /// Cache of open document contents for completion and other features
     document_cache: Arc<DashMap<PathBuf, String>>,
-    /// Type generation configuration (loaded from client settings)
-    typegen_config: Arc<tokio::sync::RwLock<TypegenConfig>>,
     /// Bindings configuration (loaded from client settings)
     bindings_config: Arc<tokio::sync::RwLock<BindingsConfig>>,
 }
@@ -68,22 +64,9 @@ impl Backend {
             let report = self.project_index.file_report(&path);
             self.log_dev_info(&report).await;
 
-            // Regenerate type definitions when Rust files change
+            // Reload external bindings when Rust files change
             if is_rust_file {
-                if let Some(roots) = self.workspace_roots.get() {
-                    // Use the first root (usually the primary one) to store generated types
-                    if let Some(primary_root) = roots.first() {
-                        let config = self.typegen_config.read().await.clone();
-                        if let Err(e) = typegen::write_types_file_with_config(
-                            &self.project_index,
-                            primary_root,
-                            &config,
-                        ) {
-                            self.log_dev_info(&format!("Failed to regenerate types: {e}"))
-                                .await;
-                        }
-                    }
-                }
+                self.reload_bindings().await;
             }
         }
     }
@@ -187,7 +170,6 @@ impl Backend {
             &self.client,
             &self.is_developer_mode_active,
             &self.project_index,
-            &self.typegen_config,
             &self.bindings_config,
         )
         .await;
@@ -638,13 +620,13 @@ impl LanguageServer for Backend {
             .await;
 
         let roots = self.workspace_roots.get().cloned().unwrap_or_default();
-        let config = self.typegen_config.read().await;
+        let bindings_config = self.bindings_config.read().await;
 
         match capabilities::commands::handle_execute_command(
             &params,
             &self.project_index,
             &roots,
-            &config,
+            &bindings_config,
         ) {
             Ok(res) => {
                 self.log_dev_info("✅ Command executed successfully").await;
@@ -670,7 +652,6 @@ async fn main() {
 
     let project_index = Arc::new(ProjectIndex::new());
     let initial_dev_mode_state = Arc::new(AtomicBool::new(false));
-    let typegen_config = Arc::new(tokio::sync::RwLock::new(TypegenConfig::default()));
     let bindings_config = Arc::new(tokio::sync::RwLock::new(BindingsConfig::default()));
 
     let (service, socket) = LspService::new(|client| Backend {
@@ -680,7 +661,6 @@ async fn main() {
         is_developer_mode_active: initial_dev_mode_state.clone(),
         debounce_tasks: Arc::new(DashMap::new()),
         document_cache: Arc::new(DashMap::new()),
-        typegen_config,
         bindings_config,
     });
 

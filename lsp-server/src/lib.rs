@@ -9,4 +9,3 @@ pub mod indexer;
 pub mod scanner;
 pub mod syntax;
 pub mod tree_parser;
-pub mod typegen;

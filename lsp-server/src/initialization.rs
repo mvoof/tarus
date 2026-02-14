@@ -5,7 +5,7 @@ use crate::capabilities::diagnostics;
 use crate::file_processor;
 use crate::indexer::ProjectIndex;
 use crate::scanner::scan_workspace_files;
-use crate::typegen;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -43,22 +43,6 @@ pub fn spawn_background_indexing(
         // Load external bindings (Specta/Typegen)
         if let Some(ref root) = primary_root {
             load_external_bindings(root, &project_index, &bindings_config, &client).await;
-        }
-
-        // Generate TypeScript type definitions (use primary root)
-        if let Some(root) = primary_root {
-            if let Err(e) = typegen::write_types_file(&project_index, &root) {
-                client
-                    .log_message(
-                        MessageType::WARNING,
-                        format!("Failed to generate type definitions: {e}"),
-                    )
-                    .await;
-            } else {
-                client
-                    .log_message(MessageType::INFO, "📝 Generated tauri-commands.d.ts")
-                    .await;
-            }
         }
 
         // Publish diagnostics for all indexed files

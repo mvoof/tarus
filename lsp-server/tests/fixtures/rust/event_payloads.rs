@@ -14,7 +14,13 @@ fn emit_scoped_identifier(app: &AppHandle) {
 }
 
 fn emit_struct_expression(app: &AppHandle) {
-    app.emit("struct-event", MyStruct { field: "hello".to_string() }).unwrap();
+    app.emit(
+        "struct-event",
+        MyStruct {
+            field: "hello".to_string(),
+        },
+    )
+    .unwrap();
 }
 
 fn emit_string_literal(app: &AppHandle) {
@@ -29,4 +35,18 @@ fn emit_typed_variable(app: &AppHandle) {
 fn emit_inferred_variable(app: &AppHandle) {
     let status = CalculationStatus::Error;
     app.emit("inferred-var-event", status).unwrap();
+}
+
+enum StatusWithData {
+    Partial { warning: String },
+}
+
+fn emit_struct_enum_variant(app: &AppHandle) {
+    app.emit(
+        "struct-variant-event",
+        StatusWithData::Partial {
+            warning: "uh oh".to_string(),
+        },
+    )
+    .unwrap();
 }

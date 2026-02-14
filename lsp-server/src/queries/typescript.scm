@@ -147,6 +147,24 @@
   name: (type_identifier) @interface_name
 ) @interface_def
 
+; === BINDINGS - EXPORTED TYPES (from ts-rs, tauri-specta, tauri-typegen) ===
+
+; Exported type alias: export type Foo = { ... }; or export type Status = "a" | "b";
+(export_statement
+  declaration: (type_alias_declaration
+    name: (type_identifier) @binding_type_name
+    value: (_) @binding_type_value
+  )
+) @binding_type_def
+
+; Exported interface: export interface Foo { ... }
+(export_statement
+  declaration: (interface_declaration
+    name: (type_identifier) @binding_interface_name
+    body: (interface_body) @binding_interface_body
+  )
+) @binding_interface_def
+
 ; === BINDINGS - EXPORTED FUNCTIONS (for tauri-specta and tauri-plugin-typegen) ===
 
 ; Exported async function with return type

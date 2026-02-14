@@ -88,3 +88,81 @@ fn test_read_bindings_simple() {
     // Usually Specta preserves renaming if configured.
     index.bindings_cache.get("saveData").unwrap();
 }
+
+#[test]
+fn test_parse_type_alias() {
+    use lsp_server::bindings_reader::parse_bindings_with_tree_sitter;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("bindings/MyStruct.ts");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+    let content = r#"export type MyStruct = { name: string; age: number }"#;
+    let index = ProjectIndex::new();
+    parse_bindings_with_tree_sitter(&path, content, &index).unwrap();
+
+    assert_eq!(index.types_cache.len(), 1);
+    let entry = index.types_cache.get("MyStruct").unwrap();
+    assert_eq!(entry.ts_name, "MyStruct");
+
+    let fields = entry.fields.as_ref().unwrap();
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].name, "name");
+    assert_eq!(fields[0].type_name, "string");
+    assert_eq!(fields[1].name, "age");
+    assert_eq!(fields[1].type_name, "number");
+}
+
+#[test]
+fn test_parse_interface() {
+    use lsp_server::bindings_reader::parse_bindings_with_tree_sitter;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("bindings.ts");
+
+    let content = r#"
+        export interface UserResponse {
+            id: number;
+            username: string;
+            isActive: boolean;
+        }
+    "#;
+    let index = ProjectIndex::new();
+    parse_bindings_with_tree_sitter(&path, content, &index).unwrap();
+
+    assert_eq!(index.types_cache.len(), 1);
+    let entry = index.types_cache.get("UserResponse").unwrap();
+    assert_eq!(entry.ts_name, "UserResponse");
+
+    let fields = entry.fields.as_ref().unwrap();
+    assert_eq!(fields.len(), 3);
+    assert_eq!(fields[0].name, "id");
+    assert_eq!(fields[0].type_name, "number");
+    assert_eq!(fields[1].name, "username");
+    assert_eq!(fields[1].type_name, "string");
+    assert_eq!(fields[2].name, "isActive");
+    assert_eq!(fields[2].type_name, "boolean");
+}
+
+#[test]
+fn test_parse_union_type() {
+    use lsp_server::bindings_reader::parse_bindings_with_tree_sitter;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("bindings/Status.ts");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+    let content = r#"export type Status = "active" | "inactive" | "pending""#;
+    let index = ProjectIndex::new();
+    parse_bindings_with_tree_sitter(&path, content, &index).unwrap();
+
+    assert_eq!(index.types_cache.len(), 1);
+    let entry = index.types_cache.get("Status").unwrap();
+    assert_eq!(entry.ts_name, "Status");
+
+    let variants = entry.variants.as_ref().unwrap();
+    assert_eq!(variants.len(), 3);
+    assert!(variants.contains(&"active".to_string()));
+    assert!(variants.contains(&"inactive".to_string()));
+    assert!(variants.contains(&"pending".to_string()));
+}

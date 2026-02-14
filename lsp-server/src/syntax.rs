@@ -135,11 +135,23 @@ pub fn parse_serde_attributes(attributes: Option<&Vec<String>>) -> SerdeAttribut
         // Extract rename = "name"
         if let Some(start) = attr.find("rename") {
             // Make sure it's not rename_all
-            let before = if start > 0 { &attr[start - 1..start] } else { "" };
-            let after = if start + 6 < attr.len() { &attr[start + 6..start + 7] } else { "" };
+            let before = if start > 0 {
+                &attr[start - 1..start]
+            } else {
+                ""
+            };
+            let after = if start + 6 < attr.len() {
+                &attr[start + 6..start + 7]
+            } else {
+                ""
+            };
 
-            if before.chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_')
-                && after.chars().next().is_none_or(|c| c != '_') {
+            if before
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+                && after.chars().next().is_none_or(|c| c != '_')
+            {
                 if let Some(eq_pos) = attr[start..].find('=') {
                     let after_eq = &attr[start + eq_pos + 1..];
                     if let Some(value) = extract_quoted_value(after_eq) {
@@ -229,9 +241,7 @@ pub fn pascal_case(s: &str) -> String {
 /// Deprecated: Use `parse_serde_attributes()` for full serde support
 #[must_use]
 pub fn should_rename_to_camel(attributes: Option<&Vec<String>>) -> bool {
-    parse_serde_attributes(attributes)
-        .rename_all
-        .as_deref() == Some("camelCase")
+    parse_serde_attributes(attributes).rename_all.as_deref() == Some("camelCase")
 }
 
 /// Convert `snake_case` to camelCase
@@ -375,6 +385,15 @@ pub fn map_rust_type_to_ts(rust_type: &str) -> String {
         return "any".to_string();
     }
 
+    // Strip Rust enum variant path (e.g., "Foo::Bar" → "Foo")
+    // Module paths like "serde_json::Value" are already handled above
+    if let Some(idx) = rt.find("::") {
+        let before = &rt[..idx];
+        if before.starts_with(|c: char| c.is_uppercase()) {
+            return before.to_string();
+        }
+    }
+
     rt.to_string()
 }
 
@@ -498,7 +517,20 @@ pub fn get_base_rust_type(rust_type: &str) -> String {
         }
     }
 
-    rt.to_string()
+    // Strip Rust enum variant path (e.g., "Foo::Bar" → "Foo")
+    // but preserve module paths (e.g., "serde_json::Value" stays as-is)
+    if let Some(idx) = rt.find("::") {
+        let before = &rt[..idx];
+        // Enum types start with uppercase (CalculationStatus::Partial),
+        // module paths start with lowercase (serde_json::Value)
+        if before.starts_with(|c: char| c.is_uppercase()) {
+            before.to_string()
+        } else {
+            rt.to_string()
+        }
+    } else {
+        rt.to_string()
+    }
 }
 
 /// Result of comparing a Rust type against a TypeScript type
@@ -718,7 +750,8 @@ pub fn parse_ts_enum_or_union(ts_type: &str) -> Option<TsEnumRepresentation> {
         // Check if all parts are string literals
         if parts.iter().all(|p| {
             let pt = p.trim();
-            (pt.starts_with('"') && pt.ends_with('"')) || (pt.starts_with('\'') && pt.ends_with('\''))
+            (pt.starts_with('"') && pt.ends_with('"'))
+                || (pt.starts_with('\'') && pt.ends_with('\''))
         }) {
             let values = parts
                 .iter()
