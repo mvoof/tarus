@@ -13,8 +13,7 @@ pub fn handle_document_symbol(
 ) -> Option<DocumentSymbolResponse> {
     let uri = params.text_document.uri;
 
-    let path_cow = uri.to_file_path()?;
-    let path: PathBuf = path_cow.to_path_buf();
+    let path = super::uri_to_path(&uri)?;
     let symbols = project_index.get_document_symbols(&path);
 
     if symbols.is_empty() {

@@ -1,50 +1,8 @@
-use lsp_server::bindings_reader::{find_bindings_file, read_bindings};
-use lsp_server::indexer::ProjectIndex;
+use lsp_server::bindings_reader::read_bindings;
+use lsp_server::indexer::{BindingSource, ProjectIndex};
 use std::fs::File;
 use std::io::Write;
 use tempfile::tempdir;
-
-#[test]
-fn test_find_bindings_file_in_src() {
-    let dir = tempdir().unwrap();
-    let project_root = dir.path();
-    let bindings_path = project_root.join("src/bindings.ts");
-
-    std::fs::create_dir_all(project_root.join("src")).unwrap();
-    File::create(&bindings_path).unwrap();
-
-    let found = find_bindings_file(project_root);
-    assert_eq!(found, Some(bindings_path.canonicalize().unwrap()));
-}
-
-#[test]
-fn test_find_bindings_via_specta_export() {
-    let dir = tempdir().unwrap();
-    let project_root = dir.path();
-
-    // Create src-tauri/src/main.rs with export call
-    let src_tauri = project_root.join("src-tauri/src");
-    std::fs::create_dir_all(&src_tauri).unwrap();
-
-    let main_rs = src_tauri.join("main.rs");
-    let mut file = File::create(&main_rs).unwrap();
-    writeln!(
-        file,
-        r#"
-        fn main() {{
-            ts::export(collect_types![cmd], "bindings.ts").unwrap();
-        }}
-    "#
-    )
-    .unwrap();
-
-    // Create the bindings file where it points to
-    let bindings_path = project_root.join("src-tauri/bindings.ts");
-    File::create(&bindings_path).unwrap();
-
-    let found = find_bindings_file(project_root);
-    assert_eq!(found, Some(bindings_path.canonicalize().unwrap()));
-}
 
 #[test]
 fn test_read_bindings_simple() {
@@ -65,7 +23,7 @@ fn test_read_bindings_simple() {
         export async function saveData(data: string, options?: any): Promise<void> {{
             return await TAURI_INVOKE("save_data", {{ data, options }});
         }}
-        
+
         export function synchronousCmd(): void {{
             return TAURI_INVOKE("synchronous_cmd");
         }}
@@ -81,11 +39,7 @@ fn test_read_bindings_simple() {
     // Check getUser
     index.bindings_cache.get("getUser").unwrap();
 
-    // Check saveData (snake_case conversion test? generic parser logic?)
-    // The current parser uses the function name as command name.
-    // If specta generates "saveData" for Rust "save_data",
-    // we need to know how to map it.
-    // Usually Specta preserves renaming if configured.
+    // Check saveData
     index.bindings_cache.get("saveData").unwrap();
 }
 
@@ -165,4 +119,337 @@ fn test_parse_union_type() {
     assert!(variants.contains(&"active".to_string()));
     assert!(variants.contains(&"inactive".to_string()));
     assert!(variants.contains(&"pending".to_string()));
+}
+
+#[test]
+fn test_parse_specta_object_commands() {
+    use lsp_server::bindings_reader::parse_bindings_with_tree_sitter;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("specta_bindings.ts");
+
+    // Specta-generated bindings with object method format
+    let content = r#"
+        export const commands = {
+          async getUserProfile(userId: number): Promise<string> {
+            return await TAURI_INVOKE("get_user_profile", { userId });
+          },
+
+          async savePreferences(data: string): Promise<void> {
+            return await TAURI_INVOKE("save_preferences", { data });
+          },
+
+          async deleteItem(id: number): Promise<void> {
+            return await TAURI_INVOKE("delete_item", { id });
+          }
+        };
+    "#;
+
+    // Write file to disk so detect_binding_source can read it
+    let mut file = File::create(&path).unwrap();
+    write!(file, "{content}").unwrap();
+    drop(file);
+
+    let index = ProjectIndex::new();
+    parse_bindings_with_tree_sitter(&path, content, &index).unwrap();
+
+    // Should parse methods from the commands object
+    assert_eq!(
+        index.bindings_cache.len(),
+        3,
+        "Expected 3 command bindings from Specta object"
+    );
+
+    // Check snake_case command names (converted from camelCase)
+    assert!(index.bindings_cache.contains_key("get_user_profile"));
+    assert!(index.bindings_cache.contains_key("save_preferences"));
+    assert!(index.bindings_cache.contains_key("delete_item"));
+
+    // Check method_map has camelCase → (snake_case, source) mappings
+    assert_eq!(index.method_map.len(), 3, "Expected 3 entries in method_map");
+
+    let entry = index.method_map.get("getUserProfile").unwrap();
+    assert_eq!(entry.0, "get_user_profile");
+    assert_eq!(entry.1, BindingSource::Specta);
+
+    let entry = index.method_map.get("savePreferences").unwrap();
+    assert_eq!(entry.0, "save_preferences");
+    assert_eq!(entry.1, BindingSource::Specta);
+
+    let entry = index.method_map.get("deleteItem").unwrap();
+    assert_eq!(entry.0, "delete_item");
+    assert_eq!(entry.1, BindingSource::Specta);
+
+    // Verify parameter parsing
+    let get_user = index.bindings_cache.get("get_user_profile").unwrap();
+    assert_eq!(get_user.args.len(), 1, "getUserProfile should have 1 param");
+    assert_eq!(get_user.args[0].name, "userId");
+    assert_eq!(get_user.args[0].type_name, "number");
+
+    // Verify return type parsing
+    assert_eq!(
+        get_user.return_type.as_deref(),
+        Some("string"),
+        "getUserProfile should return string"
+    );
+}
+
+#[test]
+fn test_parse_typegen_object_commands() {
+    use lsp_server::bindings_reader::parse_bindings_with_tree_sitter;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("generated/typegen_bindings.ts");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+    // tauri-plugin-typegen generated bindings with object method format
+    let content = r#"
+        import { invoke } from '@tauri-apps/api/core';
+
+        export const commands = {
+          async getUserProfile(userId: number): Promise<string> {
+            return await invoke("get_user_profile", { userId });
+          },
+
+          async savePreferences(data: string): Promise<void> {
+            return await invoke("save_preferences", { data });
+          },
+
+          async deleteItem(id: number): Promise<void> {
+            return await invoke("delete_item", { id });
+          },
+
+          async fetchData(): Promise<string> {
+            return await invoke("fetch_data");
+          }
+        };
+    "#;
+
+    let index = ProjectIndex::new();
+    parse_bindings_with_tree_sitter(&path, content, &index).unwrap();
+
+    // Should parse methods from the commands object
+    assert_eq!(
+        index.bindings_cache.len(),
+        4,
+        "Expected 4 command bindings from Typegen object"
+    );
+
+    // Check snake_case command names
+    assert!(index.bindings_cache.contains_key("get_user_profile"));
+    assert!(index.bindings_cache.contains_key("save_preferences"));
+    assert!(index.bindings_cache.contains_key("delete_item"));
+    assert!(index.bindings_cache.contains_key("fetch_data"));
+
+    // Check method_map has Typegen source
+    assert_eq!(index.method_map.len(), 4, "Expected 4 entries in method_map");
+
+    let entry = index.method_map.get("getUserProfile").unwrap();
+    assert_eq!(entry.0, "get_user_profile");
+    assert_eq!(entry.1, BindingSource::Typegen);
+
+    let entry = index.method_map.get("fetchData").unwrap();
+    assert_eq!(entry.0, "fetch_data");
+    assert_eq!(entry.1, BindingSource::Typegen);
+
+    // Verify parameter parsing
+    let get_user = index.bindings_cache.get("get_user_profile").unwrap();
+    assert_eq!(get_user.args.len(), 1, "getUserProfile should have 1 param");
+    assert_eq!(get_user.args[0].name, "userId");
+    assert_eq!(get_user.args[0].type_name, "number");
+
+    // Verify return type parsing
+    assert_eq!(get_user.return_type.as_deref(), Some("string"));
+
+    // Verify method with no parameters
+    let fetch_data = index.bindings_cache.get("fetch_data").unwrap();
+    assert_eq!(fetch_data.args.len(), 0, "fetchData should have 0 params");
+    assert_eq!(fetch_data.return_type.as_deref(), Some("string"));
+}
+
+#[test]
+fn test_detect_binding_source_typegen() {
+    use lsp_server::bindings_reader::parse_bindings_with_tree_sitter;
+
+    let dir = tempdir().unwrap();
+
+    // Test 1: File in /generated/ directory should be detected as Typegen
+    let path_generated = dir.path().join("src/generated/bindings.ts");
+    std::fs::create_dir_all(path_generated.parent().unwrap()).unwrap();
+
+    let mut file = File::create(&path_generated).unwrap();
+    writeln!(
+        file,
+        r#"
+        import {{ invoke }} from '@tauri-apps/api/core';
+        export const commands = {{
+          async testCmd(): Promise<void> {{
+            return await invoke("test_cmd");
+          }}
+        }};
+        "#
+    )
+    .unwrap();
+
+    let index = ProjectIndex::new();
+    parse_bindings_with_tree_sitter(&path_generated, &std::fs::read_to_string(&path_generated).unwrap(), &index).unwrap();
+
+    // Typegen should use method_map with Typegen source
+    assert_eq!(index.method_map.len(), 1, "Should detect as Typegen by path");
+    let entry = index.method_map.get("testCmd").unwrap();
+    assert_eq!(entry.1, BindingSource::Typegen);
+
+    // Test 2: File with @tauri-apps/api import should be detected as Typegen
+    let path_api = dir.path().join("bindings.ts");
+    let mut file = File::create(&path_api).unwrap();
+    writeln!(
+        file,
+        r#"
+        import {{ invoke }} from '@tauri-apps/api/core';
+        export const commands = {{
+          async testCmd(): Promise<void> {{
+            return await invoke("test_cmd");
+          }}
+        }};
+        "#
+    )
+    .unwrap();
+
+    let index2 = ProjectIndex::new();
+    parse_bindings_with_tree_sitter(&path_api, &std::fs::read_to_string(&path_api).unwrap(), &index2).unwrap();
+    assert_eq!(index2.method_map.len(), 1, "Should detect as Typegen by content");
+    let entry = index2.method_map.get("testCmd").unwrap();
+    assert_eq!(entry.1, BindingSource::Typegen);
+}
+
+#[test]
+fn test_parse_ts_rs_object_commands() {
+    use lsp_server::bindings_reader::parse_bindings_with_tree_sitter;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("bindings/ts_rs_bindings.ts");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+    // ts-rs generated bindings with command methods and types
+    let content = r#"
+        // This file was generated by [ts-rs]
+        import { invoke } from '@tauri-apps/api/core';
+
+        export type User = { id: number; name: string; email: string };
+        export type Preferences = { theme: string; language: string };
+
+        export const commands = {
+          async getUserProfile(userId: number): Promise<User> {
+            return await invoke("get_user_profile", { userId });
+          },
+
+          async savePreferences(prefs: Preferences): Promise<void> {
+            return await invoke("save_preferences", { prefs });
+          },
+
+          async deleteItem(id: number): Promise<void> {
+            return await invoke("delete_item", { id });
+          },
+
+          async listUsers(): Promise<User[]> {
+            return await invoke("list_users");
+          }
+        };
+    "#;
+
+    let index = ProjectIndex::new();
+    parse_bindings_with_tree_sitter(&path, content, &index).unwrap();
+
+    // Should parse methods from the commands object
+    assert_eq!(
+        index.bindings_cache.len(),
+        4,
+        "Expected 4 command bindings from ts-rs object"
+    );
+
+    // Should also parse type definitions
+    assert!(index.types_cache.contains_key("User"));
+    assert!(index.types_cache.contains_key("Preferences"));
+
+    // Check snake_case command names
+    assert!(index.bindings_cache.contains_key("get_user_profile"));
+    assert!(index.bindings_cache.contains_key("save_preferences"));
+    assert!(index.bindings_cache.contains_key("delete_item"));
+    assert!(index.bindings_cache.contains_key("list_users"));
+
+    // Check method_map has TsRs source
+    assert_eq!(index.method_map.len(), 4, "Expected 4 entries in method_map");
+
+    let entry = index.method_map.get("getUserProfile").unwrap();
+    assert_eq!(entry.0, "get_user_profile");
+    assert_eq!(entry.1, BindingSource::TsRs);
+
+    let entry = index.method_map.get("listUsers").unwrap();
+    assert_eq!(entry.0, "list_users");
+    assert_eq!(entry.1, BindingSource::TsRs);
+
+    // Verify parameter parsing
+    let get_user = index.bindings_cache.get("get_user_profile").unwrap();
+    assert_eq!(get_user.args.len(), 1);
+    assert_eq!(get_user.args[0].name, "userId");
+    assert_eq!(get_user.args[0].type_name, "number");
+
+    // Verify return type parsing (User type)
+    assert_eq!(get_user.return_type.as_deref(), Some("User"));
+
+    // Verify method with no parameters
+    let list_users = index.bindings_cache.get("list_users").unwrap();
+    assert_eq!(list_users.args.len(), 0);
+    assert_eq!(list_users.return_type.as_deref(), Some("User[]"));
+}
+
+#[test]
+fn test_detect_binding_source_ts_rs() {
+    use lsp_server::bindings_reader::parse_bindings_with_tree_sitter;
+
+    let dir = tempdir().unwrap();
+
+    // Test 1: File in /bindings/ directory should be detected as TsRs
+    let path_bindings = dir.path().join("bindings/MyType.ts");
+    std::fs::create_dir_all(path_bindings.parent().unwrap()).unwrap();
+
+    let mut file = File::create(&path_bindings).unwrap();
+    writeln!(
+        file,
+        r#"
+        // This file was generated by [ts-rs]
+        export type MyType = {{ name: string; value: number }};
+        "#
+    )
+    .unwrap();
+
+    let index = ProjectIndex::new();
+    parse_bindings_with_tree_sitter(&path_bindings, &std::fs::read_to_string(&path_bindings).unwrap(), &index).unwrap();
+
+    // Should parse the type
+    assert_eq!(index.types_cache.len(), 1, "Should parse ts-rs type definition");
+    assert!(index.types_cache.contains_key("MyType"), "Should detect MyType");
+
+    // Test 2: File with ts-rs comment should be detected as TsRs even outside /bindings/
+    let path_comment = dir.path().join("types.ts");
+    let mut file = File::create(&path_comment).unwrap();
+    writeln!(
+        file,
+        r#"
+        // This file was generated by [ts-rs]
+        import {{ invoke }} from '@tauri-apps/api/core';
+        export const commands = {{
+          async testCmd(): Promise<void> {{
+            return await invoke("test_cmd");
+          }}
+        }};
+        "#
+    )
+    .unwrap();
+
+    let index2 = ProjectIndex::new();
+    parse_bindings_with_tree_sitter(&path_comment, &std::fs::read_to_string(&path_comment).unwrap(), &index2).unwrap();
+    assert_eq!(index2.method_map.len(), 1, "Should detect as TsRs by comment");
+    let entry = index2.method_map.get("testCmd").unwrap();
+    assert_eq!(entry.1, BindingSource::TsRs);
 }

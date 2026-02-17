@@ -14,8 +14,7 @@ pub fn handle_references(
     let uri = params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
 
-    let path_cow = uri.to_file_path()?;
-    let path: PathBuf = path_cow.to_path_buf();
+    let path = super::uri_to_path(&uri)?;
 
     // Find the key under the cursor
     if let Some((key, _)) = project_index.get_key_at_position(&path, position) {

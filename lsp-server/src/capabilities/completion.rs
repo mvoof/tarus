@@ -13,6 +13,31 @@ use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse,
 };
 
+/// Format struct fields as "{ field1: type1, field2: type2 }" if the type is a known struct
+fn format_struct_fields(project_index: &ProjectIndex, base_type: &str) -> Option<String> {
+    if is_primitive_rust_type(base_type) {
+        return None;
+    }
+    let struct_locs = project_index.get_locations(EntityType::Struct, base_type);
+    let sd = struct_locs
+        .iter()
+        .find(|sl| sl.behavior == Behavior::Definition)?;
+    let fields = sd.fields.as_ref()?;
+    let rename = should_rename_to_camel(sd.attributes.as_ref());
+    let field_strs: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let fname = if rename {
+                snake_to_camel(&f.name)
+            } else {
+                f.name.clone()
+            };
+            format!("{}: {}", fname, map_rust_type_to_ts(&f.type_name))
+        })
+        .collect();
+    Some(format!("{{ {} }}", field_strs.join(", ")))
+}
+
 const COMPLETION_TRIGGERS: &[&str] = &[
     "invoke",
     "emit",
@@ -35,8 +60,7 @@ pub fn handle_completion(
     document_cache: &Arc<DashMap<PathBuf, String>>,
 ) -> Option<CompletionResponse> {
     let uri = &params.text_document_position.text_document.uri;
-    let path_cow = uri.to_file_path()?;
-    let path: PathBuf = path_cow.into_owned();
+    let path = super::uri_to_path(uri)?;
 
     // Try to get content from cache first, fallback to reading from disk
     let content = document_cache
@@ -176,31 +200,9 @@ fn complete_invoke_arguments(
             let ts_type = map_rust_type_to_ts(&rp.type_name);
             let mut detail = format!(": {ts_type}");
 
-            // Enhance detail with struct fields if available
             let base = get_base_rust_type(&rp.type_name);
-            if !is_primitive_rust_type(&base) {
-                let struct_locs = project_index.get_locations(EntityType::Struct, &base);
-                if let Some(sd) = struct_locs
-                    .iter()
-                    .find(|sl| sl.behavior == Behavior::Definition)
-                {
-                    if let Some(fields) = &sd.fields {
-                        let rename = should_rename_to_camel(sd.attributes.as_ref());
-                        let field_strs: Vec<String> = fields
-                            .iter()
-                            .map(|f| {
-                                let fname = if rename {
-                                    snake_to_camel(&f.name)
-                                } else {
-                                    f.name.clone()
-                                };
-                                format!("{}: {}", fname, map_rust_type_to_ts(&f.type_name))
-                            })
-                            .collect();
-
-                        let _ = write!(detail, " {{ {} }}", field_strs.join(", "));
-                    }
-                }
+            if let Some(fields_str) = format_struct_fields(project_index, &base) {
+                let _ = write!(detail, " {fields_str}");
             }
 
             CompletionItem {
@@ -278,30 +280,9 @@ fn complete_command_event_names(
 
                 let _ = write!(detail, " → {ts_type}");
 
-                // If it's a custom struct type, show fields
                 let base = get_base_rust_type(rt);
-                if !is_primitive_rust_type(&base) {
-                    let struct_locs = project_index.get_locations(EntityType::Struct, &base);
-                    if let Some(sd) = struct_locs
-                        .iter()
-                        .find(|sl| sl.behavior == Behavior::Definition)
-                    {
-                        if let Some(fields) = &sd.fields {
-                            let rename = should_rename_to_camel(sd.attributes.as_ref());
-                            let field_strs: Vec<String> = fields
-                                .iter()
-                                .map(|f| {
-                                    let fname = if rename {
-                                        snake_to_camel(&f.name)
-                                    } else {
-                                        f.name.clone()
-                                    };
-                                    format!("{}: {}", fname, map_rust_type_to_ts(&f.type_name))
-                                })
-                                .collect();
-                            detail = format!("Command → {} {{ {} }}", base, field_strs.join(", "));
-                        }
-                    }
+                if let Some(fields_str) = format_struct_fields(project_index, &base) {
+                    detail = format!("Command → {base} {fields_str}");
                 }
             }
 

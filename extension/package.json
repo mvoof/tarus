@@ -47,19 +47,6 @@
           "minimum": 0,
           "scope": "resource"
         },
-        "tarus.dtsOutputPath": {
-          "type": "string",
-          "default": "auto",
-          "description": "Path for the generated .d.ts file. Use 'auto' for automatic detection, or specify a relative/absolute path.",
-          "scope": "resource"
-        },
-        "tarus.strictTypeSafety": {
-          "type": "boolean",
-          "default": false,
-          "description": "When enabled, no fallback invoke overload is generated — only typed commands are allowed. Provides stricter type checking at the cost of flexibility.",
-          "scope": "resource"
-        },
-
         "tarus.typeBindingsPaths": {
           "type": "array",
           "items": { "type": "string" },

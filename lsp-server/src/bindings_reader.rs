@@ -104,10 +104,8 @@ pub fn find_bindings_files(project_root: &Path, config: &BindingsConfig) -> Vec<
 
 /// Read tauri-plugin-typegen configuration from tauri.conf.json
 fn read_typegen_config(project_root: &Path) -> Option<String> {
-    let tauri_conf = project_root.join("src-tauri/tauri.conf.json");
-    if !tauri_conf.exists() {
-        return None;
-    }
+    // Use scanner's find_tauri_config to avoid hardcoded filename/path
+    let tauri_conf = crate::scanner::find_tauri_config(project_root)?;
 
     let content = std::fs::read_to_string(&tauri_conf).ok()?;
     let json: Value = serde_json::from_str(&content).ok()?;
@@ -122,12 +120,14 @@ fn read_typegen_config(project_root: &Path) -> Option<String> {
 
 /// Find Specta bindings by scanning Rust files for `ts::export()` calls
 fn find_specta_bindings(project_root: &Path) -> Option<PathBuf> {
-    let src_tauri = project_root.join("src-tauri/src");
+    // Use scanner's find_src_tauri_dir to avoid hardcoded path
+    let src_tauri_dir = crate::scanner::find_src_tauri_dir(project_root)?;
+    let src_tauri = src_tauri_dir.join("src");
     if !src_tauri.exists() {
         return None;
     }
 
-    let walker = WalkDir::new(src_tauri).max_depth(3);
+    let walker = WalkDir::new(&src_tauri).max_depth(3);
     for entry in walker.into_iter().filter_map(Result::ok) {
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "rs") {
@@ -137,7 +137,7 @@ fn find_specta_bindings(project_root: &Path) -> Option<PathBuf> {
                 // or `specta_builder.export(..., "path")`
                 if let Some(bindings_path) = extract_export_path(&content) {
                     // Resolve relative path from src-tauri base
-                    let resolved = project_root.join("src-tauri").join(&bindings_path);
+                    let resolved = src_tauri_dir.join(&bindings_path);
                     if let Ok(canon) = resolved.canonicalize() {
                         return Some(canon);
                     }
@@ -181,100 +181,44 @@ fn extract_export_path(content: &str) -> Option<String> {
     None
 }
 
-/// Try to find the bindings file path automatically (legacy single file version)
-///
-/// Strategies:
-/// 1. Check `tauri.conf.json` for `plugins.tauri-typegen.output_path`
-/// 2. Scan `src-tauri/src/*.rs` for `ts::export` calls (Specta)
-/// 3. Fallback to common locations
-///
-/// Deprecated: Use `find_bindings_files` for multi-file support
-pub fn find_bindings_file(project_root: &Path) -> Option<PathBuf> {
-    // 1. Check tauri.conf.json (simplified check for now)
-    // In a real implementation we would parse the JSON, but for MVP we can check string content
-    let tauri_conf = project_root.join("src-tauri/tauri.conf.json");
-    if tauri_conf.exists() {
-        if let Ok(content) = std::fs::read_to_string(&tauri_conf) {
-            // Very naive check for typegen config
-            if content.contains("tauri-typegen") && content.contains("output_path") {
-                // TODO: Parse JSON properly to get exact path
-                // For now, let's proceed to other strategies as this requires JSON parsing
-            }
-        }
-    }
-
-    // 2. Scan src-tauri for Specta exports
-    let src_tauri = project_root.join("src-tauri/src");
-    if src_tauri.exists() {
-        let walker = WalkDir::new(src_tauri).max_depth(3);
-        for entry in walker.into_iter().filter_map(Result::ok) {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "rs") {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    // Look for `ts::export(..., "path/to/bindings.ts")`
-                    // or `export(..., "path/to/bindings.ts")`
-                    if let Some(idx) = content.find("export(") {
-                        let rest = &content[idx..];
-                        if let Some(quote_start) = rest.find('"') {
-                            let rest_quoted = &rest[quote_start + 1..];
-                            if let Some(quote_end) = rest_quoted.find('"') {
-                                let path_str = &rest_quoted[..quote_end];
-                                if Path::new(path_str).extension().is_some_and(|ext| {
-                                    ext.eq_ignore_ascii_case("ts") || ext.eq_ignore_ascii_case("js")
-                                }) {
-                                    // Resolve relative path from src-tauri base
-                                    // Usually it's like "../src/bindings.ts"
-                                    let resolved = project_root.join("src-tauri").join(path_str);
-                                    if let Ok(canon) = resolved.canonicalize() {
-                                        return Some(canon);
-                                    }
-                                    // Try resolving from project root if absolute-ish
-                                    let resolved_root = project_root.join(path_str);
-                                    if let Ok(canon) = resolved_root.canonicalize() {
-                                        return Some(canon);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. Fallback common locations
-    let common_paths = [
-        "src/bindings.ts",
-        "bindings.ts",
-        "src/tauri-commands.d.ts", // If using our own typegen output as source? Unlikely but possible
-    ];
-
-    for p in common_paths {
-        let path = project_root.join(p);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    None
-}
-
 /// Read and index bindings from the specified file using tree-sitter
 /// # Errors
 /// Returns an error if file reading or parsing fails.
 pub fn read_bindings(path: &Path, project_index: &ProjectIndex) -> std::io::Result<()> {
     let content = std::fs::read_to_string(path)?;
-    parse_bindings_with_tree_sitter(path, &content, project_index)
+
+    // Canonicalize path for consistent comparison
+    let canonical_path = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf());
+
+    // Parse bindings and get findings
+    let findings = parse_bindings_with_tree_sitter(&canonical_path, &content, project_index)?;
+
+    // Register this file as a bindings file (to skip normal processing)
+    project_index.register_bindings_file(canonical_path.clone());
+
+    // Add findings to index (if any)
+    if !findings.is_empty() {
+        use crate::indexer::FileIndex;
+        project_index.add_file(FileIndex {
+            path: canonical_path,
+            findings,
+        });
+    }
+
+    Ok(())
 }
 
 /// Parse bindings file with tree-sitter and extract function signatures + type definitions
+/// Returns a list of Findings for indexing (e.g., Specta method definitions)
 /// # Errors
 /// Returns an error if tree-sitter parsing fails
 pub fn parse_bindings_with_tree_sitter(
     path: &Path,
     content: &str,
     project_index: &ProjectIndex,
-) -> std::io::Result<()> {
+) -> std::io::Result<Vec<crate::indexer::Finding>> {
     // Initialize TypeScript parser
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
@@ -306,8 +250,17 @@ pub fn parse_bindings_with_tree_sitter(
     let interface_name_idx = query.capture_index_for_name("binding_interface_name");
     let interface_body_idx = query.capture_index_for_name("binding_interface_body");
 
+    // Find capture indices for Specta object methods
+    let specta_object_name_idx = query.capture_index_for_name("specta_object_name");
+    let specta_method_name_idx = query.capture_index_for_name("specta_method_name");
+    let specta_method_params_idx = query.capture_index_for_name("specta_method_params");
+    let specta_method_return_idx = query.capture_index_for_name("specta_method_return");
+
     // Determine binding source from file path
     let source = detect_binding_source(path);
+
+    // Accumulate findings for indexing
+    let mut findings = Vec::new();
 
     while let Some(match_result) = matches.next() {
         let mut func_name = None;
@@ -317,6 +270,11 @@ pub fn parse_bindings_with_tree_sitter(
         let mut type_value_node = None;
         let mut iface_name = None;
         let mut iface_body_node = None;
+        let mut specta_object_name = None;
+        let mut specta_method_name = None;
+        let mut specta_method_name_node = None;
+        let mut specta_params_node = None;
+        let mut specta_return_node = None;
 
         for capture in match_result.captures {
             if Some(capture.index) == func_name_idx {
@@ -339,6 +297,19 @@ pub fn parse_bindings_with_tree_sitter(
                 }
             } else if Some(capture.index) == interface_body_idx {
                 iface_body_node = Some(capture.node);
+            } else if Some(capture.index) == specta_object_name_idx {
+                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
+                    specta_object_name = Some(text.to_string());
+                }
+            } else if Some(capture.index) == specta_method_name_idx {
+                specta_method_name_node = Some(capture.node);
+                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
+                    specta_method_name = Some(text.to_string());
+                }
+            } else if Some(capture.index) == specta_method_params_idx {
+                specta_params_node = Some(capture.node);
+            } else if Some(capture.index) == specta_method_return_idx {
+                specta_return_node = Some(capture.node);
             }
         }
 
@@ -405,9 +376,84 @@ pub fn parse_bindings_with_tree_sitter(
                 project_index.types_cache.insert(name, entry);
             }
         }
+
+        // Process Specta/Typegen object methods: export const commands = { async methodName(...) { ... } }
+        if let Some(obj_name) = specta_object_name {
+            if obj_name == "commands" {
+                if let Some(method_name_str) = specta_method_name {
+                    // Convert camelCase method name to snake_case command name
+                    let snake_case_name = crate::syntax::camel_to_snake(&method_name_str);
+
+                    // Extract parameters
+                    let args = if let Some(params) = specta_params_node {
+                        extract_function_parameters(params, content)
+                    } else {
+                        vec![]
+                    };
+
+                    // Extract return type
+                    let return_type = if let Some(ret_node) = specta_return_node {
+                        if let Ok(ret_text) = ret_node.utf8_text(content.as_bytes()) {
+                            Some(unwrap_promise_type(ret_text))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Store in bindings_cache under snake_case name
+                    let entry = BindingEntry {
+                        args: args.clone(),
+                        return_type: return_type.clone(),
+                    };
+                    project_index
+                        .bindings_cache
+                        .insert(snake_case_name.clone(), entry);
+
+                    // Store in unified method_map: camelCase → (snake_case, source)
+                    project_index
+                        .method_map
+                        .insert(method_name_str.clone(), (snake_case_name.clone(), source.clone()));
+
+                    // Create a Finding for this method (to enable CodeLens navigation)
+                    if let Some(method_node) = specta_method_name_node {
+                        let start = method_node.start_position();
+                        let end = method_node.end_position();
+
+                        use tower_lsp_server::ls_types::{Position, Range};
+                        let range = Range {
+                            start: Position {
+                                line: start.row as u32,
+                                character: start.column as u32,
+                            },
+                            end: Position {
+                                line: end.row as u32,
+                                character: end.column as u32,
+                            },
+                        };
+
+                        use crate::indexer::Finding;
+                        use crate::syntax::{Behavior, EntityType};
+
+                        findings.push(Finding {
+                            key: snake_case_name,
+                            entity: EntityType::Command,
+                            behavior: Behavior::Definition,
+                            range,
+                            parameters: Some(args),
+                            return_type,
+                            fields: None,
+                            attributes: None,
+                            variants: None,
+                        });
+                    }
+                }
+            }
+        }
     }
 
-    Ok(())
+    Ok(findings)
 }
 
 /// Extract function parameters from `formal_parameters` node
@@ -475,22 +521,57 @@ fn find_ts_rs_bindings(project_root: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-/// Detect the binding source tool based on file path heuristics
+/// Detect the binding source tool based on file path heuristics and content analysis
 fn detect_binding_source(path: &Path) -> BindingSource {
     let path_str = path.to_string_lossy();
     let file_name = path.file_name().map_or("", |n| n.to_str().unwrap_or(""));
 
-    // ts-rs typically outputs in bindings/ directory, one file per type
+    // Read content for analysis
+    let content = std::fs::read_to_string(path).ok();
+
+    // ts-rs typically outputs in bindings/ directory
+    // Verify by checking for ts-rs signature or lack of tool-specific imports
     if path_str.contains("/bindings/") || path_str.contains("\\bindings\\") {
+        if let Some(ref c) = content {
+            // ts-rs signature: generated comment or no @tauri-apps imports
+            if c.contains("// This file was generated by [ts-rs]")
+                || c.contains("ts-rs")
+                || (!c.contains("@tauri-apps/api") && !c.contains("TAURI_INVOKE"))
+            {
+                return BindingSource::TsRs;
+            }
+        }
+        // Default for bindings/ directory
         return BindingSource::TsRs;
     }
 
-    // tauri-typegen typically outputs in src/generated/
+    // tauri-plugin-typegen typically outputs in src/generated/ or other configured paths
     if path_str.contains("/generated/") || path_str.contains("\\generated\\") {
         return BindingSource::Typegen;
     }
 
-    // tauri-specta typically outputs bindings.ts
+    // Check file content to distinguish between Specta, Typegen, and ts-rs
+    // Priority: explicit tool signatures first (ts-rs comment, TAURI_INVOKE), then imports
+    if let Some(c) = content {
+        // ts-rs signature has highest priority: explicit generated comment
+        if c.contains("// This file was generated by [ts-rs]") || c.contains("[ts-rs]") {
+            return BindingSource::TsRs;
+        }
+
+        // tauri-specta signature: uses TAURI_INVOKE or custom wrapper
+        if c.contains("TAURI_INVOKE") || c.contains("__TAURI_INVOKE__") {
+            return BindingSource::Specta;
+        }
+
+        // tauri-plugin-typegen signature: imports from @tauri-apps/api (lowest priority)
+        if c.contains("from '@tauri-apps/api/core'")
+            || c.contains("from '@tauri-apps/api/tauri'")
+        {
+            return BindingSource::Typegen;
+        }
+    }
+
+    // Fallback: if filename is bindings.ts without clear indicators, assume Specta
     if file_name == "bindings.ts" || file_name == "bindings.js" {
         return BindingSource::Specta;
     }

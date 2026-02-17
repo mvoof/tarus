@@ -1,13 +1,12 @@
 ; Rust queries for Tauri commands and events
 
-; #[tauri::command] fn name() - attribute followed immediately by function
+; #[tauri::command] fn name() - immediate sibling (most common case)
 (
   (attribute_item
     (attribute
       (scoped_identifier
         path: (identifier) @_attr_path
-        name: (identifier) @_attr_name)))
-  .
+        name: (identifier) @_attr_name))) .
   (function_item
     name: (identifier) @command_name
     parameters: (parameters) @command_params
@@ -17,12 +16,75 @@
   (#eq? @_attr_name "command")
 )
 
-; #[command] fn name() - simplified attribute
+; #[tauri::command] with ONE intermediate attribute (e.g., #[cfg_attr])
 (
   (attribute_item
     (attribute
-      (identifier) @_attr_simple))
-  .
+      (scoped_identifier
+        path: (identifier) @_attr_path
+        name: (identifier) @_attr_name))) .
+  (attribute_item) .
+  (function_item
+    name: (identifier) @command_name
+    parameters: (parameters) @command_params
+    return_type: (_) @command_return_type
+  )
+  (#eq? @_attr_path "tauri")
+  (#eq? @_attr_name "command")
+)
+
+; #[tauri::command] with TWO intermediate attributes (rare but possible)
+(
+  (attribute_item
+    (attribute
+      (scoped_identifier
+        path: (identifier) @_attr_path
+        name: (identifier) @_attr_name))) .
+  (attribute_item) .
+  (attribute_item) .
+  (function_item
+    name: (identifier) @command_name
+    parameters: (parameters) @command_params
+    return_type: (_) @command_return_type
+  )
+  (#eq? @_attr_path "tauri")
+  (#eq? @_attr_name "command")
+)
+
+; #[command] fn name() - simplified attribute, immediate sibling
+(
+  (attribute_item
+    (attribute
+      (identifier) @_attr_simple)) .
+  (function_item
+    name: (identifier) @command_name
+    parameters: (parameters) @command_params
+    return_type: (_) @command_return_type
+  )
+  (#eq? @_attr_simple "command")
+)
+
+; #[command] with ONE intermediate attribute
+(
+  (attribute_item
+    (attribute
+      (identifier) @_attr_simple)) .
+  (attribute_item) .
+  (function_item
+    name: (identifier) @command_name
+    parameters: (parameters) @command_params
+    return_type: (_) @command_return_type
+  )
+  (#eq? @_attr_simple "command")
+)
+
+; #[command] with TWO intermediate attributes
+(
+  (attribute_item
+    (attribute
+      (identifier) @_attr_simple)) .
+  (attribute_item) .
+  (attribute_item) .
   (function_item
     name: (identifier) @command_name
     parameters: (parameters) @command_params

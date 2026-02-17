@@ -175,6 +175,43 @@ mod rust_parser_tests {
             "Inferred variable payload should resolve to CalculationStatus"
         );
     }
+
+    #[test]
+    fn test_parse_rust_command_with_intermediate_attrs() {
+        let content = load_fixture("rust/specta_commands.rs");
+        let path = test_path("specta_commands.rs");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse Rust file with intermediate attributes: {:?}",
+            result.err()
+        );
+
+        let file_index = result.unwrap();
+        assert_eq!(
+            file_index.findings.len(),
+            3,
+            "Expected 3 commands (with and without intermediate attributes)"
+        );
+
+        let command_names: Vec<&str> =
+            file_index.findings.iter().map(|f| f.key.as_str()).collect();
+
+        // Should detect all commands despite intermediate #[cfg_attr] and #[allow] attributes
+        assert!(
+            command_names.contains(&"get_user_profile"),
+            "Should detect command with one intermediate attribute"
+        );
+        assert!(
+            command_names.contains(&"save_preferences"),
+            "Should detect command with two intermediate attributes"
+        );
+        assert!(
+            command_names.contains(&"delete_item"),
+            "Should detect regular command without intermediate attributes"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -285,6 +322,327 @@ mod typescript_parser_tests {
 
         assert_eq!(fields[1].name, "count");
         assert_eq!(fields[1].type_name, "number");
+    }
+
+    #[test]
+    fn test_parse_specta_direct_call() {
+        let content = load_fixture("typescript/specta_user_code.ts");
+        let path = test_path("specta_user_code.ts");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse Specta user code: {:?}",
+            result.err()
+        );
+
+        let file_index = result.unwrap();
+
+        // Should find Specta method calls converted to snake_case command names
+        let command_calls: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command && f.behavior == Behavior::Call)
+            .collect();
+
+        assert!(
+            !command_calls.is_empty(),
+            "Expected Specta command calls in user code"
+        );
+
+        let command_names: Vec<&str> = command_calls.iter().map(|f| f.key.as_str()).collect();
+
+        // getUserProfile -> get_user_profile
+        assert!(
+            command_names.contains(&"get_user_profile"),
+            "Should convert camelCase getUserProfile to snake_case get_user_profile"
+        );
+
+        // savePreferences -> save_preferences
+        assert!(
+            command_names.contains(&"save_preferences"),
+            "Should convert camelCase savePreferences to snake_case save_preferences"
+        );
+
+        // deleteItem -> delete_item
+        assert!(
+            command_names.contains(&"delete_item"),
+            "Should convert camelCase deleteItem to snake_case delete_item"
+        );
+    }
+
+    #[test]
+    fn test_parse_specta_namespaced_call() {
+        // Content has namespaced pattern: Specta.commands.getUserProfile()
+        let content = load_fixture("typescript/specta_user_code.ts");
+        let path = test_path("specta_user_code.ts");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(result.is_ok());
+
+        let file_index = result.unwrap();
+
+        // Should recognize Specta.commands.methodName() pattern
+        let command_calls: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command && f.behavior == Behavior::Call)
+            .collect();
+
+        assert!(
+            !command_calls.is_empty(),
+            "Expected namespaced Specta calls to be recognized"
+        );
+    }
+
+    #[test]
+    fn test_parse_specta_alongside_invoke() {
+        // Verify both invoke("cmd") and commands.method() work in the same file
+        let content = load_fixture("typescript/specta_user_code.ts");
+        let path = test_path("specta_user_code.ts");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(result.is_ok());
+
+        let file_index = result.unwrap();
+
+        let command_calls: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command && f.behavior == Behavior::Call)
+            .collect();
+
+        let command_names: Vec<&str> = command_calls.iter().map(|f| f.key.as_str()).collect();
+
+        // Should find both regular invoke calls
+        assert!(
+            command_names.contains(&"legacy_command"),
+            "Should find regular invoke() calls"
+        );
+
+        // And Specta method calls
+        assert!(
+            command_names.contains(&"get_user_profile"),
+            "Should find Specta method calls"
+        );
+    }
+
+    #[test]
+    fn test_parse_typegen_direct_call() {
+        let content = load_fixture("typescript/typegen_user_code.ts");
+        let path = test_path("typegen_user_code.ts");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse Typegen user code: {:?}",
+            result.err()
+        );
+
+        let file_index = result.unwrap();
+
+        // Should find Typegen method calls converted to snake_case command names
+        let command_calls: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command && f.behavior == Behavior::Call)
+            .collect();
+
+        assert!(
+            !command_calls.is_empty(),
+            "Expected Typegen command calls in user code"
+        );
+
+        let command_names: Vec<&str> = command_calls.iter().map(|f| f.key.as_str()).collect();
+
+        // getUserProfile -> get_user_profile
+        assert!(
+            command_names.contains(&"get_user_profile"),
+            "Should convert camelCase getUserProfile to snake_case get_user_profile"
+        );
+
+        // savePreferences -> save_preferences
+        assert!(
+            command_names.contains(&"save_preferences"),
+            "Should convert camelCase savePreferences to snake_case save_preferences"
+        );
+
+        // deleteItem -> delete_item
+        assert!(
+            command_names.contains(&"delete_item"),
+            "Should convert camelCase deleteItem to snake_case delete_item"
+        );
+
+        // fetchData -> fetch_data
+        assert!(
+            command_names.contains(&"fetch_data"),
+            "Should convert camelCase fetchData to snake_case fetch_data"
+        );
+    }
+
+    #[test]
+    fn test_parse_typegen_namespaced_call() {
+        // Content has namespaced pattern: Typegen.commands.getUserProfile()
+        let content = load_fixture("typescript/typegen_user_code.ts");
+        let path = test_path("typegen_user_code.ts");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(result.is_ok());
+
+        let file_index = result.unwrap();
+
+        // Should recognize Typegen.commands.methodName() pattern
+        let command_calls: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command && f.behavior == Behavior::Call)
+            .collect();
+
+        assert!(
+            !command_calls.is_empty(),
+            "Expected namespaced Typegen calls to be recognized"
+        );
+    }
+
+    #[test]
+    fn test_parse_typegen_alongside_invoke() {
+        // Verify both invoke("cmd") and commands.method() work in the same file
+        let content = load_fixture("typescript/typegen_user_code.ts");
+        let path = test_path("typegen_user_code.ts");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(result.is_ok());
+
+        let file_index = result.unwrap();
+
+        let command_calls: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command && f.behavior == Behavior::Call)
+            .collect();
+
+        let command_names: Vec<&str> = command_calls.iter().map(|f| f.key.as_str()).collect();
+
+        // Should find both regular invoke calls
+        assert!(
+            command_names.contains(&"legacy_command"),
+            "Should find regular invoke() calls"
+        );
+
+        // And Typegen method calls
+        assert!(
+            command_names.contains(&"get_user_profile"),
+            "Should find Typegen method calls"
+        );
+    }
+
+    #[test]
+    fn test_parse_ts_rs_direct_call() {
+        let content = load_fixture("typescript/ts_rs_user_code.ts");
+        let path = test_path("ts_rs_user_code.ts");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse ts-rs user code: {:?}",
+            result.err()
+        );
+
+        let file_index = result.unwrap();
+
+        // Should find ts-rs method calls converted to snake_case command names
+        let command_calls: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command && f.behavior == Behavior::Call)
+            .collect();
+
+        assert!(
+            !command_calls.is_empty(),
+            "Expected ts-rs command calls in user code"
+        );
+
+        let command_names: Vec<&str> = command_calls.iter().map(|f| f.key.as_str()).collect();
+
+        // getUserProfile -> get_user_profile
+        assert!(
+            command_names.contains(&"get_user_profile"),
+            "Should convert camelCase getUserProfile to snake_case get_user_profile"
+        );
+
+        // savePreferences -> save_preferences
+        assert!(
+            command_names.contains(&"save_preferences"),
+            "Should convert camelCase savePreferences to snake_case save_preferences"
+        );
+
+        // deleteItem -> delete_item
+        assert!(
+            command_names.contains(&"delete_item"),
+            "Should convert camelCase deleteItem to snake_case delete_item"
+        );
+
+        // listUsers -> list_users
+        assert!(
+            command_names.contains(&"list_users"),
+            "Should convert camelCase listUsers to snake_case list_users"
+        );
+    }
+
+    #[test]
+    fn test_parse_ts_rs_namespaced_call() {
+        // Content has namespaced pattern: TsRs.commands.getUserProfile()
+        let content = load_fixture("typescript/ts_rs_user_code.ts");
+        let path = test_path("ts_rs_user_code.ts");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(result.is_ok());
+
+        let file_index = result.unwrap();
+
+        // Should recognize TsRs.commands.methodName() pattern
+        let command_calls: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command && f.behavior == Behavior::Call)
+            .collect();
+
+        assert!(
+            !command_calls.is_empty(),
+            "Expected namespaced ts-rs calls to be recognized"
+        );
+    }
+
+    #[test]
+    fn test_parse_ts_rs_alongside_invoke() {
+        // Verify both invoke("cmd") and commands.method() work in the same file
+        let content = load_fixture("typescript/ts_rs_user_code.ts");
+        let path = test_path("ts_rs_user_code.ts");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(result.is_ok());
+
+        let file_index = result.unwrap();
+
+        let command_calls: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Command && f.behavior == Behavior::Call)
+            .collect();
+
+        let command_names: Vec<&str> = command_calls.iter().map(|f| f.key.as_str()).collect();
+
+        // Should find both regular invoke calls
+        assert!(
+            command_names.contains(&"legacy_command"),
+            "Should find regular invoke() calls"
+        );
+
+        // And ts-rs method calls
+        assert!(
+            command_names.contains(&"get_user_profile"),
+            "Should find ts-rs method calls"
+        );
     }
 }
 

@@ -28,6 +28,13 @@ pub fn spawn_background_indexing(
             .log_message(MessageType::INFO, "🚀 Starting background indexing...")
             .await;
 
+        // Load external bindings FIRST (Specta/Typegen)
+        // This populates the bindings registry before workspace scan
+        if let Some(ref root) = primary_root {
+            load_external_bindings(root, &project_index, &bindings_config, &client).await;
+        }
+
+        // THEN scan workspace files (bindings files will be skipped)
         let mut all_files = Vec::new();
         for root in roots_for_scan {
             let files = tokio::task::spawn_blocking(move || scan_workspace_files(&root))
@@ -38,11 +45,6 @@ pub fn spawn_background_indexing(
 
         for path in all_files {
             file_processor::process_file_index(path, &project_index);
-        }
-
-        // Load external bindings (Specta/Typegen)
-        if let Some(ref root) = primary_root {
-            load_external_bindings(root, &project_index, &bindings_config, &client).await;
         }
 
         // Publish diagnostics for all indexed files

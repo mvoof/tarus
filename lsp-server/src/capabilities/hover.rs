@@ -24,8 +24,7 @@ pub fn handle_hover(params: HoverParams, project_index: &ProjectIndex) -> Option
     let uri = params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
-    let path_cow = uri.to_file_path()?;
-    let path: PathBuf = path_cow.to_path_buf();
+    let path = super::uri_to_path(&uri)?;
 
     let (key, origin_loc) = project_index.get_key_at_position(&path, position)?;
     let locations = project_index.get_locations(key.entity, &key.name);

@@ -49,20 +49,13 @@ pub enum ParseError {
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ParseError::Syntax(msg, path) => {
-                let location = path.as_deref().unwrap_or("unknown file");
-                write!(f, "Syntax error in {location}: {msg}")
-            }
-            ParseError::Query(msg, path) => {
-                let location = path.as_deref().unwrap_or("unknown file");
-                write!(f, "Query error in {location}: {msg}")
-            }
-            ParseError::Language(msg, path) => {
-                let location = path.as_deref().unwrap_or("unknown file");
-                write!(f, "Language error in {location}: {msg}")
-            }
-        }
+        let (kind, msg, path) = match self {
+            ParseError::Syntax(m, p) => ("Syntax", m, p),
+            ParseError::Query(m, p) => ("Query", m, p),
+            ParseError::Language(m, p) => ("Language", m, p),
+        };
+        let location = path.as_deref().unwrap_or("unknown file");
+        write!(f, "{kind} error in {location}: {msg}")
     }
 }
 
@@ -189,51 +182,6 @@ fn extract_quoted_value(s: &str) -> Option<String> {
     }
 
     None
-}
-
-/// Apply serde `rename_all` transformation to a field name
-///
-/// Supports: `lowercase`, `UPPERCASE`, `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE_CASE`, `kebab-case`
-#[must_use]
-pub fn apply_serde_rename(field_name: &str, rename_all: Option<&str>) -> String {
-    let Some(strategy) = rename_all else {
-        return field_name.to_string();
-    };
-
-    match strategy {
-        "lowercase" => field_name.to_lowercase(),
-        "UPPERCASE" => field_name.to_uppercase(),
-        "camelCase" => snake_to_camel(field_name),
-        "PascalCase" => pascal_case(field_name),
-        "snake_case" => camel_to_snake(field_name), // Convert if needed
-        "SCREAMING_SNAKE_CASE" => camel_to_snake(field_name).to_uppercase(),
-        "kebab-case" => camel_to_snake(field_name).replace('_', "-"),
-        _ => field_name.to_string(), // Unknown strategy, keep original
-    }
-}
-
-/// Convert `snake_case` or `camelCase` to `PascalCase`
-#[must_use]
-pub fn pascal_case(s: &str) -> String {
-    if s.is_empty() {
-        return String::new();
-    }
-
-    let mut result = String::new();
-    let mut capitalize_next = true;
-
-    for c in s.chars() {
-        if c == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.push(c.to_ascii_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
 }
 
 /// Check if attributes contain `serde(rename_all` = "camelCase")
@@ -711,141 +659,3 @@ pub fn parse_kv_pair<S: std::hash::BuildHasher>(
     }
 }
 
-/// TypeScript enum representation
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TsEnumRepresentation {
-    /// String enum: enum Foo { Bar = "bar" }
-    /// Vec<(key, value)>
-    #[allow(dead_code)] // Reserved for future string enum support
-    StringEnum(Vec<(String, String)>),
-    /// String literal union: "add" | "subtract"
-    UnionType(Vec<String>),
-    /// Discriminated union: { type: "A" } | { type: "B", data: {...} }
-    DiscriminatedUnion(Vec<TsUnionVariant>),
-}
-
-/// Variant in a TypeScript discriminated union
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TsUnionVariant {
-    pub tag_value: String, // Value of the discriminant field (e.g., "Success")
-    pub has_content: bool, // Whether variant has a content/data field
-    pub content_fields: Option<std::collections::HashMap<String, String>>, // Fields in the data object
-}
-
-/// Parse TypeScript enum or union type from a string
-///
-/// Handles:
-/// - String literal unions: `"add" | "subtract" | "multiply"`
-/// - Discriminated unions: `{ type: "A" } | { type: "B", data: { x: number } }`
-/// - String enums: `enum Operation { Add = "add", Subtract = "subtract" }`
-#[must_use]
-pub fn parse_ts_enum_or_union(ts_type: &str) -> Option<TsEnumRepresentation> {
-    let trimmed = ts_type.trim();
-
-    // Check for union type (contains |)
-    if trimmed.contains('|') {
-        // Could be string literal union or discriminated union
-        let parts: Vec<&str> = split_union_type(trimmed);
-
-        // Check if all parts are string literals
-        if parts.iter().all(|p| {
-            let pt = p.trim();
-            (pt.starts_with('"') && pt.ends_with('"'))
-                || (pt.starts_with('\'') && pt.ends_with('\''))
-        }) {
-            let values = parts
-                .iter()
-                .map(|p| {
-                    let pt = p.trim();
-                    pt[1..pt.len() - 1].to_string()
-                })
-                .collect();
-            return Some(TsEnumRepresentation::UnionType(values));
-        }
-
-        // Check if all parts are object types (discriminated union)
-        if parts.iter().all(|p| {
-            let pt = p.trim();
-            pt.starts_with('{') && pt.ends_with('}')
-        }) {
-            let mut variants = Vec::new();
-
-            for part in parts {
-                if let Some(variant) = parse_discriminated_union_variant(part.trim()) {
-                    variants.push(variant);
-                }
-            }
-
-            if !variants.is_empty() {
-                return Some(TsEnumRepresentation::DiscriminatedUnion(variants));
-            }
-        }
-    }
-
-    None
-}
-
-/// Split a union type by | at depth 0 (not inside braces or brackets)
-fn split_union_type(s: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-
-    for (i, c) in s.char_indices() {
-        match c {
-            '{' | '[' | '(' => depth += 1,
-            '}' | ']' | ')' => depth -= 1,
-            '|' if depth == 0 => {
-                parts.push(&s[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    parts.push(&s[start..]);
-    parts
-}
-
-/// Parse a discriminated union variant like `{ type: "Success" }` or `{ type: "Error", data: { code: number } }`
-fn parse_discriminated_union_variant(s: &str) -> Option<TsUnionVariant> {
-    let fields = parse_ts_object_string(s);
-
-    // Look for common tag fields: "type", "kind", "tag"
-    let tag_value = fields
-        .get("type")
-        .or_else(|| fields.get("kind"))
-        .or_else(|| fields.get("tag"))?;
-
-    // Remove quotes from tag value
-    let tag_value = tag_value
-        .trim()
-        .trim_start_matches('"')
-        .trim_end_matches('"')
-        .trim_start_matches('\'')
-        .trim_end_matches('\'')
-        .to_string();
-
-    // Check for content/data field
-    let has_content = fields.contains_key("data") || fields.contains_key("content");
-    let content_fields = if has_content {
-        // Try to parse the data field if it's an object
-        fields
-            .get("data")
-            .or_else(|| fields.get("content"))
-            .and_then(|data_str| {
-                if data_str.trim().starts_with('{') {
-                    Some(parse_ts_object_string(data_str))
-                } else {
-                    None
-                }
-            })
-    } else {
-        None
-    };
-
-    Some(TsUnionVariant {
-        tag_value,
-        has_content,
-        content_fields,
-    })
-}

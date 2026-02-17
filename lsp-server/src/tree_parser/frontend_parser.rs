@@ -46,6 +46,71 @@ pub fn process_interface_match(
     )
 }
 
+/// Specta/Typegen/ts-rs call pattern descriptors for table-driven matching
+const SPECTA_PATTERNS: &[(&str, &str, Option<&str>)] = &[
+    // (object/verify_key, method_key, optional commands_key for namespaced patterns)
+    ("specta_call_object", "specta_call_method", None),
+    ("specta_await_object", "specta_await_method", None),
+    ("specta_ns_object", "specta_ns_method", Some("specta_ns_commands")),
+    ("specta_ns_await_object", "specta_ns_await_method", Some("specta_ns_await_commands")),
+];
+
+/// Process Specta method call match (commands.methodName or Specta.commands.methodName)
+#[must_use]
+pub fn process_specta_call_match(
+    m: &tree_sitter::QueryMatch,
+    indices: &CaptureIndices,
+    content: &str,
+    line_offset: usize,
+) -> Option<Finding> {
+    for &(obj_key, method_key, cmd_key) in SPECTA_PATTERNS {
+        let Some(obj_cap) = indices.find_capture(m.captures, obj_key) else {
+            continue;
+        };
+        let Some(method_cap) = indices.find_capture(m.captures, method_key) else {
+            continue;
+        };
+
+        // For namespaced patterns, verify the intermediate "commands" identifier
+        let verify_name = if let Some(ck) = cmd_key {
+            indices
+                .find_capture(m.captures, ck)
+                .map(|c| c.node.text_or_default(content))
+        } else {
+            Some(obj_cap.node.text_or_default(content))
+        };
+
+        if verify_name.as_deref() != Some("commands") {
+            continue;
+        }
+
+        let method_name = method_cap.node.text_or_default(content);
+        return Some(
+            FindingBuilder::new(
+                crate::syntax::camel_to_snake(&method_name),
+                EntityType::Command,
+                Behavior::Call,
+                adjust_range(
+                    Range {
+                        start: point_to_position(method_cap.node.start_position()),
+                        end: point_to_position(method_cap.node.end_position()),
+                    },
+                    line_offset,
+                ),
+            )
+            .build(),
+        );
+    }
+
+    None
+}
+
+/// Capture name pairs for first/second argument position patterns
+const ARG_POSITION_CAPTURES: &[(&str, &str, ArgPosition)] = &[
+    ("func_name", "arg_value", ArgPosition::First),
+    ("func_name_second", "arg_value_second", ArgPosition::Second),
+];
+
 /// Process function call match (handles both first and second argument patterns)
 #[must_use]
 pub fn process_function_call_match<S: std::hash::BuildHasher>(
@@ -56,89 +121,50 @@ pub fn process_function_call_match<S: std::hash::BuildHasher>(
     aliases: &HashMap<String, String, S>,
     patterns: &[FunctionPatternWithPos],
 ) -> Option<Finding> {
-    // Try first argument pattern
-    if let (Some(func_cap), Some(arg_cap)) = (
-        indices.find_capture(m.captures, "func_name"),
-        indices.find_capture(m.captures, "arg_value"),
-    ) {
+    for &(func_key, arg_key, ref pos) in ARG_POSITION_CAPTURES {
+        let Some(func_cap) = indices.find_capture(m.captures, func_key) else {
+            continue;
+        };
+        let Some(arg_cap) = indices.find_capture(m.captures, arg_key) else {
+            continue;
+        };
+
         let func_name = func_cap.node.text_or_default(content);
         let arg_value = arg_cap.node.text_or_default(content);
-
-        // Check if this is an aliased import
         let original_name = aliases.get(&func_name).unwrap_or(&func_name);
 
-        if let Some(pattern) = patterns
+        let Some(pattern) = patterns
             .iter()
-            .find(|p| p.name == original_name && p.arg_position == ArgPosition::First)
-        {
-            let parameters = indices
-                .find_capture(m.captures, "invoke_args")
-                .map(|cap| extract_ts_params(cap.node, content));
+            .find(|p| p.name == original_name && p.arg_position == *pos)
+        else {
+            continue;
+        };
 
-            let return_type = indices
-                .find_capture(m.captures, "type_args")
-                .map(|cap| cap.node.text_or_default(content));
+        let parameters = indices
+            .find_capture(m.captures, "invoke_args")
+            .map(|cap| extract_ts_params(cap.node, content));
 
-            return Some(
-                FindingBuilder::new(
-                    arg_value,
-                    pattern.entity,
-                    pattern.behavior,
-                    adjust_range(
-                        Range {
-                            start: point_to_position(arg_cap.node.start_position()),
-                            end: point_to_position(arg_cap.node.end_position()),
-                        },
-                        line_offset,
-                    ),
-                )
-                .with_parameters_opt(parameters)
-                .with_return_type_opt(return_type)
-                .build(),
-            );
-        }
-    }
+        let return_type = indices
+            .find_capture(m.captures, "type_args")
+            .map(|cap| cap.node.text_or_default(content));
 
-    // Try second argument pattern
-    if let (Some(func_cap), Some(arg_cap)) = (
-        indices.find_capture(m.captures, "func_name_second"),
-        indices.find_capture(m.captures, "arg_value_second"),
-    ) {
-        let func_name = func_cap.node.text_or_default(content);
-        let arg_value = arg_cap.node.text_or_default(content);
-
-        let original_name = aliases.get(&func_name).unwrap_or(&func_name);
-
-        if let Some(pattern) = patterns
-            .iter()
-            .find(|p| p.name == original_name && p.arg_position == ArgPosition::Second)
-        {
-            let parameters = indices
-                .find_capture(m.captures, "invoke_args")
-                .map(|cap| extract_ts_params(cap.node, content));
-
-            let return_type = indices
-                .find_capture(m.captures, "type_args")
-                .map(|cap| cap.node.text_or_default(content));
-
-            return Some(
-                FindingBuilder::new(
-                    arg_value,
-                    pattern.entity,
-                    pattern.behavior,
-                    adjust_range(
-                        Range {
-                            start: point_to_position(arg_cap.node.start_position()),
-                            end: point_to_position(arg_cap.node.end_position()),
-                        },
-                        line_offset,
-                    ),
-                )
-                .with_parameters_opt(parameters)
-                .with_return_type_opt(return_type)
-                .build(),
-            );
-        }
+        return Some(
+            FindingBuilder::new(
+                arg_value,
+                pattern.entity,
+                pattern.behavior,
+                adjust_range(
+                    Range {
+                        start: point_to_position(arg_cap.node.start_position()),
+                        end: point_to_position(arg_cap.node.end_position()),
+                    },
+                    line_offset,
+                ),
+            )
+            .with_parameters_opt(parameters)
+            .with_return_type_opt(return_type)
+            .build(),
+        );
     }
 
     None
@@ -208,6 +234,16 @@ pub fn parse_frontend(
             "invoke_args",
             "interface_def",
             "interface_name",
+            "specta_call_object",
+            "specta_call_method",
+            "specta_await_object",
+            "specta_await_method",
+            "specta_ns_object",
+            "specta_ns_commands",
+            "specta_ns_method",
+            "specta_ns_await_object",
+            "specta_ns_await_commands",
+            "specta_ns_await_method",
         ],
     );
 
@@ -232,17 +268,40 @@ pub fn parse_frontend(
         }
     }
 
-    // Second pass: collect function calls
+    // Second pass: collect function calls and Specta calls
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
+        // Try Specta patterns first
+        if let Some(finding) = process_specta_call_match(m, &indices, content, line_offset) {
+            findings.push(finding);
+            continue;
+        }
+
+        // Try regular function call patterns
         if let Some(finding) =
             process_function_call_match(m, &indices, content, line_offset, &aliases, &all_patterns)
         {
             findings.push(finding);
         }
     }
+
+    // Deduplicate findings that share the same (key, entity, behavior, range).
+    // This happens when `await commands.method()` matches both the direct and await
+    // tree-sitter patterns, producing identical findings.
+    let mut seen = std::collections::HashSet::new();
+    findings.retain(|f| {
+        seen.insert((
+            f.key.clone(),
+            f.entity,
+            f.behavior,
+            f.range.start.line,
+            f.range.start.character,
+            f.range.end.line,
+            f.range.end.character,
+        ))
+    });
 
     Ok(findings)
 }

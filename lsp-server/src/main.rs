@@ -189,26 +189,23 @@ impl Backend {
             return;
         }
 
-        // Determine path to bindings
-        let bindings_path = if let Some(paths) = &config.type_bindings_paths {
-            paths.first().map(PathBuf::from)
-        } else {
-            bindings_reader::find_bindings_file(root)
-        };
+        // Clear old bindings registry before reloading
+        self.project_index.clear_bindings_registry();
 
-        if let Some(path) = bindings_path {
+        // Determine paths to bindings files
+        let bindings_files = bindings_reader::find_bindings_files(root, &config);
+
+        for path in bindings_files {
             self.log_dev_info(&format!("Loading bindings from {}", path.display()))
                 .await;
             if let Err(e) = bindings_reader::read_bindings(&path, &self.project_index) {
                 self.log_dev_info(&format!("Failed to read bindings: {e}"))
                     .await;
-            } else {
-                let count = self.project_index.bindings_cache.len();
-                self.log_dev_info(&format!("Loaded {count} bindings")).await;
             }
-        } else {
-            self.log_dev_info("No bindings file found").await;
         }
+
+        let count = self.project_index.bindings_cache.len();
+        self.log_dev_info(&format!("Loaded {count} bindings")).await;
     }
 
     /// Spawn background indexing task for all roots

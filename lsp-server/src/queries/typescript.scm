@@ -179,3 +179,72 @@
     ) ?
   )
 ) @binding_func_def
+
+; === BINDINGS - OBJECT METHODS (SPECTA & TYPEGEN) ===
+
+; Method inside exported object: export const commands = { async methodName(...) { ... } }
+; Used by both tauri-specta and tauri-plugin-typegen
+; Specta: return await TAURI_INVOKE("command_name", { args })
+; Typegen: return await invoke("command_name", { args })
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @specta_object_name
+      value: (object
+        (method_definition
+          name: (property_identifier) @specta_method_name
+          parameters: (formal_parameters) @specta_method_params
+          return_type: (type_annotation (_) ? @specta_method_return) ?
+          body: (statement_block) @specta_method_body
+        )
+      )
+    )
+  )
+) @specta_binding_method
+
+; === USER CODE - CALL PATTERNS (SPECTA & TYPEGEN) ===
+
+; commands.methodName(args)
+; Works for both Specta and Typegen bindings
+(call_expression
+  function: (member_expression
+    object: (identifier) @specta_call_object
+    property: (property_identifier) @specta_call_method)
+  arguments: (arguments) @specta_call_args
+) @specta_call_direct
+
+; await commands.methodName(args)
+; Works for both Specta and Typegen bindings
+(await_expression
+  (call_expression
+    function: (member_expression
+      object: (identifier) @specta_await_object
+      property: (property_identifier) @specta_await_method)
+    arguments: (arguments) @specta_await_args
+  )
+) @specta_call_await
+
+; Namespace.commands.methodName(args)
+; Works for both Specta and Typegen namespaced imports
+; e.g., import * as Specta from './bindings' or import * as Typegen from './bindings'
+(call_expression
+  function: (member_expression
+    object: (member_expression
+      object: (identifier) @specta_ns_object
+      property: (property_identifier) @specta_ns_commands)
+    property: (property_identifier) @specta_ns_method)
+  arguments: (arguments) @specta_ns_args
+) @specta_ns_call
+
+; await Namespace.commands.methodName(args)
+; Works for both Specta and Typegen namespaced imports
+(await_expression
+  (call_expression
+    function: (member_expression
+      object: (member_expression
+        object: (identifier) @specta_ns_await_object
+        property: (property_identifier) @specta_ns_await_commands)
+      property: (property_identifier) @specta_ns_await_method)
+    arguments: (arguments) @specta_ns_await_args
+  )
+) @specta_ns_call_await

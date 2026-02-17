@@ -10,7 +10,7 @@ use crate::syntax::{Behavior, EntityType};
 use cache::CacheManager;
 use dashmap::DashMap;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tower_lsp_server::ls_types::{Position, Range, SymbolInformation};
 
@@ -123,6 +123,11 @@ pub struct ProjectIndex {
     pub bindings_cache: DashMap<String, BindingEntry>,
     /// Cache of type definitions from external generators (ts-rs, specta, typegen)
     pub types_cache: DashMap<String, ExternalTypeEntry>,
+    /// Maps camelCase method names to (snake_case command name, binding source)
+    /// e.g., "getUserProfile" → ("get_user_profile", BindingSource::Specta)
+    pub method_map: DashMap<String, (String, BindingSource)>,
+    /// Registry of bindings file paths to prevent them from being processed as normal files
+    pub bindings_file_paths: DashMap<PathBuf, ()>,
     cache: CacheManager,
     // Parse errors by file path
     pub parse_errors: DashMap<PathBuf, String>,
@@ -137,6 +142,8 @@ impl Default for ProjectIndex {
             file_map: DashMap::new(),
             bindings_cache: DashMap::new(),
             types_cache: DashMap::new(),
+            method_map: DashMap::new(),
+            bindings_file_paths: DashMap::new(),
             cache: CacheManager::new(),
             parse_errors: DashMap::new(),
             reference_limit: AtomicUsize::new(3),
@@ -492,5 +499,21 @@ impl ProjectIndex {
         self.cache.diagnostic_info.insert(key.clone(), info.clone());
 
         info
+    }
+
+    /// Register a file as a bindings file (to prevent normal processing)
+    pub fn register_bindings_file(&self, path: PathBuf) {
+        self.bindings_file_paths.insert(path, ());
+    }
+
+    /// Check if a file is registered as a bindings file
+    pub fn is_bindings_file(&self, path: &Path) -> bool {
+        self.bindings_file_paths.contains_key(path)
+    }
+
+    /// Clear the bindings file registry (used during reload)
+    pub fn clear_bindings_registry(&self) {
+        self.bindings_file_paths.clear();
+        self.method_map.clear();
     }
 }

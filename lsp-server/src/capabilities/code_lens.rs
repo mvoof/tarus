@@ -12,8 +12,7 @@ pub fn handle_code_lens(
 ) -> Option<Vec<CodeLens>> {
     let uri = params.text_document.uri;
 
-    let path_cow = uri.to_file_path()?;
-    let path: PathBuf = path_cow.into_owned();
+    let path = super::uri_to_path(&uri)?;
     let lens_data = project_index.get_lens_data(&path);
 
     if lens_data.is_empty() {

@@ -20,8 +20,16 @@ const EXCLUDED_FILES: &[&str] = &["vite.config.ts"];
 /// Ignored file suffixes list
 const EXCLUDED_FILE_SUFFIXES: &[&str] = &[".d.ts"];
 
-/// List of extensions that are supported by the parser
-const TARGET_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
+use crate::file_processor::SUPPORTED_EXTENSIONS;
+
+/// Check if a path looks like a generated bindings file
+/// (e.g. inside `/bindings/` or named `bindings.ts`)
+#[must_use]
+pub fn is_generated_bindings_path(path_str: &str) -> bool {
+    path_str.contains("/bindings/")
+        || path_str.contains("\\bindings\\")
+        || path_str.ends_with("bindings.ts")
+}
 
 /// Returns true if the path should be IGNORED based on project settings
 #[must_use]
@@ -50,8 +58,9 @@ fn is_tauri_config_path(path: &Path) -> bool {
         .is_some_and(|name| name.to_lowercase().starts_with("tauri"))
 }
 
-/// Helper: Find the first Tauri configuration file in the directory tree
-fn find_tauri_config(root: &Path) -> Option<PathBuf> {
+/// Find the first Tauri configuration file in the directory tree
+#[must_use]
+pub fn find_tauri_config(root: &Path) -> Option<PathBuf> {
     WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -90,7 +99,7 @@ pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
             e.path()
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| TARGET_EXTENSIONS.contains(&ext))
+                .is_some_and(|ext| SUPPORTED_EXTENSIONS.contains(&ext))
         })
         .map(walkdir::DirEntry::into_path)
         .collect()

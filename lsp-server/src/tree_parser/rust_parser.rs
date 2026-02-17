@@ -250,42 +250,40 @@ fn resolve_variable_type(node: tree_sitter::Node, content: &str) -> Option<Strin
         }
     }
 
-    // Check function parameters
-    if current.kind() == "function_item" {
-        if let Some(params) = current.child_by_field_name("parameters") {
-            let mut cursor = params.walk();
-            for child in params.children(&mut cursor) {
-                if child.kind() == "parameter" {
-                    let name_node = child.child_by_field_name("pattern");
-                    let type_node = child.child_by_field_name("type");
-                    if let (Some(n), Some(t)) = (name_node, type_node) {
-                        if n.text_or_default(content) == var_name {
-                            return Some(t.text_or_default(content));
-                        }
-                    }
-                }
-            }
+    // Check function parameters (current node or its parent)
+    let func_node = if current.kind() == "function_item" {
+        Some(current)
+    } else {
+        current.parent().filter(|p| p.kind() == "function_item")
+    };
+    if let Some(func) = func_node {
+        if let Some(result) = find_param_type(func, &var_name, content) {
+            return Some(result);
         }
-    } else if let Some(func) = current.parent() {
-        // Block's parent might be the function_item
-        if func.kind() == "function_item" {
-            if let Some(params) = func.child_by_field_name("parameters") {
-                let mut cursor = params.walk();
-                for child in params.children(&mut cursor) {
-                    if child.kind() == "parameter" {
-                        let name_node = child.child_by_field_name("pattern");
-                        let type_node = child.child_by_field_name("type");
-                        if let (Some(n), Some(t)) = (name_node, type_node) {
-                            if n.text_or_default(content) == var_name {
-                                return Some(t.text_or_default(content));
-                            }
-                        }
-                    }
+    }
+
+    None
+}
+
+/// Find a parameter type by name in a `function_item` node
+fn find_param_type(
+    func_node: tree_sitter::Node,
+    var_name: &str,
+    content: &str,
+) -> Option<String> {
+    let params = func_node.child_by_field_name("parameters")?;
+    let mut cursor = params.walk();
+    for child in params.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            let name_node = child.child_by_field_name("pattern");
+            let type_node = child.child_by_field_name("type");
+            if let (Some(n), Some(t)) = (name_node, type_node) {
+                if n.text_or_default(content) == var_name {
+                    return Some(t.text_or_default(content));
                 }
             }
         }
     }
-
     None
 }
 

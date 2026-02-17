@@ -13,11 +13,20 @@ pub mod hover;
 pub mod references;
 pub mod symbols;
 
+use std::path::PathBuf;
 use tower_lsp_server::ls_types::{
     CodeActionProviderCapability, CodeLensOptions, CompletionOptions, HoverProviderCapability,
     OneOf, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, TextDocumentSyncSaveOptions,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri,
 };
+
+/// Convert LSP URI to PathBuf
+///
+/// Helper to avoid repetitive `uri.to_file_path()?.into_owned()` pattern
+#[must_use]
+pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
+    uri.to_file_path().map(std::borrow::Cow::into_owned)
+}
 
 /// Build the LSP server capabilities configuration
 #[must_use]
