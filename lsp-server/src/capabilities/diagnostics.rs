@@ -244,10 +244,7 @@ fn check_parameters_diagnostics(
                         if let TypeMatch::Mismatch(detail) = result {
                             diagnostics.push(warning(
                                 loc.range,
-                                format!(
-                                    "Type mismatch for argument '{}': {detail}",
-                                    ts_p.name
-                                ),
+                                format!("Type mismatch for argument '{}': {detail}", ts_p.name),
                             ));
                         }
                     }
@@ -351,8 +348,8 @@ fn check_return_type_diagnostics(
             return diagnostics;
         }
 
-        // Without external bindings: only report mismatches when at least one side is primitive
-        if both_sides_primitive(rust_ret, ts_type) {
+        // Without external bindings: report mismatches if we can safely compare
+        if is_safe_to_compare(rust_ret, ts_type, project_index) {
             let result = compare_types(rust_ret, ts_type);
             if let TypeMatch::Mismatch(detail) = result {
                 diagnostics.push(warning(
@@ -438,7 +435,7 @@ fn check_event_payload_diagnostics(
     key: &IndexKey,
     loc: &crate::indexer::LocationInfo,
     em: &crate::indexer::LocationInfo,
-    _project_index: &ProjectIndex,
+    project_index: &ProjectIndex,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -454,16 +451,13 @@ fn check_event_payload_diagnostics(
             return diagnostics;
         }
 
-        // Without external bindings: only report mismatches when at least one side is primitive
-        if both_sides_primitive(rust_payload, ts_type) {
+        // Without external bindings: report mismatches if we can safely compare
+        if is_safe_to_compare(rust_payload, ts_type, project_index) {
             let result = compare_types(rust_payload, ts_type);
             if let TypeMatch::Mismatch(detail) = result {
                 diagnostics.push(warning(
                     loc.range,
-                    format!(
-                        "Payload type mismatch for event '{}': {detail}",
-                        key.name
-                    ),
+                    format!("Payload type mismatch for event '{}': {detail}", key.name),
                 ));
             }
         }
@@ -472,14 +466,47 @@ fn check_event_payload_diagnostics(
     diagnostics
 }
 
-/// Check if both sides of the type comparison are primitive types.
-/// When either side is a custom type (e.g., `CalculationStatus`),
-/// we can't judge compatibility without external bindings —
-/// a Rust enum could serialize to a number, string, or object.
-fn both_sides_primitive(rust_type: &str, ts_type: &str) -> bool {
+/// Check if it is safe to compare types without external bindings.
+///
+/// We can safely compare if:
+/// 1. Both sides are primitives (e.g., u8 vs number).
+/// 2. Rust side is a known Struct and TS side is a Primitive (definite mismatch, as Structs are objects).
+///
+/// We avoid comparing if Rust side is an Enum (unless we have bindings), as Enums could
+/// serialize to strings, numbers, or objects.
+fn is_safe_to_compare(rust_type: &str, ts_type: &str, project_index: &ProjectIndex) -> bool {
     const TS_PRIMITIVES: &[&str] = &[
-        "string", "number", "boolean", "void", "null", "undefined", "never",
+        "string",
+        "number",
+        "boolean",
+        "void",
+        "null",
+        "undefined",
+        "never",
     ];
+
     let rust_base = crate::syntax::extract_result_ok_type(rust_type);
-    is_primitive_rust_type(rust_base) && TS_PRIMITIVES.contains(&ts_type)
+    let rust_base_clean = crate::syntax::get_base_rust_type(rust_base);
+
+    let is_rust_primitive = is_primitive_rust_type(rust_base);
+    let is_ts_primitive = TS_PRIMITIVES.contains(&ts_type);
+
+    // Case 1: Both are primitives -> Safe to compare
+    if is_rust_primitive && is_ts_primitive {
+        return true;
+    }
+
+    // Case 2: Rust is a Struct (Object) vs TS Primitive -> Safe mismatch
+    // We check if the Rust type is indexed as a Struct
+    // Note: get_locations returns a list, check if any definitions exist for Struct
+    if !project_index
+        .get_locations(EntityType::Struct, &rust_base_clean)
+        .is_empty()
+        && is_ts_primitive
+    {
+        return true;
+    }
+
+    // Default: Unsafe to compare (might be Enum, Alias, or unknown)
+    false
 }
