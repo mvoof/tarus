@@ -185,27 +185,28 @@ impl Backend {
         };
 
         let config = self.bindings_config.read().await;
-        if !config.type_safety_enabled {
-            return;
+
+        // Load all bindings (clears old registry first)
+        let result = bindings_reader::load_all_bindings(root, &config, &self.project_index, true);
+
+        // Log results in developer mode
+        if result.loaded > 0 {
+            self.log_dev_info(&format!("Loaded {} bindings file(s)", result.loaded))
+                .await;
         }
 
-        // Clear old bindings registry before reloading
-        self.project_index.clear_bindings_registry();
-
-        // Determine paths to bindings files
-        let bindings_files = bindings_reader::find_bindings_files(root, &config);
-
-        for path in bindings_files {
-            self.log_dev_info(&format!("Loading bindings from {}", path.display()))
-                .await;
-            if let Err(e) = bindings_reader::read_bindings(&path, &self.project_index) {
-                self.log_dev_info(&format!("Failed to read bindings: {e}"))
-                    .await;
-            }
+        for (path, error) in &result.errors {
+            self.log_dev_info(&format!(
+                "Failed to read bindings from {}: {}",
+                path.display(),
+                error
+            ))
+            .await;
         }
 
         let count = self.project_index.bindings_cache.len();
-        self.log_dev_info(&format!("Loaded {count} bindings")).await;
+        self.log_dev_info(&format!("Total {count} bindings in cache"))
+            .await;
     }
 
     /// Spawn background indexing task for all roots
@@ -220,6 +221,36 @@ impl Backend {
             bindings_config,
         );
     }
+}
+
+/// Macro to eliminate LSP handler boilerplate.
+///
+/// Handles the common 7-step pattern:
+/// 1. Extract URI from params
+/// 2. Convert to file path (return Ok(None) if not a file URI)
+/// 3. Check if path is ignored (return Ok(None) if so)
+/// 4. Log the incoming request (dev mode only)
+/// 5. Call the actual handler
+/// 6. Log the result (dev mode only)
+/// 7. Return Ok(result)
+macro_rules! lsp_handler {
+    ($self:ident, $name:expr, $uri:expr, $handler:expr) => {{
+        let uri = $uri;
+        let Some(path) = uri.to_file_path() else {
+            return Ok(None);
+        };
+        if scanner::is_ignored(&path) {
+            return Ok(None);
+        }
+        $self.log_dev_info(&format!("➡️ Request: {}", $name)).await;
+        let result = $handler;
+        if result.is_some() {
+            $self.log_dev_info(&format!("✅ {} completed", $name)).await;
+        } else {
+            $self.log_dev_info(&format!("⚠️ {} returned no results", $name)).await;
+        }
+        Ok(result)
+    }};
 }
 
 /// Helper: Extract path and content from document change params
@@ -300,255 +331,97 @@ impl LanguageServer for Backend {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-
-        let Some(path) = uri.to_file_path() else {
-            return Ok(None);
-        };
-
-        if scanner::is_ignored(&path) {
-            return Ok(None);
-        }
-
-        self.log_dev_info(&format!(
-            "➡️ Request: Definition at {:?} line: {}, char: {}",
-            uri, position.line, position.character
-        ))
-        .await;
-
-        let result = capabilities::definition::handle_goto_definition(params, &self.project_index);
-
-        if let Some(GotoDefinitionResponse::Link(ref links)) = result {
-            self.log_dev_info(&format!("✅ Found {} definition links", links.len()))
-                .await;
-        } else {
-            self.log_dev_info("⚠️ No definitions found").await;
-        }
-
-        Ok(result)
+        lsp_handler!(
+            self,
+            "Definition",
+            &params.text_document_position_params.text_document.uri,
+            capabilities::definition::handle_goto_definition(params, &self.project_index)
+        )
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-        let uri = &params.text_document_position.text_document.uri;
-        let position = params.text_document_position.position;
-
-        let Some(path) = uri.to_file_path() else {
-            return Ok(None);
-        };
-
-        if scanner::is_ignored(&path) {
-            return Ok(None);
-        }
-
-        self.log_dev_info(&format!(
-            "➡️ Request: References at {:?} line: {}, char: {}",
-            uri, position.line, position.character
-        ))
-        .await;
-
-        let result = capabilities::references::handle_references(params, &self.project_index);
-
-        if let Some(ref locations) = result {
-            self.log_dev_info(&format!("✅ Found {} references", locations.len()))
-                .await;
-        } else {
-            self.log_dev_info("⚠️ No references found").await;
-        }
-
-        Ok(result)
+        lsp_handler!(
+            self,
+            "References",
+            &params.text_document_position.text_document.uri,
+            capabilities::references::handle_references(params, &self.project_index)
+        )
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
-        let uri = &params.text_document.uri;
-        let Some(path) = uri.to_file_path() else {
-            return Ok(None);
-        };
-
-        if scanner::is_ignored(&path) {
-            return Ok(None);
-        }
-
-        self.log_dev_info(&format!("➡️ Request: CodeLens for {uri:?}"))
-            .await;
-
-        let result = capabilities::code_lens::handle_code_lens(params, &self.project_index);
-
-        if let Some(ref lenses) = result {
-            self.log_dev_info(&format!("✅ Generated {} code lenses", lenses.len()))
-                .await;
-        } else {
-            self.log_dev_info("⚠️ No code lenses found").await;
-        }
-
-        Ok(result)
+        lsp_handler!(
+            self,
+            "CodeLens",
+            &params.text_document.uri,
+            capabilities::code_lens::handle_code_lens(params, &self.project_index)
+        )
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-
-        let Some(path) = uri.to_file_path() else {
-            return Ok(None);
-        };
-
-        if scanner::is_ignored(&path) {
-            return Ok(None);
-        }
-
-        self.log_dev_info(&format!(
-            "➡️ Request: Hover at {:?} line: {}, char: {}",
-            uri, position.line, position.character
-        ))
-        .await;
-
-        let result = capabilities::hover::handle_hover(params, &self.project_index);
-
-        if result.is_some() {
-            self.log_dev_info("✅ Generated hover tooltip").await;
-        } else {
-            self.log_dev_info("⚠️ No hover info available").await;
-        }
-
-        Ok(result)
+        lsp_handler!(
+            self,
+            "Hover",
+            &params.text_document_position_params.text_document.uri,
+            capabilities::hover::handle_hover(params, &self.project_index)
+        )
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        let uri = &params.text_document.uri;
-        let position = params.range.start;
-
-        let Some(path) = uri.to_file_path() else {
-            return Ok(None);
-        };
-
-        if scanner::is_ignored(&path) {
-            return Ok(None);
-        }
-
-        self.log_dev_info(&format!(
-            "➡️ Request: CodeAction at {:?} line: {}, char: {}",
-            uri, position.line, position.character
-        ))
-        .await;
-
-        let result = capabilities::code_actions::handle_code_action(
-            &params,
-            &self.project_index,
-            self.workspace_roots
-                .get()
-                .and_then(|r| r.first().map(PathBuf::as_path)),
-        );
-
-        if let Some(ref actions) = result {
-            self.log_dev_info(&format!("✅ Generated {} code actions", actions.len()))
-                .await;
-        } else {
-            self.log_dev_info("⚠️ No code actions available").await;
-        }
-
-        Ok(result)
+        lsp_handler!(
+            self,
+            "CodeAction",
+            &params.text_document.uri,
+            capabilities::code_actions::handle_code_action(
+                &params,
+                &self.project_index,
+                self.workspace_roots
+                    .get()
+                    .and_then(|r| r.first().map(PathBuf::as_path)),
+            )
+        )
     }
 
     async fn document_symbol(
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
-        let uri = &params.text_document.uri;
-
-        if let Some(path) = uri.to_file_path() {
-            if scanner::is_ignored(&path) {
-                return Ok(None);
-            }
-        }
-
-        self.log_dev_info(&format!("➡️ Request: DocumentSymbol for {uri:?}"))
-            .await;
-
-        let result = capabilities::symbols::handle_document_symbol(params, &self.project_index);
-
-        if let Some(ref response) = result {
-            match response {
-                DocumentSymbolResponse::Flat(syms) => {
-                    self.log_dev_info(&format!("✅ Found {} document symbols", syms.len()))
-                        .await;
-                }
-                DocumentSymbolResponse::Nested(syms) => {
-                    self.log_dev_info(&format!("✅ Found {} nested document symbols", syms.len()))
-                        .await;
-                }
-            }
-        } else {
-            self.log_dev_info("⚠️ No document symbols found").await;
-        }
-
-        Ok(result)
+        lsp_handler!(
+            self,
+            "DocumentSymbol",
+            &params.text_document.uri,
+            capabilities::symbols::handle_document_symbol(params, &self.project_index)
+        )
     }
 
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<WorkspaceSymbolResponse>> {
-        self.log_dev_info(&format!(
-            "➡️ Request: WorkspaceSymbol query: '{}'",
-            params.query
-        ))
-        .await;
+        self.log_dev_info(&format!("➡️ Request: WorkspaceSymbol '{}'", params.query))
+            .await;
 
         let result = capabilities::symbols::handle_workspace_symbol(&params, &self.project_index);
 
-        if let Some(ref response) = result {
-            match response {
-                WorkspaceSymbolResponse::Flat(syms) => {
-                    self.log_dev_info(&format!("✅ Found {} workspace symbols", syms.len()))
-                        .await;
-                }
-                WorkspaceSymbolResponse::Nested(syms) => {
-                    self.log_dev_info(&format!("✅ Found {} workspace symbols", syms.len()))
-                        .await;
-                }
-            }
+        if result.is_some() {
+            self.log_dev_info("✅ WorkspaceSymbol completed").await;
         } else {
-            self.log_dev_info("⚠️ No workspace symbols found").await;
+            self.log_dev_info("⚠️ WorkspaceSymbol returned no results").await;
         }
 
         Ok(result)
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        let uri = &params.text_document_position.text_document.uri;
-        if let Some(path) = uri.to_file_path() {
-            if scanner::is_ignored(&path) {
-                return Ok(None);
-            }
-        }
-
-        self.log_dev_info("➡️ Request: Completion").await;
-
-        let result = capabilities::completion::handle_completion(
-            &params,
-            &self.project_index,
-            &self.document_cache,
-        );
-
-        if let Some(ref response) = result {
-            match response {
-                CompletionResponse::Array(items) => {
-                    self.log_dev_info(&format!("✅ Generated {} completion items", items.len()))
-                        .await;
-                }
-                CompletionResponse::List(list) => {
-                    self.log_dev_info(&format!(
-                        "✅ Generated {} completion items",
-                        list.items.len()
-                    ))
-                    .await;
-                }
-            }
-        } else {
-            self.log_dev_info("⚠️ No completions available").await;
-        }
-
-        Ok(result)
+        lsp_handler!(
+            self,
+            "Completion",
+            &params.text_document_position.text_document.uri,
+            capabilities::completion::handle_completion(
+                &params,
+                &self.project_index,
+                &self.document_cache,
+            )
+        )
     }
 
     // =============================================================================

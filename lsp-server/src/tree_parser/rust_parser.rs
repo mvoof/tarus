@@ -1,18 +1,18 @@
 //! Rust language parser using tree-sitter
 
 use crate::indexer::Finding;
-use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
+use crate::syntax::{Behavior, EntityType, ParseResult};
 use std::collections::HashMap;
 use streaming_iterator::StreamingIterator;
 use tower_lsp_server::ls_types::Range;
-use tree_sitter::{Language, Parser, Query, QueryCursor};
+use tree_sitter::Language;
 
 use super::extractors::{
     extract_rust_enum_variants, extract_rust_params, extract_rust_struct_fields, FindingBuilder,
 };
 use super::patterns::get_rust_event_patterns;
 use super::query_helpers::CaptureIndices;
-use super::utils::{get_query_source, point_to_position, LangType, NodeTextExt};
+use super::utils::{get_query_source, point_to_position, LangType, NodeTextExt, ParseContext};
 
 // Local pattern definition removed - using patterns::get_rust_event_patterns
 
@@ -266,11 +266,7 @@ fn resolve_variable_type(node: tree_sitter::Node, content: &str) -> Option<Strin
 }
 
 /// Find a parameter type by name in a `function_item` node
-fn find_param_type(
-    func_node: tree_sitter::Node,
-    var_name: &str,
-    content: &str,
-) -> Option<String> {
+fn find_param_type(func_node: tree_sitter::Node, var_name: &str, content: &str) -> Option<String> {
     let params = func_node.child_by_field_name("parameters")?;
     let mut cursor = params.walk();
     for child in params.children(&mut cursor) {
@@ -346,36 +342,14 @@ pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Find
     let mut findings = Vec::new();
 
     let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
-    let mut parser = Parser::new();
 
-    parser.set_language(&ts_lang).map_err(|e| {
-        ParseError::Language(
-            format!("Failed to set Rust language: {e}"),
-            Some(path.to_string_lossy().to_string()),
-        )
-    })?;
-
-    let tree = parser.parse(content, None).ok_or_else(|| {
-        ParseError::Syntax(
-            "Failed to parse Rust file".to_string(),
-            Some(path.to_string_lossy().to_string()),
-        )
-    })?;
-
-    let query_src = get_query_source(LangType::Rust);
-    let query = Query::new(&ts_lang, query_src).map_err(|e| {
-        ParseError::Query(
-            format!("Failed to create Rust query: {e}"),
-            Some(path.to_string_lossy().to_string()),
-        )
-    })?;
-
-    let mut cursor = QueryCursor::new();
-    let root = tree.root_node();
+    let ctx = ParseContext::new(&ts_lang, get_query_source(LangType::Rust), content, path)?;
+    let mut cursor = ctx.cursor();
+    let root = ctx.root_node();
 
     // Get capture indices using helper
     let indices = CaptureIndices::from_query(
-        &query,
+        &ctx.query,
         &[
             "command_name",
             "command_params",
@@ -394,7 +368,7 @@ pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Find
 
     let rust_event_patterns = get_rust_event_patterns();
 
-    let mut matches = cursor.matches(&query, root, content.as_bytes());
+    let mut matches = cursor.matches(&ctx.query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
         if let Some(finding) = process_struct_match(m, &indices, content) {

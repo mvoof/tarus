@@ -1,7 +1,9 @@
 //! Common utilities for tree-sitter parsing
 
+use crate::syntax::{ParseError, ParseResult};
+use std::path::Path;
 use tower_lsp_server::ls_types::{Position, Range};
-use tree_sitter::Node;
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor, Tree};
 
 /// Extension trait for convenient text extraction from tree-sitter nodes
 pub trait NodeTextExt {
@@ -79,5 +81,66 @@ pub fn adjust_range(range: Range, line_offset: usize) -> Range {
     Range {
         start: adjust_position(range.start, line_offset),
         end: adjust_position(range.end, line_offset),
+    }
+}
+
+/// Parse context encapsulating tree-sitter parser setup
+///
+/// This struct eliminates boilerplate by providing a single initialization
+/// point for Parser -> Language -> Tree -> Query setup.
+pub struct ParseContext {
+    pub tree: Tree,
+    pub query: Query,
+    pub language: Language,
+}
+
+impl ParseContext {
+    /// Initialize parser, parse content, and compile query
+    ///
+    /// # Errors
+    ///
+    /// Returns `ParseError` if:
+    /// - Language cannot be set on parser
+    /// - Content cannot be parsed
+    /// - Query cannot be compiled
+    pub fn new(
+        lang: &Language,
+        query_source: &str,
+        content: &str,
+        path: &Path,
+    ) -> ParseResult<Self> {
+        let mut parser = Parser::new();
+        parser.set_language(lang).map_err(|e| {
+            ParseError::Language(e.to_string(), Some(path.to_string_lossy().to_string()))
+        })?;
+
+        let tree = parser.parse(content, None).ok_or_else(|| {
+            ParseError::Syntax(
+                "Failed to parse".to_string(),
+                Some(path.to_string_lossy().to_string()),
+            )
+        })?;
+
+        let query = Query::new(lang, query_source).map_err(|e| {
+            ParseError::Query(e.to_string(), Some(path.to_string_lossy().to_string()))
+        })?;
+
+        Ok(Self {
+            tree,
+            query,
+            language: lang.clone(),
+        })
+    }
+
+    /// Create a new query cursor for iterating over matches
+    #[must_use]
+    pub fn cursor(&self) -> QueryCursor {
+        QueryCursor::new()
+    }
+
+    /// Get the root node of the parsed tree
+    #[must_use]
+    pub fn root_node(&self) -> Node {
+        self.tree.root_node()
     }
 }

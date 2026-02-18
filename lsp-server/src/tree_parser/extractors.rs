@@ -84,94 +84,6 @@ pub fn extract_rust_enum_variants(node: Node, content: &str) -> Vec<Parameter> {
     variants
 }
 
-/// Extract detailed Rust enum variants with type information
-#[must_use]
-#[allow(dead_code)] // Infrastructure for future full enum variant support
-pub fn extract_enum_variants_detailed(node: Node, content: &str) -> Vec<crate::indexer::EnumVariant> {
-    let mut variants = Vec::new();
-    let mut cursor = node.walk();
-
-    for child in node.children(&mut cursor) {
-        if child.kind() == "enum_variant_list" {
-            let mut variant_cursor = child.walk();
-
-            for variant in child.children(&mut variant_cursor) {
-                if variant.kind() == "enum_variant" {
-                    let name_node = variant.child_by_field_name("name");
-
-                    if let Some(name_n) = name_node {
-                        let name = name_n.text_or_default(content);
-
-                        // Check for struct-style fields: Name { field: Type, ... }
-                        let mut has_struct_fields = false;
-                        let mut has_tuple_fields = false;
-                        let mut fields = Vec::new();
-
-                        let mut variant_child_cursor = variant.walk();
-                        for v_child in variant.children(&mut variant_child_cursor) {
-                            match v_child.kind() {
-                                "field_declaration_list" => {
-                                    // Struct variant: Name { field: Type }
-                                    has_struct_fields = true;
-                                    let mut field_cursor = v_child.walk();
-
-                                    for field in v_child.children(&mut field_cursor) {
-                                        if field.kind() == "field_declaration" {
-                                            let field_name = field.child_by_field_name("name");
-                                            let field_type = field.child_by_field_name("type");
-
-                                            if let (Some(fn_node), Some(ft_node)) = (field_name, field_type) {
-                                                fields.push(Parameter {
-                                                    name: fn_node.text_or_default(content),
-                                                    type_name: ft_node.text_or_default(content),
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                                "tuple_type" | "ordered_field_declaration_list" => {
-                                    // Tuple variant: Name(Type1, Type2)
-                                    has_tuple_fields = true;
-                                    let mut tuple_cursor = v_child.walk();
-                                    let mut idx = 0;
-
-                                    for tuple_field in v_child.children(&mut tuple_cursor) {
-                                        // For tuple types, each child that's a type is a field
-                                        if tuple_field.kind() != "(" && tuple_field.kind() != ")" && tuple_field.kind() != "," {
-                                            fields.push(Parameter {
-                                                name: format!("_{idx}"),
-                                                type_name: tuple_field.text_or_default(content),
-                                            });
-                                            idx += 1;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        let variant_type = if has_struct_fields {
-                            crate::indexer::EnumVariantType::Struct
-                        } else if has_tuple_fields {
-                            crate::indexer::EnumVariantType::Tuple
-                        } else {
-                            crate::indexer::EnumVariantType::Unit
-                        };
-
-                        variants.push(crate::indexer::EnumVariant {
-                            name,
-                            variant_type,
-                            fields: if fields.is_empty() { None } else { Some(fields) },
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    variants
-}
-
 /// Extract TypeScript interface fields
 #[must_use]
 pub fn extract_ts_interface_fields(node: Node, content: &str) -> Vec<Parameter> {
@@ -303,7 +215,6 @@ pub struct FindingBuilder {
     return_type: Option<String>,
     fields: Option<Vec<Parameter>>,
     attributes: Option<Vec<String>>,
-    variants: Option<Vec<crate::indexer::EnumVariant>>,
 }
 
 impl FindingBuilder {
@@ -324,7 +235,6 @@ impl FindingBuilder {
             return_type: None,
             fields: None,
             attributes: None,
-            variants: None,
         }
     }
 
@@ -360,18 +270,6 @@ impl FindingBuilder {
         self
     }
 
-    /// Set enum variants (automatically converts empty Vec to None)
-    #[must_use]
-    #[allow(dead_code)] // Infrastructure for future full enum variant support
-    pub fn with_variants(mut self, variants: Vec<crate::indexer::EnumVariant>) -> Self {
-        self.variants = if variants.is_empty() {
-            None
-        } else {
-            Some(variants)
-        };
-        self
-    }
-
     /// Build the Finding object
     #[must_use]
     pub fn build(self) -> crate::indexer::Finding {
@@ -384,7 +282,6 @@ impl FindingBuilder {
             return_type: self.return_type,
             fields: self.fields,
             attributes: self.attributes,
-            variants: self.variants,
         }
     }
 }

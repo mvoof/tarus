@@ -9,9 +9,9 @@ pub mod patterns;
 pub mod query_helpers;
 pub mod rust_parser;
 mod sfc;
-mod utils;
+pub mod utils;
 
-pub use utils::LangType;
+pub use utils::{LangType, ParseContext};
 
 use crate::indexer::{FileIndex, Finding};
 use crate::syntax::ParseResult;

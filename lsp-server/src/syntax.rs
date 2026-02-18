@@ -79,6 +79,30 @@ pub struct SerdeAttributes {
     pub rename: Option<String>,
 }
 
+/// Extract a serde key-value attribute like `rename_all = "camelCase"` from an attr string
+fn extract_serde_kv(attr: &str, key: &str) -> Option<String> {
+    let start = attr.find(key)?;
+    let eq_pos = attr[start..].find('=')?;
+    extract_quoted_value(&attr[start + eq_pos + 1..])
+}
+
+/// Extract `rename = "name"` specifically, excluding `rename_all`
+fn extract_serde_rename(attr: &str) -> Option<String> {
+    let start = attr.find("rename")?;
+    let before = if start > 0 { &attr[start - 1..start] } else { "" };
+    let after = if start + 6 < attr.len() { &attr[start + 6..start + 7] } else { "" };
+
+    let not_prefix = before.chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_');
+    let not_suffix = after.chars().next().is_none_or(|c| c != '_');
+
+    if not_prefix && not_suffix {
+        let eq_pos = attr[start..].find('=')?;
+        extract_quoted_value(&attr[start + eq_pos + 1..])
+    } else {
+        None
+    }
+}
+
 /// Parse serde attributes from a list of attribute strings
 ///
 /// Extracts `rename_all`, `tag`, `content`, `skip`, and per-field `rename` attributes.
@@ -95,66 +119,18 @@ pub fn parse_serde_attributes(attributes: Option<&Vec<String>>) -> SerdeAttribut
             continue;
         }
 
-        // Extract rename_all = "strategy"
-        if let Some(start) = attr.find("rename_all") {
-            if let Some(eq_pos) = attr[start..].find('=') {
-                let after_eq = &attr[start + eq_pos + 1..];
-                if let Some(value) = extract_quoted_value(after_eq) {
-                    result.rename_all = Some(value);
-                }
-            }
+        if let Some(v) = extract_serde_kv(attr, "rename_all") {
+            result.rename_all = Some(v);
         }
-
-        // Extract tag = "field"
-        if let Some(start) = attr.find("tag") {
-            if let Some(eq_pos) = attr[start..].find('=') {
-                let after_eq = &attr[start + eq_pos + 1..];
-                if let Some(value) = extract_quoted_value(after_eq) {
-                    result.tag = Some(value);
-                }
-            }
+        if let Some(v) = extract_serde_kv(attr, "tag") {
+            result.tag = Some(v);
         }
-
-        // Extract content = "field"
-        if let Some(start) = attr.find("content") {
-            if let Some(eq_pos) = attr[start..].find('=') {
-                let after_eq = &attr[start + eq_pos + 1..];
-                if let Some(value) = extract_quoted_value(after_eq) {
-                    result.content = Some(value);
-                }
-            }
+        if let Some(v) = extract_serde_kv(attr, "content") {
+            result.content = Some(v);
         }
-
-        // Extract rename = "name"
-        if let Some(start) = attr.find("rename") {
-            // Make sure it's not rename_all
-            let before = if start > 0 {
-                &attr[start - 1..start]
-            } else {
-                ""
-            };
-            let after = if start + 6 < attr.len() {
-                &attr[start + 6..start + 7]
-            } else {
-                ""
-            };
-
-            if before
-                .chars()
-                .next()
-                .is_none_or(|c| !c.is_alphanumeric() && c != '_')
-                && after.chars().next().is_none_or(|c| c != '_')
-            {
-                if let Some(eq_pos) = attr[start..].find('=') {
-                    let after_eq = &attr[start + eq_pos + 1..];
-                    if let Some(value) = extract_quoted_value(after_eq) {
-                        result.rename = Some(value);
-                    }
-                }
-            }
+        if let Some(v) = extract_serde_rename(attr) {
+            result.rename = Some(v);
         }
-
-        // Check for skip
         if attr.contains("skip") && !attr.contains("skip_serializing_if") {
             result.skip = true;
         }
@@ -658,4 +634,3 @@ pub fn parse_kv_pair<S: std::hash::BuildHasher>(
         map.insert(key, value);
     }
 }
-

@@ -4,6 +4,7 @@
 //! command signatures and types.
 
 use crate::indexer::{BindingEntry, BindingSource, ExternalTypeEntry, Parameter, ProjectIndex};
+use crate::tree_parser::utils::ParseContext;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use streaming_iterator::StreamingIterator;
@@ -18,6 +19,15 @@ pub struct BindingsConfig {
     pub type_safety_enabled: bool,
 }
 
+/// Result of loading bindings files
+#[derive(Debug, Clone)]
+pub struct LoadResult {
+    /// Number of successfully loaded files
+    pub loaded: usize,
+    /// Errors encountered during loading (path, error message)
+    pub errors: Vec<(PathBuf, String)>,
+}
+
 impl Default for BindingsConfig {
     fn default() -> Self {
         Self {
@@ -25,6 +35,56 @@ impl Default for BindingsConfig {
             type_safety_enabled: true,
         }
     }
+}
+
+/// Load all bindings files for a project
+///
+/// This unified function handles bindings discovery and loading with comprehensive
+/// error tracking. It's used by initialization, hot-reload, and manual sync commands.
+///
+/// # Arguments
+/// * `project_root` - Root directory of the project
+/// * `config` - Bindings configuration (paths, enabled state)
+/// * `project_index` - Index to populate with bindings
+/// * `clear_first` - Whether to clear existing bindings before loading
+///
+/// # Returns
+/// `LoadResult` containing count of loaded files and any errors encountered
+pub fn load_all_bindings(
+    project_root: &Path,
+    config: &BindingsConfig,
+    project_index: &ProjectIndex,
+    clear_first: bool,
+) -> LoadResult {
+    // Early return if type safety is disabled
+    if !config.type_safety_enabled {
+        return LoadResult {
+            loaded: 0,
+            errors: vec![],
+        };
+    }
+
+    // Clear existing bindings if requested
+    if clear_first {
+        project_index.clear_bindings_registry();
+    }
+
+    // Discover bindings files
+    let files = find_bindings_files(project_root, config);
+    let mut result = LoadResult {
+        loaded: 0,
+        errors: vec![],
+    };
+
+    // Load each file
+    for path in files {
+        match read_bindings(&path, project_index) {
+            Ok(()) => result.loaded += 1,
+            Err(e) => result.errors.push((path, e.to_string())),
+        }
+    }
+
+    result
 }
 
 /// Find all bindings files using enhanced auto-discovery
@@ -181,6 +241,100 @@ fn extract_export_path(content: &str) -> Option<String> {
     None
 }
 
+/// Captured values from a single tree-sitter match
+struct BindingCaptures<'a> {
+    func_name: Option<String>,
+    params_node: Option<tree_sitter::Node<'a>>,
+    return_type_node: Option<tree_sitter::Node<'a>>,
+    type_name: Option<String>,
+    type_value_node: Option<tree_sitter::Node<'a>>,
+    iface_name: Option<String>,
+    iface_body_node: Option<tree_sitter::Node<'a>>,
+    specta_object_name: Option<String>,
+    specta_method_name: Option<String>,
+    specta_method_name_node: Option<tree_sitter::Node<'a>>,
+    specta_params_node: Option<tree_sitter::Node<'a>>,
+    specta_return_node: Option<tree_sitter::Node<'a>>,
+}
+
+impl<'a> BindingCaptures<'a> {
+    /// Create empty captures
+    fn new() -> Self {
+        Self {
+            func_name: None,
+            params_node: None,
+            return_type_node: None,
+            type_name: None,
+            type_value_node: None,
+            iface_name: None,
+            iface_body_node: None,
+            specta_object_name: None,
+            specta_method_name: None,
+            specta_method_name_node: None,
+            specta_params_node: None,
+            specta_return_node: None,
+        }
+    }
+
+    /// Extract captures from a match result
+    fn from_match(
+        match_result: &tree_sitter::QueryMatch<'a, 'a>,
+        content: &str,
+        func_name_idx: Option<u32>,
+        func_params_idx: Option<u32>,
+        return_type_idx: Option<u32>,
+        type_name_idx: Option<u32>,
+        type_value_idx: Option<u32>,
+        interface_name_idx: Option<u32>,
+        interface_body_idx: Option<u32>,
+        specta_object_name_idx: Option<u32>,
+        specta_method_name_idx: Option<u32>,
+        specta_method_params_idx: Option<u32>,
+        specta_method_return_idx: Option<u32>,
+    ) -> Self {
+        let mut captures = Self::new();
+
+        for capture in match_result.captures {
+            if Some(capture.index) == func_name_idx {
+                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
+                    captures.func_name = Some(text.to_string());
+                }
+            } else if Some(capture.index) == func_params_idx {
+                captures.params_node = Some(capture.node);
+            } else if Some(capture.index) == return_type_idx {
+                captures.return_type_node = Some(capture.node);
+            } else if Some(capture.index) == type_name_idx {
+                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
+                    captures.type_name = Some(text.to_string());
+                }
+            } else if Some(capture.index) == type_value_idx {
+                captures.type_value_node = Some(capture.node);
+            } else if Some(capture.index) == interface_name_idx {
+                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
+                    captures.iface_name = Some(text.to_string());
+                }
+            } else if Some(capture.index) == interface_body_idx {
+                captures.iface_body_node = Some(capture.node);
+            } else if Some(capture.index) == specta_object_name_idx {
+                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
+                    captures.specta_object_name = Some(text.to_string());
+                }
+            } else if Some(capture.index) == specta_method_name_idx {
+                captures.specta_method_name_node = Some(capture.node);
+                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
+                    captures.specta_method_name = Some(text.to_string());
+                }
+            } else if Some(capture.index) == specta_method_params_idx {
+                captures.specta_params_node = Some(capture.node);
+            } else if Some(capture.index) == specta_method_return_idx {
+                captures.specta_return_node = Some(capture.node);
+            }
+        }
+
+        captures
+    }
+}
+
 /// Read and index bindings from the specified file using tree-sitter
 /// # Errors
 /// Returns an error if file reading or parsing fails.
@@ -188,9 +342,7 @@ pub fn read_bindings(path: &Path, project_index: &ProjectIndex) -> std::io::Resu
     let content = std::fs::read_to_string(path)?;
 
     // Canonicalize path for consistent comparison
-    let canonical_path = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
     // Parse bindings and get findings
     let findings = parse_bindings_with_tree_sitter(&canonical_path, &content, project_index)?;
@@ -210,6 +362,166 @@ pub fn read_bindings(path: &Path, project_index: &ProjectIndex) -> std::io::Resu
     Ok(())
 }
 
+/// Process function binding (function declaration)
+fn process_function_binding(
+    captures: &BindingCaptures,
+    content: &str,
+    project_index: &ProjectIndex,
+) {
+    if let Some(name) = &captures.func_name {
+        let args = if let Some(params) = captures.params_node {
+            extract_function_parameters(params, content)
+        } else {
+            vec![]
+        };
+
+        let return_type = if let Some(ret_node) = captures.return_type_node {
+            ret_node
+                .utf8_text(content.as_bytes())
+                .ok()
+                .map(unwrap_promise_type)
+        } else {
+            None
+        };
+
+        let entry = BindingEntry { args, return_type };
+        project_index.bindings_cache.insert(name.clone(), entry);
+    }
+}
+
+/// Process type alias declaration
+fn process_type_alias(
+    captures: &BindingCaptures,
+    content: &str,
+    source: &BindingSource,
+    project_index: &ProjectIndex,
+) {
+    if let Some(name) = &captures.type_name {
+        if let Some(value_node) = captures.type_value_node {
+            let raw_body = value_node
+                .utf8_text(content.as_bytes())
+                .unwrap_or("")
+                .to_string();
+
+            let (fields, variants) = parse_type_body(&raw_body);
+
+            let entry = ExternalTypeEntry {
+                source: source.clone(),
+                ts_name: name.clone(),
+                fields,
+                variants,
+                raw_ts_body: Some(raw_body),
+            };
+            project_index.types_cache.insert(name.clone(), entry);
+        }
+    }
+}
+
+/// Process interface declaration
+fn process_interface_def(
+    captures: &BindingCaptures,
+    content: &str,
+    source: &BindingSource,
+    project_index: &ProjectIndex,
+) {
+    if let Some(name) = &captures.iface_name {
+        if let Some(body_node) = captures.iface_body_node {
+            let raw_body = body_node
+                .utf8_text(content.as_bytes())
+                .unwrap_or("{}")
+                .to_string();
+
+            let fields = parse_interface_fields(&raw_body);
+
+            let entry = ExternalTypeEntry {
+                source: source.clone(),
+                ts_name: name.clone(),
+                fields: Some(fields),
+                variants: None,
+                raw_ts_body: Some(raw_body),
+            };
+            project_index.types_cache.insert(name.clone(), entry);
+        }
+    }
+}
+
+/// Process Specta/Typegen method binding
+fn process_method_binding(
+    captures: &BindingCaptures,
+    content: &str,
+    source: &BindingSource,
+    project_index: &ProjectIndex,
+) -> Option<crate::indexer::Finding> {
+    let obj_name = captures.specta_object_name.as_ref()?;
+    if obj_name != "commands" {
+        return None;
+    }
+
+    let method_name_str = captures.specta_method_name.as_ref()?;
+    let snake_case_name = crate::syntax::camel_to_snake(method_name_str);
+
+    // Extract parameters
+    let args = if let Some(params) = captures.specta_params_node {
+        extract_function_parameters(params, content)
+    } else {
+        vec![]
+    };
+
+    // Extract return type
+    let return_type = if let Some(ret_node) = captures.specta_return_node {
+        ret_node
+            .utf8_text(content.as_bytes())
+            .ok()
+            .map(unwrap_promise_type)
+    } else {
+        None
+    };
+
+    // Store in bindings_cache under snake_case name
+    let entry = BindingEntry {
+        args: args.clone(),
+        return_type: return_type.clone(),
+    };
+    project_index
+        .bindings_cache
+        .insert(snake_case_name.clone(), entry);
+
+    // Store in unified method_map: camelCase → (snake_case, source)
+    project_index.method_map.insert(
+        method_name_str.clone(),
+        (snake_case_name.clone(), source.clone()),
+    );
+
+    // Create a Finding for this method (to enable CodeLens navigation)
+    let method_node = captures.specta_method_name_node?;
+    let start = method_node.start_position();
+    let end = method_node.end_position();
+
+    use crate::indexer::Finding;
+    use crate::syntax::{Behavior, EntityType};
+    use tower_lsp_server::ls_types::{Position, Range};
+
+    Some(Finding {
+        key: snake_case_name,
+        entity: EntityType::Command,
+        behavior: Behavior::Definition,
+        range: Range {
+            start: Position {
+                line: start.row as u32,
+                character: start.column as u32,
+            },
+            end: Position {
+                line: end.row as u32,
+                character: end.column as u32,
+            },
+        },
+        parameters: Some(args),
+        return_type,
+        fields: None,
+        attributes: None,
+    })
+}
+
 /// Parse bindings file with tree-sitter and extract function signatures + type definitions
 /// Returns a list of Findings for indexing (e.g., Specta method definitions)
 /// # Errors
@@ -219,237 +531,65 @@ pub fn parse_bindings_with_tree_sitter(
     content: &str,
     project_index: &ProjectIndex,
 ) -> std::io::Result<Vec<crate::indexer::Finding>> {
-    // Initialize TypeScript parser
-    let mut parser = tree_sitter::Parser::new();
+    // Initialize TypeScript parser with ParseContext
     let language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
-
-    parser
-        .set_language(&language)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-
-    let tree = parser
-        .parse(content, None)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to parse"))?;
-
-    // Load TypeScript query for bindings
     let query_source = include_str!("queries/typescript.scm");
-    let query = tree_sitter::Query::new(&language, query_source)
+
+    let ctx = ParseContext::new(&language, query_source, content, path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-    let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+    let mut cursor = ctx.cursor();
+    let mut matches = cursor.matches(&ctx.query, ctx.root_node(), content.as_bytes());
 
     // Find capture indices for function bindings
-    let func_name_idx = query.capture_index_for_name("binding_func_name");
-    let func_params_idx = query.capture_index_for_name("binding_func_params");
-    let return_type_idx = query.capture_index_for_name("binding_return_type");
+    let func_name_idx = ctx.query.capture_index_for_name("binding_func_name");
+    let func_params_idx = ctx.query.capture_index_for_name("binding_func_params");
+    let return_type_idx = ctx.query.capture_index_for_name("binding_return_type");
 
     // Find capture indices for type definitions
-    let type_name_idx = query.capture_index_for_name("binding_type_name");
-    let type_value_idx = query.capture_index_for_name("binding_type_value");
-    let interface_name_idx = query.capture_index_for_name("binding_interface_name");
-    let interface_body_idx = query.capture_index_for_name("binding_interface_body");
+    let type_name_idx = ctx.query.capture_index_for_name("binding_type_name");
+    let type_value_idx = ctx.query.capture_index_for_name("binding_type_value");
+    let interface_name_idx = ctx.query.capture_index_for_name("binding_interface_name");
+    let interface_body_idx = ctx.query.capture_index_for_name("binding_interface_body");
 
     // Find capture indices for Specta object methods
-    let specta_object_name_idx = query.capture_index_for_name("specta_object_name");
-    let specta_method_name_idx = query.capture_index_for_name("specta_method_name");
-    let specta_method_params_idx = query.capture_index_for_name("specta_method_params");
-    let specta_method_return_idx = query.capture_index_for_name("specta_method_return");
+    let specta_object_name_idx = ctx.query.capture_index_for_name("specta_object_name");
+    let specta_method_name_idx = ctx.query.capture_index_for_name("specta_method_name");
+    let specta_method_params_idx = ctx.query.capture_index_for_name("specta_method_params");
+    let specta_method_return_idx = ctx.query.capture_index_for_name("specta_method_return");
 
     // Determine binding source from file path
-    let source = detect_binding_source(path);
+    let source = detect_binding_source(path, content);
 
     // Accumulate findings for indexing
     let mut findings = Vec::new();
 
     while let Some(match_result) = matches.next() {
-        let mut func_name = None;
-        let mut params_node = None;
-        let mut return_type_node = None;
-        let mut type_name = None;
-        let mut type_value_node = None;
-        let mut iface_name = None;
-        let mut iface_body_node = None;
-        let mut specta_object_name = None;
-        let mut specta_method_name = None;
-        let mut specta_method_name_node = None;
-        let mut specta_params_node = None;
-        let mut specta_return_node = None;
+        // Extract all captures from the match
+        let captures = BindingCaptures::from_match(
+            match_result,
+            content,
+            func_name_idx,
+            func_params_idx,
+            return_type_idx,
+            type_name_idx,
+            type_value_idx,
+            interface_name_idx,
+            interface_body_idx,
+            specta_object_name_idx,
+            specta_method_name_idx,
+            specta_method_params_idx,
+            specta_method_return_idx,
+        );
 
-        for capture in match_result.captures {
-            if Some(capture.index) == func_name_idx {
-                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
-                    func_name = Some(text.to_string());
-                }
-            } else if Some(capture.index) == func_params_idx {
-                params_node = Some(capture.node);
-            } else if Some(capture.index) == return_type_idx {
-                return_type_node = Some(capture.node);
-            } else if Some(capture.index) == type_name_idx {
-                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
-                    type_name = Some(text.to_string());
-                }
-            } else if Some(capture.index) == type_value_idx {
-                type_value_node = Some(capture.node);
-            } else if Some(capture.index) == interface_name_idx {
-                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
-                    iface_name = Some(text.to_string());
-                }
-            } else if Some(capture.index) == interface_body_idx {
-                iface_body_node = Some(capture.node);
-            } else if Some(capture.index) == specta_object_name_idx {
-                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
-                    specta_object_name = Some(text.to_string());
-                }
-            } else if Some(capture.index) == specta_method_name_idx {
-                specta_method_name_node = Some(capture.node);
-                if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
-                    specta_method_name = Some(text.to_string());
-                }
-            } else if Some(capture.index) == specta_method_params_idx {
-                specta_params_node = Some(capture.node);
-            } else if Some(capture.index) == specta_method_return_idx {
-                specta_return_node = Some(capture.node);
-            }
-        }
+        // Process each type of binding
+        process_function_binding(&captures, content, project_index);
+        process_type_alias(&captures, content, &source, project_index);
+        process_interface_def(&captures, content, &source, project_index);
 
-        // Process function bindings (existing logic)
-        if let Some(name) = func_name {
-            let args = if let Some(params) = params_node {
-                extract_function_parameters(params, content)
-            } else {
-                vec![]
-            };
-
-            let return_type = if let Some(ret_node) = return_type_node {
-                if let Ok(ret_text) = ret_node.utf8_text(content.as_bytes()) {
-                    Some(unwrap_promise_type(ret_text))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let entry = BindingEntry { args, return_type };
-            project_index.bindings_cache.insert(name.to_string(), entry);
-        }
-
-        // Process type alias declarations: export type Foo = { ... } or export type Status = "a" | "b"
-        if let Some(name) = type_name {
-            if let Some(value_node) = type_value_node {
-                let raw_body = value_node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or("")
-                    .to_string();
-
-                let (fields, variants) = parse_type_body(&raw_body);
-
-                let entry = ExternalTypeEntry {
-                    source: source.clone(),
-                    ts_name: name.clone(),
-                    fields,
-                    variants,
-                    raw_ts_body: Some(raw_body),
-                };
-                project_index.types_cache.insert(name, entry);
-            }
-        }
-
-        // Process interface declarations: export interface Foo { ... }
-        if let Some(name) = iface_name {
-            if let Some(body_node) = iface_body_node {
-                let raw_body = body_node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or("{}")
-                    .to_string();
-
-                let fields = parse_interface_fields(&raw_body);
-
-                let entry = ExternalTypeEntry {
-                    source: source.clone(),
-                    ts_name: name.clone(),
-                    fields: Some(fields),
-                    variants: None,
-                    raw_ts_body: Some(raw_body),
-                };
-                project_index.types_cache.insert(name, entry);
-            }
-        }
-
-        // Process Specta/Typegen object methods: export const commands = { async methodName(...) { ... } }
-        if let Some(obj_name) = specta_object_name {
-            if obj_name == "commands" {
-                if let Some(method_name_str) = specta_method_name {
-                    // Convert camelCase method name to snake_case command name
-                    let snake_case_name = crate::syntax::camel_to_snake(&method_name_str);
-
-                    // Extract parameters
-                    let args = if let Some(params) = specta_params_node {
-                        extract_function_parameters(params, content)
-                    } else {
-                        vec![]
-                    };
-
-                    // Extract return type
-                    let return_type = if let Some(ret_node) = specta_return_node {
-                        if let Ok(ret_text) = ret_node.utf8_text(content.as_bytes()) {
-                            Some(unwrap_promise_type(ret_text))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    // Store in bindings_cache under snake_case name
-                    let entry = BindingEntry {
-                        args: args.clone(),
-                        return_type: return_type.clone(),
-                    };
-                    project_index
-                        .bindings_cache
-                        .insert(snake_case_name.clone(), entry);
-
-                    // Store in unified method_map: camelCase → (snake_case, source)
-                    project_index
-                        .method_map
-                        .insert(method_name_str.clone(), (snake_case_name.clone(), source.clone()));
-
-                    // Create a Finding for this method (to enable CodeLens navigation)
-                    if let Some(method_node) = specta_method_name_node {
-                        let start = method_node.start_position();
-                        let end = method_node.end_position();
-
-                        use tower_lsp_server::ls_types::{Position, Range};
-                        let range = Range {
-                            start: Position {
-                                line: start.row as u32,
-                                character: start.column as u32,
-                            },
-                            end: Position {
-                                line: end.row as u32,
-                                character: end.column as u32,
-                            },
-                        };
-
-                        use crate::indexer::Finding;
-                        use crate::syntax::{Behavior, EntityType};
-
-                        findings.push(Finding {
-                            key: snake_case_name,
-                            entity: EntityType::Command,
-                            behavior: Behavior::Definition,
-                            range,
-                            parameters: Some(args),
-                            return_type,
-                            fields: None,
-                            attributes: None,
-                            variants: None,
-                        });
-                    }
-                }
-            }
+        if let Some(finding) = process_method_binding(&captures, content, &source, project_index)
+        {
+            findings.push(finding);
         }
     }
 
@@ -522,24 +662,19 @@ fn find_ts_rs_bindings(project_root: &Path, files: &mut Vec<PathBuf>) {
 }
 
 /// Detect the binding source tool based on file path heuristics and content analysis
-fn detect_binding_source(path: &Path) -> BindingSource {
+fn detect_binding_source(path: &Path, content: &str) -> BindingSource {
     let path_str = path.to_string_lossy();
     let file_name = path.file_name().map_or("", |n| n.to_str().unwrap_or(""));
-
-    // Read content for analysis
-    let content = std::fs::read_to_string(path).ok();
 
     // ts-rs typically outputs in bindings/ directory
     // Verify by checking for ts-rs signature or lack of tool-specific imports
     if path_str.contains("/bindings/") || path_str.contains("\\bindings\\") {
-        if let Some(ref c) = content {
-            // ts-rs signature: generated comment or no @tauri-apps imports
-            if c.contains("// This file was generated by [ts-rs]")
-                || c.contains("ts-rs")
-                || (!c.contains("@tauri-apps/api") && !c.contains("TAURI_INVOKE"))
-            {
-                return BindingSource::TsRs;
-            }
+        // ts-rs signature: generated comment or no @tauri-apps imports
+        if content.contains("// This file was generated by [ts-rs]")
+            || content.contains("ts-rs")
+            || (!content.contains("@tauri-apps/api") && !content.contains("TAURI_INVOKE"))
+        {
+            return BindingSource::TsRs;
         }
         // Default for bindings/ directory
         return BindingSource::TsRs;
@@ -552,23 +687,22 @@ fn detect_binding_source(path: &Path) -> BindingSource {
 
     // Check file content to distinguish between Specta, Typegen, and ts-rs
     // Priority: explicit tool signatures first (ts-rs comment, TAURI_INVOKE), then imports
-    if let Some(c) = content {
-        // ts-rs signature has highest priority: explicit generated comment
-        if c.contains("// This file was generated by [ts-rs]") || c.contains("[ts-rs]") {
-            return BindingSource::TsRs;
-        }
 
-        // tauri-specta signature: uses TAURI_INVOKE or custom wrapper
-        if c.contains("TAURI_INVOKE") || c.contains("__TAURI_INVOKE__") {
-            return BindingSource::Specta;
-        }
+    // ts-rs signature has highest priority: explicit generated comment
+    if content.contains("// This file was generated by [ts-rs]") || content.contains("[ts-rs]") {
+        return BindingSource::TsRs;
+    }
 
-        // tauri-plugin-typegen signature: imports from @tauri-apps/api (lowest priority)
-        if c.contains("from '@tauri-apps/api/core'")
-            || c.contains("from '@tauri-apps/api/tauri'")
-        {
-            return BindingSource::Typegen;
-        }
+    // tauri-specta signature: uses TAURI_INVOKE or custom wrapper
+    if content.contains("TAURI_INVOKE") || content.contains("__TAURI_INVOKE__") {
+        return BindingSource::Specta;
+    }
+
+    // tauri-plugin-typegen signature: imports from @tauri-apps/api (lowest priority)
+    if content.contains("from '@tauri-apps/api/core'")
+        || content.contains("from '@tauri-apps/api/tauri'")
+    {
+        return BindingSource::Typegen;
     }
 
     // Fallback: if filename is bindings.ts without clear indicators, assume Specta

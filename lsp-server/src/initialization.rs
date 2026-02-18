@@ -1,6 +1,6 @@
 //! Server initialization and background indexing
 
-use crate::bindings_reader::{find_bindings_files, read_bindings, BindingsConfig};
+use crate::bindings_reader::{load_all_bindings, BindingsConfig};
 use crate::capabilities::diagnostics;
 use crate::file_processor;
 use crate::indexer::ProjectIndex;
@@ -77,39 +77,25 @@ pub async fn load_external_bindings(
     bindings_config: &BindingsConfig,
     client: &Client,
 ) {
-    if !bindings_config.type_safety_enabled {
-        return;
+    let result = load_all_bindings(project_root, bindings_config, project_index, false);
+
+    // Log successfully loaded files
+    if result.loaded > 0 {
+        client
+            .log_message(
+                MessageType::INFO,
+                format!("📦 Loaded {} bindings file(s)", result.loaded),
+            )
+            .await;
     }
 
-    let bindings_files = find_bindings_files(project_root, bindings_config);
-
-    if bindings_files.is_empty() {
-        // No bindings found - this is normal if not using Specta/Typegen
-        return;
-    }
-
-    for bindings_file in &bindings_files {
-        match read_bindings(bindings_file, project_index) {
-            Ok(()) => {
-                let file_name = bindings_file
-                    .file_name()
-                    .map_or_else(|| "bindings file".into(), |n| n.to_string_lossy());
-                client
-                    .log_message(
-                        MessageType::INFO,
-                        format!("📦 Loaded bindings from {file_name}"),
-                    )
-                    .await;
-            }
-            Err(e) => {
-                let file_path = bindings_file.display();
-                client
-                    .log_message(
-                        MessageType::WARNING,
-                        format!("Failed to load bindings from {file_path}: {e}"),
-                    )
-                    .await;
-            }
-        }
+    // Log any errors
+    for (path, error) in &result.errors {
+        client
+            .log_message(
+                MessageType::WARNING,
+                format!("Failed to load bindings from {}: {}", path.display(), error),
+            )
+            .await;
     }
 }

@@ -1,16 +1,18 @@
 //! Frontend (TypeScript/JavaScript) language parser using tree-sitter
 
 use crate::indexer::Finding;
-use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
+use crate::syntax::{Behavior, EntityType, ParseResult};
 use std::collections::HashMap;
 use streaming_iterator::StreamingIterator;
 use tower_lsp_server::ls_types::Range;
-use tree_sitter::{Language, Parser, Query, QueryCursor};
+use tree_sitter::Language;
 
 use super::extractors::{extract_ts_interface_fields, extract_ts_params, FindingBuilder};
 use super::patterns::{get_all_frontend_patterns, ArgPosition, FunctionPatternWithPos};
 use super::query_helpers::CaptureIndices;
-use super::utils::{adjust_range, get_query_source, point_to_position, LangType, NodeTextExt};
+use super::utils::{
+    adjust_range, get_query_source, point_to_position, LangType, NodeTextExt, ParseContext,
+};
 
 // Local pattern definitions removed - using patterns::{ArgPosition, FunctionPatternWithPos, get_all_frontend_patterns}
 
@@ -51,8 +53,16 @@ const SPECTA_PATTERNS: &[(&str, &str, Option<&str>)] = &[
     // (object/verify_key, method_key, optional commands_key for namespaced patterns)
     ("specta_call_object", "specta_call_method", None),
     ("specta_await_object", "specta_await_method", None),
-    ("specta_ns_object", "specta_ns_method", Some("specta_ns_commands")),
-    ("specta_ns_await_object", "specta_ns_await_method", Some("specta_ns_await_commands")),
+    (
+        "specta_ns_object",
+        "specta_ns_method",
+        Some("specta_ns_commands"),
+    ),
+    (
+        "specta_ns_await_object",
+        "specta_ns_await_method",
+        Some("specta_ns_await_commands"),
+    ),
 ];
 
 /// Process Specta method call match (commands.methodName or Specta.commands.methodName)
@@ -191,38 +201,16 @@ pub fn parse_frontend(
         _ => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
     };
 
-    let mut parser = Parser::new();
-    parser.set_language(&ts_lang).map_err(|e| {
-        ParseError::Language(
-            format!("Failed to set {lang:?} language: {e}"),
-            Some(path.to_string_lossy().to_string()),
-        )
-    })?;
-
-    let tree = parser.parse(content, None).ok_or_else(|| {
-        ParseError::Syntax(
-            format!("Failed to parse {lang:?} file"),
-            Some(path.to_string_lossy().to_string()),
-        )
-    })?;
-
-    let query_src = get_query_source(lang);
-    let query = Query::new(&ts_lang, query_src).map_err(|e| {
-        ParseError::Query(
-            format!("Failed to create {lang:?} query: {e}"),
-            Some(path.to_string_lossy().to_string()),
-        )
-    })?;
-
-    let mut cursor = QueryCursor::new();
-    let root = tree.root_node();
+    let ctx = ParseContext::new(&ts_lang, get_query_source(lang), content, path)?;
+    let mut cursor = ctx.cursor();
+    let root = ctx.root_node();
 
     // Build alias map from imports
     let mut aliases: HashMap<String, String> = HashMap::new();
 
     // Get capture indices using helper
     let indices = CaptureIndices::from_query(
-        &query,
+        &ctx.query,
         &[
             "func_name",
             "arg_value",
@@ -250,7 +238,7 @@ pub fn parse_frontend(
     let all_patterns = get_all_frontend_patterns();
 
     // First pass: collect aliases and interface definitions
-    let mut matches = cursor.matches(&query, root, content.as_bytes());
+    let mut matches = cursor.matches(&ctx.query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
         // Collect aliases
@@ -269,8 +257,8 @@ pub fn parse_frontend(
     }
 
     // Second pass: collect function calls and Specta calls
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, root, content.as_bytes());
+    let mut cursor = ctx.cursor();
+    let mut matches = cursor.matches(&ctx.query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
         // Try Specta patterns first

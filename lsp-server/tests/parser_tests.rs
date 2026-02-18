@@ -195,8 +195,7 @@ mod rust_parser_tests {
             "Expected 3 commands (with and without intermediate attributes)"
         );
 
-        let command_names: Vec<&str> =
-            file_index.findings.iter().map(|f| f.key.as_str()).collect();
+        let command_names: Vec<&str> = file_index.findings.iter().map(|f| f.key.as_str()).collect();
 
         // Should detect all commands despite intermediate #[cfg_attr] and #[allow] attributes
         assert!(

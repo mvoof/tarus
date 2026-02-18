@@ -1,10 +1,7 @@
 use crate::indexer::IndexKey;
 use crate::indexer::ProjectIndex;
 use crate::scanner::find_src_tauri_dir;
-use crate::syntax::{
-    camel_to_snake, map_ts_type_to_rust,
-    Behavior, EntityType,
-};
+use crate::syntax::{camel_to_snake, map_ts_type_to_rust, Behavior, EntityType};
 use std::path::{Path, PathBuf};
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
@@ -122,12 +119,14 @@ fn handle_command_call(
         let rust_args = infer_rust_args(loc);
 
         for candidate in rank_and_limit(candidates) {
-            actions.push(create_rust_command_action(
+            if let Some(action) = create_rust_command_action(
                 &key.name,
                 &rust_args,
                 &candidate,
                 &params.context.diagnostics,
-            ));
+            ) {
+                actions.push(action);
+            }
         }
     }
 }
@@ -185,15 +184,15 @@ fn create_rust_command_action(
     args: &str,
     candidate: &RustFileCandidate,
     diagnostics: &[tower_lsp_server::ls_types::Diagnostic],
-) -> CodeActionOrCommand {
+) -> Option<CodeActionOrCommand> {
     let command_template = format!(
         "\n#[tauri::command]\nfn {name}({args}) -> Result<String, String> {{\n    Ok(\"Not implemented\".to_string())\n}}\n"
     );
 
-    let target_uri = Uri::from_file_path(&candidate.path).unwrap();
-    let file_name = candidate.path.file_name().and_then(|n| n.to_str()).unwrap();
+    let target_uri = Uri::from_file_path(&candidate.path)?;
+    let file_name = candidate.path.file_name().and_then(|n| n.to_str())?;
 
-    CodeActionOrCommand::CodeAction(CodeAction {
+    Some(CodeActionOrCommand::CodeAction(CodeAction {
         title: format!("Create Rust command '{name}' in {file_name}"),
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(diagnostics.to_vec()),
@@ -203,7 +202,7 @@ fn create_rust_command_action(
             command_template,
         )),
         ..Default::default()
-    })
+    }))
 }
 
 fn find_rust_file_candidates(workspace_root: &Path) -> Vec<RustFileCandidate> {

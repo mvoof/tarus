@@ -47,31 +47,45 @@ pub fn handle_hover(params: HoverParams, project_index: &ProjectIndex) -> Option
     })
 }
 
+/// Behavior counts computed in a single pass over locations
+struct BehaviorCounts {
+    calls: usize,
+    emits: usize,
+    listens: usize,
+    definitions: usize,
+}
+
+impl BehaviorCounts {
+    fn from_locations(locations: &[LocationInfo]) -> Self {
+        let mut counts = Self {
+            calls: 0,
+            emits: 0,
+            listens: 0,
+            definitions: 0,
+        };
+        for loc in locations {
+            match loc.behavior {
+                Behavior::Call => counts.calls += 1,
+                Behavior::Emit => counts.emits += 1,
+                Behavior::Listen => counts.listens += 1,
+                Behavior::Definition => counts.definitions += 1,
+            }
+        }
+        counts
+    }
+}
+
 fn format_hover_content(
     key: &crate::indexer::IndexKey,
     info: &crate::indexer::DiagnosticInfo,
     locations: &[LocationInfo],
 ) -> String {
-    // Count by behavior type
-    let calls_count = locations
-        .iter()
-        .filter(|l| matches!(l.behavior, Behavior::Call))
-        .count();
-
-    let emits_count = locations
-        .iter()
-        .filter(|l| matches!(l.behavior, Behavior::Emit))
-        .count();
-
-    let listens_count = locations
-        .iter()
-        .filter(|l| matches!(l.behavior, Behavior::Listen))
-        .count();
-
-    let definitions_count = locations
-        .iter()
-        .filter(|l| matches!(l.behavior, Behavior::Definition))
-        .count();
+    // Count by behavior type in a single pass
+    let counts = BehaviorCounts::from_locations(locations);
+    let calls_count = counts.calls;
+    let emits_count = counts.emits;
+    let listens_count = counts.listens;
+    let definitions_count = counts.definitions;
 
     let (definitions, references): (Vec<&LocationInfo>, Vec<&LocationInfo>) =
         locations.iter().partition(|l| match key.entity {

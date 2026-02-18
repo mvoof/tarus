@@ -166,7 +166,11 @@ fn test_parse_specta_object_commands() {
     assert!(index.bindings_cache.contains_key("delete_item"));
 
     // Check method_map has camelCase → (snake_case, source) mappings
-    assert_eq!(index.method_map.len(), 3, "Expected 3 entries in method_map");
+    assert_eq!(
+        index.method_map.len(),
+        3,
+        "Expected 3 entries in method_map"
+    );
 
     let entry = index.method_map.get("getUserProfile").unwrap();
     assert_eq!(entry.0, "get_user_profile");
@@ -242,7 +246,11 @@ fn test_parse_typegen_object_commands() {
     assert!(index.bindings_cache.contains_key("fetch_data"));
 
     // Check method_map has Typegen source
-    assert_eq!(index.method_map.len(), 4, "Expected 4 entries in method_map");
+    assert_eq!(
+        index.method_map.len(),
+        4,
+        "Expected 4 entries in method_map"
+    );
 
     let entry = index.method_map.get("getUserProfile").unwrap();
     assert_eq!(entry.0, "get_user_profile");
@@ -292,10 +300,19 @@ fn test_detect_binding_source_typegen() {
     .unwrap();
 
     let index = ProjectIndex::new();
-    parse_bindings_with_tree_sitter(&path_generated, &std::fs::read_to_string(&path_generated).unwrap(), &index).unwrap();
+    parse_bindings_with_tree_sitter(
+        &path_generated,
+        &std::fs::read_to_string(&path_generated).unwrap(),
+        &index,
+    )
+    .unwrap();
 
     // Typegen should use method_map with Typegen source
-    assert_eq!(index.method_map.len(), 1, "Should detect as Typegen by path");
+    assert_eq!(
+        index.method_map.len(),
+        1,
+        "Should detect as Typegen by path"
+    );
     let entry = index.method_map.get("testCmd").unwrap();
     assert_eq!(entry.1, BindingSource::Typegen);
 
@@ -316,8 +333,17 @@ fn test_detect_binding_source_typegen() {
     .unwrap();
 
     let index2 = ProjectIndex::new();
-    parse_bindings_with_tree_sitter(&path_api, &std::fs::read_to_string(&path_api).unwrap(), &index2).unwrap();
-    assert_eq!(index2.method_map.len(), 1, "Should detect as Typegen by content");
+    parse_bindings_with_tree_sitter(
+        &path_api,
+        &std::fs::read_to_string(&path_api).unwrap(),
+        &index2,
+    )
+    .unwrap();
+    assert_eq!(
+        index2.method_map.len(),
+        1,
+        "Should detect as Typegen by content"
+    );
     let entry = index2.method_map.get("testCmd").unwrap();
     assert_eq!(entry.1, BindingSource::Typegen);
 }
@@ -378,7 +404,11 @@ fn test_parse_ts_rs_object_commands() {
     assert!(index.bindings_cache.contains_key("list_users"));
 
     // Check method_map has TsRs source
-    assert_eq!(index.method_map.len(), 4, "Expected 4 entries in method_map");
+    assert_eq!(
+        index.method_map.len(),
+        4,
+        "Expected 4 entries in method_map"
+    );
 
     let entry = index.method_map.get("getUserProfile").unwrap();
     assert_eq!(entry.0, "get_user_profile");
@@ -424,11 +454,23 @@ fn test_detect_binding_source_ts_rs() {
     .unwrap();
 
     let index = ProjectIndex::new();
-    parse_bindings_with_tree_sitter(&path_bindings, &std::fs::read_to_string(&path_bindings).unwrap(), &index).unwrap();
+    parse_bindings_with_tree_sitter(
+        &path_bindings,
+        &std::fs::read_to_string(&path_bindings).unwrap(),
+        &index,
+    )
+    .unwrap();
 
     // Should parse the type
-    assert_eq!(index.types_cache.len(), 1, "Should parse ts-rs type definition");
-    assert!(index.types_cache.contains_key("MyType"), "Should detect MyType");
+    assert_eq!(
+        index.types_cache.len(),
+        1,
+        "Should parse ts-rs type definition"
+    );
+    assert!(
+        index.types_cache.contains_key("MyType"),
+        "Should detect MyType"
+    );
 
     // Test 2: File with ts-rs comment should be detected as TsRs even outside /bindings/
     let path_comment = dir.path().join("types.ts");
@@ -448,8 +490,17 @@ fn test_detect_binding_source_ts_rs() {
     .unwrap();
 
     let index2 = ProjectIndex::new();
-    parse_bindings_with_tree_sitter(&path_comment, &std::fs::read_to_string(&path_comment).unwrap(), &index2).unwrap();
-    assert_eq!(index2.method_map.len(), 1, "Should detect as TsRs by comment");
+    parse_bindings_with_tree_sitter(
+        &path_comment,
+        &std::fs::read_to_string(&path_comment).unwrap(),
+        &index2,
+    )
+    .unwrap();
+    assert_eq!(
+        index2.method_map.len(),
+        1,
+        "Should detect as TsRs by comment"
+    );
     let entry = index2.method_map.get("testCmd").unwrap();
     assert_eq!(entry.1, BindingSource::TsRs);
 }

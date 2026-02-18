@@ -23,7 +23,6 @@ fn create_finding(key: &str, entity: EntityType, behavior: Behavior, line: u32) 
         return_type: None,
         fields: None,
         attributes: None,
-        variants: None,
     }
 }
 
