@@ -17,7 +17,6 @@ use tower_lsp_server::ls_types::{
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 // Refactored modules
-mod bindings_reader;
 mod capabilities;
 mod config;
 mod file_processor;
@@ -27,7 +26,6 @@ mod scanner;
 mod syntax;
 mod tree_parser;
 
-use bindings_reader::BindingsConfig;
 use capabilities::{build_server_capabilities, diagnostics};
 use indexer::{IndexKey, ProjectIndex};
 use scanner::is_tauri_project;
@@ -43,8 +41,6 @@ struct Backend {
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
     /// Cache of open document contents for completion and other features
     document_cache: Arc<DashMap<PathBuf, String>>,
-    /// Bindings configuration (loaded from client settings)
-    bindings_config: Arc<tokio::sync::RwLock<BindingsConfig>>,
 }
 
 impl Backend {
@@ -58,16 +54,9 @@ impl Backend {
             return;
         }
 
-        let is_rust_file = path.extension().is_some_and(|ext| ext == "rs");
-
         if file_processor::process_file_index(path.clone(), &self.project_index) {
             let report = self.project_index.file_report(&path);
             self.log_dev_info(&report).await;
-
-            // Reload external bindings when Rust files change
-            if is_rust_file {
-                self.reload_bindings().await;
-            }
         }
     }
 
@@ -170,55 +159,17 @@ impl Backend {
             &self.client,
             &self.is_developer_mode_active,
             &self.project_index,
-            &self.bindings_config,
         )
         .await;
-
-        self.reload_bindings().await;
-    }
-
-    /// Reload bindings based on configuration and discovery
-    async fn reload_bindings(&self) {
-        let roots = self.workspace_roots.get();
-        let Some(root) = roots.and_then(|r| r.first()) else {
-            return;
-        };
-
-        let config = self.bindings_config.read().await;
-
-        // Load all bindings (clears old registry first)
-        let result = bindings_reader::load_all_bindings(root, &config, &self.project_index, true);
-
-        // Log results in developer mode
-        if result.loaded > 0 {
-            self.log_dev_info(&format!("Loaded {} bindings file(s)", result.loaded))
-                .await;
-        }
-
-        for (path, error) in &result.errors {
-            self.log_dev_info(&format!(
-                "Failed to read bindings from {}: {}",
-                path.display(),
-                error
-            ))
-            .await;
-        }
-
-        let count = self.project_index.bindings_cache.len();
-        self.log_dev_info(&format!("Total {count} bindings in cache"))
-            .await;
     }
 
     /// Spawn background indexing task for all roots
-    async fn spawn_background_indexing(&self, roots: &[PathBuf]) {
-        let bindings_config = self.bindings_config.read().await.clone();
-
+    fn spawn_background_indexing(&self, roots: &[PathBuf]) {
         initialization::spawn_background_indexing(
             roots,
             self.project_index.clone(),
             self.client.clone(),
             self.is_developer_mode_active.clone(),
-            bindings_config,
         );
     }
 }
@@ -326,7 +277,7 @@ impl LanguageServer for Backend {
         let Some(roots) = self.workspace_roots.get() else {
             return;
         };
-        self.spawn_background_indexing(roots).await;
+        self.spawn_background_indexing(roots);
     }
 
     async fn goto_definition(
@@ -496,24 +447,14 @@ impl LanguageServer for Backend {
             .await;
 
         let roots = self.workspace_roots.get().cloned().unwrap_or_default();
-        let bindings_config = self.bindings_config.read().await;
 
-        match capabilities::commands::handle_execute_command(
+        let res = capabilities::commands::handle_execute_command(
             &params,
             &self.project_index,
             &roots,
-            &bindings_config,
-        ) {
-            Ok(res) => {
-                self.log_dev_info("✅ Command executed successfully").await;
-                Ok(res)
-            }
-            Err(e) => {
-                self.log_dev_info(&format!("❌ Command execution failed: {e:?}"))
-                    .await;
-                Err(e)
-            }
-        }
+        );
+        self.log_dev_info("✅ Command executed successfully").await;
+        Ok(res)
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -528,7 +469,6 @@ async fn main() {
 
     let project_index = Arc::new(ProjectIndex::new());
     let initial_dev_mode_state = Arc::new(AtomicBool::new(false));
-    let bindings_config = Arc::new(tokio::sync::RwLock::new(BindingsConfig::default()));
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
@@ -537,7 +477,6 @@ async fn main() {
         is_developer_mode_active: initial_dev_mode_state.clone(),
         debounce_tasks: Arc::new(DashMap::new()),
         document_cache: Arc::new(DashMap::new()),
-        bindings_config,
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;

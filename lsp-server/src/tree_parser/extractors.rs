@@ -1,7 +1,7 @@
 //! Parameter and field extraction utilities for various node types
 
 use super::utils::NodeTextExt;
-use crate::indexer::Parameter;
+use crate::syntax::{parse_serde_attributes, EnumVariant, Parameter, VariantKind};
 use tree_sitter::Node;
 
 /// Extract Rust function parameters
@@ -77,6 +77,90 @@ pub fn extract_rust_enum_variants(node: Node, content: &str) -> Vec<Parameter> {
                         });
                     }
                 }
+            }
+        }
+    }
+
+    variants
+}
+
+/// Extract Rust enum variants with full detail (kind, fields, serde attributes)
+#[must_use]
+pub fn extract_rust_enum_variants_full(node: Node, content: &str) -> Vec<EnumVariant> {
+    let mut variants = Vec::new();
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        if child.kind() == "enum_variant_list" {
+            let mut variant_cursor = child.walk();
+
+            for variant in child.children(&mut variant_cursor) {
+                if variant.kind() != "enum_variant" {
+                    continue;
+                }
+
+                let Some(name_node) = variant.child_by_field_name("name") else {
+                    continue;
+                };
+                let name = name_node.text_or_default(content);
+
+                // Collect variant-level serde attributes
+                let mut variant_attrs: Vec<String> = Vec::new();
+                let mut vc = variant.walk();
+                for vc_child in variant.children(&mut vc) {
+                    if vc_child.kind() == "attribute_item" {
+                        variant_attrs.push(vc_child.text_or_default(content));
+                    }
+                }
+                let variant_serde = parse_serde_attributes(Some(&variant_attrs));
+
+                // Determine variant kind and extract payload info
+                let mut kind = VariantKind::Unit;
+                let mut struct_fields = Vec::new();
+                let mut tuple_types = Vec::new();
+
+                let mut vc2 = variant.walk();
+                for vc_child in variant.children(&mut vc2) {
+                    match vc_child.kind() {
+                        "field_declaration_list" => {
+                            kind = VariantKind::Struct;
+                            let mut fc = vc_child.walk();
+                            for field in vc_child.children(&mut fc) {
+                                if field.kind() == "field_declaration" {
+                                    let fname = field.child_by_field_name("name");
+                                    let ftype = field.child_by_field_name("type");
+                                    if let (Some(n), Some(t)) = (fname, ftype) {
+                                        struct_fields.push(Parameter {
+                                            name: n.text_or_default(content),
+                                            type_name: t.text_or_default(content),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        "ordered_field_declaration_list" => {
+                            kind = VariantKind::Tuple;
+                            let mut tc = vc_child.walk();
+                            for field in vc_child.children(&mut tc) {
+                                if field.kind() == "ordered_field_declaration" {
+                                    if let Some(t) = field.child_by_field_name("type") {
+                                        tuple_types.push(t.text_or_default(content));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                variants.push(EnumVariant {
+                    name,
+                    kind,
+                    struct_fields,
+                    tuple_types,
+                    serde_rename: variant_serde.rename,
+                    serde_skip: variant_serde.skip,
+                });
             }
         }
     }

@@ -5,6 +5,13 @@
 
 use serde::Deserialize;
 
+/// A named parameter with a type annotation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parameter {
+    pub name: String,
+    pub type_name: String,
+}
+
 /// Type of entity - either a Command or an Event
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash, Copy)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +84,50 @@ pub struct SerdeAttributes {
     pub skip: bool,
     /// Per-field rename (#[serde(rename = "newName")])
     pub rename: Option<String>,
+    /// Untagged enum representation (#[serde(untagged)])
+    pub untagged: bool,
+}
+
+/// The kind of an enum variant
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum VariantKind {
+    /// Simple unit variant: `Foo`
+    #[default]
+    Unit,
+    /// Tuple variant: `Foo(u32, String)`
+    Tuple,
+    /// Struct variant: `Foo { x: u32 }`
+    Struct,
+}
+
+/// An enum variant with full serialization detail
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumVariant {
+    pub name: String,
+    pub kind: VariantKind,
+    pub struct_fields: Vec<Parameter>,
+    pub tuple_types: Vec<String>,
+    pub serde_rename: Option<String>,
+    pub serde_skip: bool,
+}
+
+/// The kind of a Rust type definition
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustTypeKind {
+    Struct,
+    Enum,
+}
+
+/// Full type information extracted directly from Rust source
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustTypeInfo {
+    pub kind: RustTypeKind,
+    /// Fields for structs (empty for enums)
+    pub fields: Vec<Parameter>,
+    /// Variants for enums (empty for structs)
+    pub variants: Vec<EnumVariant>,
+    pub serde: SerdeAttributes,
+    pub generic_params: Vec<String>,
 }
 
 /// Extract a serde key-value attribute like `rename_all = "camelCase"` from an attr string
@@ -145,6 +196,9 @@ pub fn parse_serde_attributes(attributes: Option<&Vec<String>>) -> SerdeAttribut
         if attr.contains("skip") && !attr.contains("skip_serializing_if") {
             result.skip = true;
         }
+        if attr.contains("untagged") {
+            result.untagged = true;
+        }
     }
 
     result
@@ -177,6 +231,28 @@ fn extract_quoted_value(s: &str) -> Option<String> {
 #[must_use]
 pub fn should_rename_to_camel(attributes: Option<&Vec<String>>) -> bool {
     parse_serde_attributes(attributes).rename_all.as_deref() == Some("camelCase")
+}
+
+/// Apply a serde `rename_all` strategy to a field name
+///
+/// Supports: `camelCase`, `snake_case`, `PascalCase`, `SCREAMING_SNAKE_CASE`,
+/// `kebab-case`, `lowercase`, `UPPERCASE`.
+#[must_use]
+pub fn apply_rename_all(field_name: &str, strategy: &str) -> String {
+    match strategy {
+        "camelCase" => snake_to_camel(field_name),
+        "PascalCase" => {
+            let camel = snake_to_camel(field_name);
+            let mut chars = camel.chars();
+            chars
+                .next()
+                .map_or_else(String::new, |c| c.to_uppercase().to_string() + chars.as_str())
+        }
+        "SCREAMING_SNAKE_CASE" | "UPPERCASE" => field_name.to_uppercase(),
+        "kebab-case" => field_name.replace('_', "-"),
+        "lowercase" => field_name.to_lowercase(),
+        _ => field_name.to_string(), // covers "snake_case" and unknown strategies
+    }
 }
 
 /// Convert `snake_case` to camelCase

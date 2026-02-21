@@ -1,14 +1,19 @@
 //! Rust language parser using tree-sitter
 
 use crate::indexer::Finding;
-use crate::syntax::{Behavior, EntityType, ParseResult};
+
+type RustParseOutput = (Vec<Finding>, Vec<(String, RustTypeInfo)>);
+use crate::syntax::{
+    parse_serde_attributes, Behavior, EntityType, ParseResult, RustTypeInfo, RustTypeKind,
+};
 use std::collections::HashMap;
 use streaming_iterator::StreamingIterator;
 use tower_lsp_server::ls_types::Range;
 use tree_sitter::Language;
 
 use super::extractors::{
-    extract_rust_enum_variants, extract_rust_params, extract_rust_struct_fields, FindingBuilder,
+    extract_rust_enum_variants, extract_rust_enum_variants_full, extract_rust_params,
+    extract_rust_struct_fields, FindingBuilder,
 };
 use super::patterns::get_rust_event_patterns;
 use super::query_helpers::CaptureIndices;
@@ -330,7 +335,73 @@ fn last_expression_type(block: tree_sitter::Node, content: &str) -> Option<Strin
     }
 }
 
+/// Extract `RustTypeInfo` for a struct match
+fn extract_struct_type_info(
+    m: &tree_sitter::QueryMatch,
+    indices: &CaptureIndices,
+    content: &str,
+) -> Option<(String, RustTypeInfo)> {
+    let struct_cap = indices.find_capture(m.captures, "struct_def")?;
+    let name_cap = indices.find_capture(m.captures, "struct_name")?;
+
+    let name = name_cap.node.text_or_default(content);
+    let fields = extract_rust_struct_fields(struct_cap.node, content);
+
+    let attributes: Vec<String> = indices
+        .find_captures(m.captures, "struct_attr")
+        .iter()
+        .map(|cap| cap.node.text_or_default(content))
+        .collect();
+
+    let serde = parse_serde_attributes(Some(&attributes));
+
+    Some((
+        name,
+        RustTypeInfo {
+            kind: RustTypeKind::Struct,
+            fields,
+            variants: Vec::new(),
+            serde,
+            generic_params: Vec::new(),
+        },
+    ))
+}
+
+/// Extract `RustTypeInfo` for an enum match
+fn extract_enum_type_info(
+    m: &tree_sitter::QueryMatch,
+    indices: &CaptureIndices,
+    content: &str,
+) -> Option<(String, RustTypeInfo)> {
+    let enum_cap = indices.find_capture(m.captures, "enum_def")?;
+    let name_cap = indices.find_capture(m.captures, "enum_name")?;
+
+    let name = name_cap.node.text_or_default(content);
+    let variants = extract_rust_enum_variants_full(enum_cap.node, content);
+
+    let attributes: Vec<String> = indices
+        .find_captures(m.captures, "enum_attr")
+        .iter()
+        .map(|cap| cap.node.text_or_default(content))
+        .collect();
+
+    let serde = parse_serde_attributes(Some(&attributes));
+
+    Some((
+        name,
+        RustTypeInfo {
+            kind: RustTypeKind::Enum,
+            fields: Vec::new(),
+            variants,
+            serde,
+            generic_params: Vec::new(),
+        },
+    ))
+}
+
 /// Parse Rust source code
+///
+/// Returns findings (commands, events, struct/enum definitions) and native type info.
 ///
 /// # Errors
 ///
@@ -338,8 +409,12 @@ fn last_expression_type(block: tree_sitter::Node, content: &str) -> Option<Strin
 /// *   The Rust language could not be set for the parser.
 /// *   The content could not be parsed.
 /// *   The tree-sitter query could not be created.
-pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Finding>> {
+pub fn parse_rust(
+    path: &std::path::Path,
+    content: &str,
+) -> ParseResult<RustParseOutput> {
     let mut findings = Vec::new();
+    let mut rust_types = Vec::new();
 
     let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
 
@@ -374,9 +449,15 @@ pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Find
         if let Some(finding) = process_struct_match(m, &indices, content) {
             findings.push(finding);
         }
+        if let Some(type_entry) = extract_struct_type_info(m, &indices, content) {
+            rust_types.push(type_entry);
+        }
 
         if let Some(finding) = process_enum_match(m, &indices, content) {
             findings.push(finding);
+        }
+        if let Some(type_entry) = extract_enum_type_info(m, &indices, content) {
+            rust_types.push(type_entry);
         }
 
         findings.extend(process_command_matches(m, &indices, content));
@@ -386,5 +467,5 @@ pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Find
         }
     }
 
-    Ok(findings)
+    Ok((findings, rust_types))
 }

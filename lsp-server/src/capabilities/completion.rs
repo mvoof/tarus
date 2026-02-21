@@ -164,23 +164,6 @@ fn complete_invoke_arguments(
         return None;
     }
 
-    // 1. Try bindings first
-    if let Some(binding) = project_index.bindings_cache.get(cmd_name) {
-        let items: Vec<_> = binding
-            .args
-            .iter()
-            .map(|bp| CompletionItem {
-                label: bp.name.clone(),
-                kind: Some(CompletionItemKind::PROPERTY),
-                detail: Some(format!(": {}", bp.type_name)),
-                insert_text: Some(format!("{}: ", bp.name)),
-                ..Default::default()
-            })
-            .collect();
-        // Return bindings results if any (or empty list if binding exists but no args)
-        return Some(items);
-    }
-
     let locations = project_index.get_locations(EntityType::Command, cmd_name);
     let def = locations
         .iter()
@@ -243,27 +226,8 @@ fn complete_command_event_names(
     // Add commands
     let mut items = Vec::new();
 
-    // Add commands from bindings
-    for entry in &project_index.bindings_cache {
-        let name = entry.key();
-        let binding = entry.value();
-        items.push(CompletionItem {
-            label: name.clone(),
-            kind: Some(CompletionItemKind::FUNCTION),
-            detail: Some(format!(
-                "Command (binding) → {}",
-                binding.return_type.as_deref().unwrap_or("void")
-            )),
-            ..Default::default()
-        });
-    }
-
     // Add commands from Rust index
     for (name, def_loc) in project_index.get_all_names(EntityType::Command) {
-        // Avoid duplicates if binding exists
-        if project_index.bindings_cache.contains_key(&name) {
-            continue;
-        }
         let detail = def_loc.as_ref().map(|l| {
             let filename = l
                 .path

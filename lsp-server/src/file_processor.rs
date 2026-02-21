@@ -27,13 +27,6 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
         return false;
     }
 
-    // Skip bindings files - they are handled by bindings_reader
-    // Canonicalize path for consistent comparison
-    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    if project_index.is_bindings_file(&canonical_path) {
-        return false;
-    }
-
     match tree_parser::parse(path, content) {
         Ok(file_index) => {
             project_index.add_file(file_index);

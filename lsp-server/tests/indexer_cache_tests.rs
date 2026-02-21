@@ -56,6 +56,7 @@ fn test_lens_data_caching() {
             10,
             0,
         )],
+        rust_types: Vec::new(),
     });
 
     // Add frontend call (creates cross-reference)
@@ -70,6 +71,7 @@ fn test_lens_data_caching() {
             2,
             10,
         )],
+        rust_types: Vec::new(),
     });
 
     // First call - builds cache for backend (which has references now)
@@ -100,6 +102,7 @@ fn test_position_index_caching() {
             5,
             15,
         )],
+        rust_types: Vec::new(),
     };
 
     index.add_file(file_index);
@@ -140,6 +143,7 @@ fn test_cache_invalidation_on_file_update() {
             1,
             0,
         )],
+        rust_types: Vec::new(),
     });
 
     // Add frontend call to create references
@@ -154,6 +158,7 @@ fn test_cache_invalidation_on_file_update() {
             0,
             10,
         )],
+        rust_types: Vec::new(),
     });
 
     // Get initial lens data (builds cache)
@@ -172,6 +177,7 @@ fn test_cache_invalidation_on_file_update() {
             1,
             0,
         )],
+        rust_types: Vec::new(),
     });
 
     // Cache should be invalidated - verify by checking lens data changes
@@ -200,6 +206,7 @@ fn test_technical_report() {
             ),
             create_test_finding_with_range("event1", EntityType::Event, Behavior::Emit, 2, 0, 3, 0),
         ],
+        rust_types: Vec::new(),
     });
 
     let report = index.technical_report();
@@ -228,6 +235,7 @@ fn test_file_report() {
             1,
             0,
         )],
+        rust_types: Vec::new(),
     });
 
     let report = index.file_report(&path);
@@ -262,6 +270,7 @@ fn test_get_all_names_with_caching() {
                 0,
             ),
         ],
+        rust_types: Vec::new(),
     });
 
     // First call - builds cache
@@ -306,6 +315,7 @@ fn test_multiple_positions_same_file() {
                 10,
             ),
         ],
+        rust_types: Vec::new(),
     });
 
     // Test position in first command

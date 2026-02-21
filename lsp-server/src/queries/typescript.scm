@@ -147,61 +147,6 @@
   name: (type_identifier) @interface_name
 ) @interface_def
 
-; === BINDINGS - EXPORTED TYPES (from ts-rs, tauri-specta, tauri-typegen) ===
-
-; Exported type alias: export type Foo = { ... }; or export type Status = "a" | "b";
-(export_statement
-  declaration: (type_alias_declaration
-    name: (type_identifier) @binding_type_name
-    value: (_) @binding_type_value
-  )
-) @binding_type_def
-
-; Exported interface: export interface Foo { ... }
-(export_statement
-  declaration: (interface_declaration
-    name: (type_identifier) @binding_interface_name
-    body: (interface_body) @binding_interface_body
-  )
-) @binding_interface_def
-
-; === BINDINGS - EXPORTED FUNCTIONS (for tauri-specta and tauri-plugin-typegen) ===
-
-; Exported async function with return type
-; export async function greet(name: string): Promise<string> { ... }
-(export_statement
-  declaration: (function_declaration
-    "async" ?
-    name: (identifier) @binding_func_name
-    parameters: (formal_parameters) @binding_func_params
-    return_type: (type_annotation
-      (_) ? @binding_return_type
-    ) ?
-  )
-) @binding_func_def
-
-; === BINDINGS - OBJECT METHODS (SPECTA & TYPEGEN) ===
-
-; Method inside exported object: export const commands = { async methodName(...) { ... } }
-; Used by both tauri-specta and tauri-plugin-typegen
-; Specta: return await TAURI_INVOKE("command_name", { args })
-; Typegen: return await invoke("command_name", { args })
-(export_statement
-  declaration: (lexical_declaration
-    (variable_declarator
-      name: (identifier) @specta_object_name
-      value: (object
-        (method_definition
-          name: (property_identifier) @specta_method_name
-          parameters: (formal_parameters) @specta_method_params
-          return_type: (type_annotation (_) ? @specta_method_return) ?
-          body: (statement_block) @specta_method_body
-        )
-      )
-    )
-  )
-) @specta_binding_method
-
 ; === USER CODE - CALL PATTERNS (SPECTA & TYPEGEN) ===
 
 ; commands.methodName(args)

@@ -42,6 +42,7 @@ fn test_undefined_command_warning() {
             Behavior::Call,
             5,
         )],
+        rust_types: Vec::new(),
     };
 
     index.add_file(frontend_file);
@@ -70,6 +71,7 @@ fn test_unused_command_warning() {
             Behavior::Definition,
             10,
         )],
+        rust_types: Vec::new(),
     };
 
     index.add_file(backend_file);
@@ -98,6 +100,7 @@ fn test_event_no_emitter() {
             Behavior::Listen,
             5,
         )],
+        rust_types: Vec::new(),
     };
 
     index.add_file(frontend_file);
@@ -125,6 +128,7 @@ fn test_event_no_listener() {
             Behavior::Emit,
             15,
         )],
+        rust_types: Vec::new(),
     };
 
     index.add_file(backend_file);
@@ -152,6 +156,7 @@ fn test_complete_command_no_warnings() {
             Behavior::Definition,
             5,
         )],
+        rust_types: Vec::new(),
     });
 
     index.add_file(FileIndex {
@@ -162,6 +167,7 @@ fn test_complete_command_no_warnings() {
             Behavior::Call,
             10,
         )],
+        rust_types: Vec::new(),
     });
 
     let key = lsp_server::indexer::IndexKey {
@@ -187,6 +193,7 @@ fn test_complete_event_no_warnings() {
             Behavior::Emit,
             5,
         )],
+        rust_types: Vec::new(),
     });
 
     index.add_file(FileIndex {
@@ -197,6 +204,7 @@ fn test_complete_event_no_warnings() {
             Behavior::Listen,
             10,
         )],
+        rust_types: Vec::new(),
     });
 
     let key = lsp_server::indexer::IndexKey {
@@ -228,11 +236,13 @@ fn test_event_payload_type_mismatch() {
     index.add_file(FileIndex {
         path: backend_path,
         findings: vec![emit_finding],
+        rust_types: Vec::new(),
     });
 
     index.add_file(FileIndex {
         path: frontend_path.clone(),
         findings: vec![listen_finding],
+        rust_types: Vec::new(),
     });
 
     // Compute diagnostics for the frontend file (where the listener is)
@@ -514,6 +524,7 @@ fn test_handling_events_project_diagnostics() {
     index.add_file(FileIndex {
         path: rs_path,
         findings: rust_findings,
+        rust_types: Vec::new(),
     });
 
     // --- TypeScript findings (main.ts) ---
@@ -603,6 +614,7 @@ fn test_handling_events_project_diagnostics() {
     index.add_file(FileIndex {
         path: ts_path.clone(),
         findings: ts_findings,
+        rust_types: Vec::new(),
     });
 
     // --- TypeScript findings (types.ts) - Interface definitions ---
@@ -681,6 +693,7 @@ fn test_handling_events_project_diagnostics() {
     index.add_file(FileIndex {
         path: types_path,
         findings: types_findings,
+        rust_types: Vec::new(),
     });
 
     // --- Compute diagnostics for the frontend file ---

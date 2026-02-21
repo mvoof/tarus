@@ -41,6 +41,7 @@ fn test_add_file_to_index() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        rust_types: Vec::new(),
     };
 
     index.add_file(file_index);
@@ -62,6 +63,7 @@ fn test_remove_file_from_index() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        rust_types: Vec::new(),
     };
 
     index.add_file(file_index);
@@ -92,6 +94,7 @@ fn test_get_locations() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        rust_types: Vec::new(),
     };
 
     // Add frontend command call
@@ -102,6 +105,7 @@ fn test_get_locations() {
             EntityType::Command,
             Behavior::Call,
         )],
+        rust_types: Vec::new(),
     };
 
     index.add_file(backend_file);
@@ -145,6 +149,7 @@ fn test_get_key_at_position() {
     let file_index = FileIndex {
         path: path.clone(),
         findings: vec![finding],
+        rust_types: Vec::new(),
     };
 
     index.add_file(file_index);
@@ -176,6 +181,7 @@ fn test_get_diagnostic_info() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        rust_types: Vec::new(),
     };
 
     // Add a command call
@@ -186,6 +192,7 @@ fn test_get_diagnostic_info() {
             EntityType::Command,
             Behavior::Call,
         )],
+        rust_types: Vec::new(),
     };
 
     index.add_file(backend_file);
@@ -213,6 +220,7 @@ fn test_multiple_files_same_command() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        rust_types: Vec::new(),
     });
 
     // Add multiple calls from different files
@@ -223,6 +231,7 @@ fn test_multiple_files_same_command() {
             EntityType::Command,
             Behavior::Call,
         )],
+        rust_types: Vec::new(),
     });
 
     index.add_file(FileIndex {
@@ -232,6 +241,7 @@ fn test_multiple_files_same_command() {
             EntityType::Command,
             Behavior::Call,
         )],
+        rust_types: Vec::new(),
     });
 
     let locations = index.get_locations(EntityType::Command, "get_user");

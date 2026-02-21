@@ -4,11 +4,19 @@
 
 use crate::indexer::{DiagnosticInfo, IndexKey, ProjectIndex};
 use crate::syntax::{
-    compare_types, is_primitive_rust_type, parse_ts_object_string, should_rename_to_camel,
-    snake_to_camel, Behavior, EntityType, TypeMatch,
+    apply_rename_all, camel_to_snake, compare_types, get_base_rust_type, is_primitive_rust_type,
+    parse_ts_object_string, Behavior, EntityType, RustTypeInfo, RustTypeKind, TypeMatch,
 };
 use std::path::PathBuf;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity};
+
+const TS_PRIMITIVE_TYPES: &[&str] = &[
+    "string", "number", "boolean", "void", "null", "undefined", "never",
+];
+
+fn is_ts_primitive(ts_type: &str) -> bool {
+    TS_PRIMITIVE_TYPES.contains(&ts_type)
+}
 
 /// Create a warning diagnostic with "tarus" source
 fn warning(range: tower_lsp_server::ls_types::Range, message: String) -> Diagnostic {
@@ -17,6 +25,34 @@ fn warning(range: tower_lsp_server::ls_types::Range, message: String) -> Diagnos
         severity: Some(DiagnosticSeverity::WARNING),
         source: Some("tarus".to_string()),
         message,
+        ..Default::default()
+    }
+}
+
+/// Create a hint diagnostic — naming suggestion, not a structural mismatch
+fn type_name_hint(
+    range: tower_lsp_server::ls_types::Range,
+    ts_type: &str,
+    rust_type: &str,
+) -> Diagnostic {
+    use tower_lsp_server::ls_types::NumberOrString;
+    // Build the replacement: keep array suffix if present (e.g. "SimpleUser[]" → "SimpleUser1[]")
+    let ts_base = ts_type.trim_end_matches("[]");
+    let suffix = if ts_type.ends_with("[]") { "[]" } else { "" };
+    let replacement = format!("{rust_type}{suffix}");
+    Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::HINT),
+        source: Some("tarus".to_string()),
+        message: format!(
+            "TypeScript type '{ts_type}' differs from Rust type '{rust_type}'. Consider renaming to match."
+        ),
+        code: Some(NumberOrString::String("tarus/return-type-name".to_string())),
+        data: Some(serde_json::json!({
+            "rustType": rust_type,
+            "tsType": ts_base,
+            "replacement": replacement
+        })),
         ..Default::default()
     }
 }
@@ -32,9 +68,15 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
         return diagnostics;
     }
 
-    let keys: Vec<IndexKey> = match project_index.file_map.get(path) {
-        Some(k) => k.value().clone(),
-        None => return diagnostics,
+    // Deduplicate: file_map stores one entry per call site, but diagnostics
+    // should process each unique key only once to avoid N×N duplicates.
+    let keys: Vec<IndexKey> = {
+        let raw = match project_index.file_map.get(path) {
+            Some(k) => k.value().clone(),
+            None => return diagnostics,
+        };
+        let mut seen = std::collections::HashSet::new();
+        raw.into_iter().filter(|k| seen.insert(k.clone())).collect()
     };
 
     for key in &keys {
@@ -211,74 +253,51 @@ fn check_structural_diagnostics(
 }
 
 fn check_parameters_diagnostics(
-    key: &IndexKey,
+    _key: &IndexKey,
     loc: &crate::indexer::LocationInfo,
-    _def: &crate::indexer::LocationInfo,
+    def: &crate::indexer::LocationInfo,
     project_index: &crate::indexer::ProjectIndex,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    // 1. Check if we have external bindings for this command
-    if let Some(binding) = project_index.bindings_cache.get(&key.name) {
-        if let Some(ts_params) = &loc.parameters {
-            // Check for unexpected TS parameters
-            for ts_p in ts_params {
-                let found = binding.args.iter().find(|bp| bp.name == ts_p.name);
+    // Use native Rust parameter types from the definition
+    if let (Some(ts_params), Some(rust_params)) = (&loc.parameters, &def.parameters) {
+        for ts_p in ts_params {
+            // Map camelCase TS argument name to snake_case Rust parameter name
+            let rust_name = camel_to_snake(&ts_p.name);
+            let found = rust_params
+                .iter()
+                .find(|rp| rp.name == rust_name || rp.name == ts_p.name);
 
-                if let Some(bp) = found {
-                    if ts_p.type_name != "any" {
-                        // Compare TS usage type vs Binding TS type
-                        // Bindings already have TS types, so recursive check might need adjustment or just work if types match
-                        // But binding.args[].type_name is TS type. recursive_type_check expects Rust type as first arg usually.
-                        // However, recursive_type_check calls compare_types(rust, ts).
-                        // If binding type is "MyInterface" and usage is "{ x: 1 }", compare_types("MyInterface", "{...}") -> Mismatch.
-                        // recursive_type_check then tries to look up "MyInterface" as Rust struct.
-                        // But "MyInterface" is TS type.
-                        // We need to know the underlying Rust type for the binding if possible.
-                        // But binding entry only knows TS type.
-                        // So for bindings, we can only do shallow check unless we map TS type back to Rust type.
-                        // For now, let's keep basic compare_types for bindings, OR use recursive_type_check assuming direct match.
-                        // If binding says "MyStruct", it likely maps to Rust "MyStruct".
-                        let result =
-                            recursive_type_check(project_index, &bp.type_name, &ts_p.type_name);
-                        if let TypeMatch::Mismatch(detail) = result {
-                            diagnostics.push(warning(
-                                loc.range,
-                                format!("Type mismatch for argument '{}': {detail}", ts_p.name),
-                            ));
-                        }
-                    }
-                } else {
-                    diagnostics.push(warning(
-                        loc.range,
-                        format!(
-                            "Command '{}' does not expect argument '{}'",
-                            key.name, ts_p.name
-                        ),
-                    ));
+            if let Some(rust_p) = found {
+                // Skip Tauri-injected parameters
+                if ["State", "AppHandle", "Window"]
+                    .iter()
+                    .any(|&s| rust_p.type_name.contains(s))
+                {
+                    continue;
                 }
-            }
 
-            // Check for missing required parameters
-            for bp in &binding.args {
-                let is_optional =
-                    bp.type_name.contains("undefined") || bp.type_name.contains("null");
-
-                if !is_optional && !ts_params.iter().any(|p| p.name == bp.name) {
-                    diagnostics.push(warning(
-                        loc.range,
-                        format!(
-                            "Missing required argument '{}' for command '{}'",
-                            bp.name, key.name
-                        ),
-                    ));
+                if ts_p.type_name != "any"
+                    && is_safe_to_compare(
+                        &rust_p.type_name,
+                        &ts_p.type_name,
+                        project_index,
+                    )
+                {
+                    let result =
+                        recursive_type_check(project_index, &rust_p.type_name, &ts_p.type_name);
+                    if let TypeMatch::Mismatch(detail) = result {
+                        diagnostics.push(warning(
+                            loc.range,
+                            format!("Type mismatch for argument '{}': {detail}", ts_p.name),
+                        ));
+                    }
                 }
             }
         }
-        return diagnostics;
     }
 
-    // Without external bindings, no parameter type diagnostics
     diagnostics
 }
 
@@ -293,74 +312,150 @@ fn check_return_type_diagnostics(
     if let (Some(ts_ret), Some(rust_ret)) = (&loc.return_type, &def.return_type) {
         let ts_type = ts_ret.trim_start_matches('<').trim_end_matches('>').trim();
 
-        // Skip validation for:
-        // - "any" in TS (user opts out)
-        if ts_type == "any" {
+        // Skip: "any" / "void" — user is opting out of return type checking
+        if ts_type == "any" || ts_type == "void" {
             return diagnostics;
         }
 
-        // Check if we have an external type definition from types_cache
-        if let Some(ext_type) = project_index.types_cache.get(ts_type) {
-            // If the external type has fields, compare against Rust struct fields
-            if let (Some(ext_fields), Some(struct_def)) = (
-                &ext_type.fields,
-                project_index
-                    .get_locations(EntityType::Struct, rust_ret)
-                    .iter()
-                    .find(|l| l.behavior == Behavior::Definition)
-                    .and_then(|l| l.fields.as_ref()),
-            ) {
-                let rename_to_camel = should_rename_to_camel(
-                    project_index
-                        .get_locations(EntityType::Struct, rust_ret)
-                        .iter()
-                        .find(|l| l.behavior == Behavior::Definition)
-                        .and_then(|l| l.attributes.as_ref()),
-                );
-
-                for ext_f in ext_fields {
-                    let st_f = struct_def.iter().find(|f| {
-                        if rename_to_camel {
-                            snake_to_camel(&f.name) == ext_f.name
-                        } else {
-                            f.name == ext_f.name
-                        }
-                    });
-
-                    if let Some(st_f) = st_f {
-                        if ext_f.type_name != "any" {
-                            let result = compare_types(&st_f.type_name, &ext_f.type_name);
-                            if let TypeMatch::Mismatch(detail) = result {
-                                diagnostics.push(warning(
-                                    loc.range,
-                                    format!(
-                                        "Type mismatch for field '{}' in return type '{}' (from {}): {detail}",
-                                        ext_f.name,
-                                        ts_type,
-                                        format!("{:?}", ext_type.source).to_lowercase()
-                                    ),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-            return diagnostics;
-        }
-
-        // Without external bindings: report mismatches if we can safely compare
         if is_safe_to_compare(rust_ret, ts_type, project_index) {
             let result = compare_types(rust_ret, ts_type);
             if let TypeMatch::Mismatch(detail) = result {
-                diagnostics.push(warning(
-                    loc.range,
-                    format!("Return type mismatch for command '{}': {detail}", key.name),
-                ));
+                // Check whether both sides are named types that differ only in name
+                let rust_base = get_base_rust_type(
+                    crate::syntax::extract_result_ok_type(rust_ret)
+                ).to_owned();
+                let ts_base = ts_type.trim_end_matches("[]");
+                let rust_is_known = project_index.rust_types.contains_key(&rust_base);
+                let ts_is_named = !is_ts_primitive(ts_base) && !ts_base.starts_with('{');
+
+                if rust_is_known && ts_is_named {
+                    // Name-only mismatch: emit HINT with rename suggestion
+                    diagnostics.push(type_name_hint(loc.range, ts_type, &rust_base));
+                } else {
+                    // Structural mismatch: emit WARNING
+                    diagnostics.push(warning(
+                        loc.range,
+                        format!("Return type mismatch for command '{}': {detail}", key.name),
+                    ));
+                }
             }
         }
     }
 
     diagnostics
+}
+
+/// Compare Rust struct fields against a TypeScript object literal `{ key: type, ... }`
+fn compare_struct_fields_to_ts_object(
+    type_info: &RustTypeInfo,
+    ts_type_repr: &str,
+    project_index: &ProjectIndex,
+) -> TypeMatch {
+    if !ts_type_repr.starts_with('{') || !ts_type_repr.ends_with('}') {
+        // Not an object literal; name-based matching already handled upstream
+        return TypeMatch::Compatible;
+    }
+
+    let ts_fields = parse_ts_object_string(ts_type_repr);
+    let rename_strategy = type_info.serde.rename_all.as_deref();
+
+    for field in &type_info.fields {
+        // Determine the serialized field name (serde rename overrides rename_all)
+        let serialized_name = if let Some(strategy) = rename_strategy {
+            apply_rename_all(&field.name, strategy)
+        } else {
+            field.name.clone()
+        };
+
+        let is_optional = field.type_name.starts_with("Option<");
+
+        match ts_fields.get(&serialized_name) {
+            Some(ts_field_type) => {
+                if ts_field_type != "any" {
+                    let result =
+                        recursive_type_check(project_index, &field.type_name, ts_field_type);
+                    if let TypeMatch::Mismatch(msg) = result {
+                        return TypeMatch::Mismatch(format!("field '{serialized_name}': {msg}"));
+                    }
+                }
+            }
+            None => {
+                if !is_optional {
+                    return TypeMatch::Mismatch(format!(
+                        "missing required field '{serialized_name}'"
+                    ));
+                }
+            }
+        }
+    }
+
+    TypeMatch::Exact
+}
+
+/// Check if a TypeScript type matches an enum based on its serde representation
+fn check_enum_matches_ts(
+    type_info: &RustTypeInfo,
+    ts_type: &str,
+    _project_index: &ProjectIndex,
+) -> TypeMatch {
+    // Untagged enums are too complex to verify without full type inference
+    if type_info.serde.untagged {
+        return TypeMatch::Compatible;
+    }
+
+    let has_tag = type_info.serde.tag.is_some();
+    let has_content = type_info.serde.content.is_some();
+
+    if has_tag && has_content {
+        // Adjacent representation: { tag: "Variant", content: ... }
+        // Too complex to verify without knowing all variant payloads
+        return TypeMatch::Compatible;
+    }
+
+    if has_tag {
+        // Internal representation: { tag: "Variant", ...fields }
+        // Too complex to verify without full payload analysis
+        return TypeMatch::Compatible;
+    }
+
+    // External representation (default)
+    // Unit variants serialize as "VariantName" strings
+    // Check if ts_type is a string literal matching a variant
+    let ts = ts_type.trim();
+    if ts.starts_with('"') && ts.ends_with('"') && ts.len() >= 2 {
+        let variant_name = &ts[1..ts.len() - 1];
+        let rename_all = type_info.serde.rename_all.as_deref();
+
+        for variant in &type_info.variants {
+            if variant.serde_skip {
+                continue;
+            }
+            let serialized = variant.serde_rename.as_deref().unwrap_or_else(|| {
+                // We can't return an owned String here, so just compare name directly
+                // The rename_all case is handled separately below
+                &variant.name
+            });
+
+            if serialized == variant_name {
+                return TypeMatch::Compatible;
+            }
+
+            // Also check with rename_all applied
+            if let Some(strategy) = rename_all {
+                let renamed = apply_rename_all(&variant.name, strategy);
+                if renamed == variant_name {
+                    return TypeMatch::Compatible;
+                }
+            }
+        }
+
+        return TypeMatch::Mismatch(format!(
+            "'{variant_name}' is not a variant of this enum"
+        ));
+    }
+
+    // For object literals or type names, treat as compatible
+    TypeMatch::Compatible
 }
 
 /// Recursively check if a Rust type matches a TS type representation
@@ -375,55 +470,18 @@ fn recursive_type_check(
         return basic_match;
     }
 
-    // 2. If TS type is an object literal "{ key: type, ... }", check against external type definitions
-    if ts_type_repr.starts_with('{') && ts_type_repr.ends_with('}') {
-        let rust_base_name = crate::syntax::extract_result_ok_type(rust_type);
-        let base = if rust_base_name.starts_with("Option<") {
-            &rust_base_name[7..rust_base_name.len() - 1]
-        } else {
-            rust_base_name
-        };
-
-        if let Some(ext_type) = project_index.types_cache.get(base) {
-            if let Some(ext_fields) = &ext_type.fields {
-                let ts_fields = parse_ts_object_string(ts_type_repr);
-
-                for ext_f in ext_fields {
-                    match ts_fields.get(&ext_f.name) {
-                        Some(ts_field_type) => {
-                            let result = compare_types(&ext_f.type_name, ts_field_type);
-                            if let TypeMatch::Mismatch(msg) = result {
-                                return TypeMatch::Mismatch(format!(
-                                    "field '{}': {msg}",
-                                    ext_f.name
-                                ));
-                            }
-                        }
-                        None => {
-                            if !ext_f.type_name.contains("null")
-                                && !ext_f.type_name.contains("undefined")
-                            {
-                                return TypeMatch::Mismatch(format!(
-                                    "missing required field '{}'",
-                                    ext_f.name
-                                ));
-                            }
-                        }
-                    }
+    // 2. Native rust_types registry — check struct/enum fields
+    {
+        let rust_base_name = get_base_rust_type(rust_type);
+        if let Some(type_info) = project_index.rust_types.get(&rust_base_name) {
+            return match &type_info.kind {
+                RustTypeKind::Struct => {
+                    compare_struct_fields_to_ts_object(&type_info, ts_type_repr, project_index)
                 }
-
-                return TypeMatch::Exact;
-            }
-        }
-    }
-
-    // 3. Check types_cache by name match (when TS side uses type name directly)
-    if let Some(ext_type) = project_index.types_cache.get(ts_type_repr) {
-        // If the Rust type name matches the TS type name (possibly with rename),
-        // consider it compatible
-        let rust_base = crate::syntax::get_base_rust_type(rust_type);
-        if ext_type.ts_name == rust_base || ext_type.ts_name == ts_type_repr {
-            return TypeMatch::Compatible;
+                RustTypeKind::Enum => {
+                    check_enum_matches_ts(&type_info, ts_type_repr, project_index)
+                }
+            };
         }
     }
 
@@ -475,21 +533,11 @@ fn check_event_payload_diagnostics(
 /// We avoid comparing if Rust side is an Enum (unless we have bindings), as Enums could
 /// serialize to strings, numbers, or objects.
 fn is_safe_to_compare(rust_type: &str, ts_type: &str, project_index: &ProjectIndex) -> bool {
-    const TS_PRIMITIVES: &[&str] = &[
-        "string",
-        "number",
-        "boolean",
-        "void",
-        "null",
-        "undefined",
-        "never",
-    ];
-
     let rust_base = crate::syntax::extract_result_ok_type(rust_type);
     let rust_base_clean = crate::syntax::get_base_rust_type(rust_base);
 
     let is_rust_primitive = is_primitive_rust_type(rust_base);
-    let is_ts_primitive = TS_PRIMITIVES.contains(&ts_type);
+    let is_ts_primitive = is_ts_primitive(ts_type);
 
     // Case 1: Both are primitives -> Safe to compare
     if is_rust_primitive && is_ts_primitive {
@@ -505,6 +553,14 @@ fn is_safe_to_compare(rust_type: &str, ts_type: &str, project_index: &ProjectInd
         && is_ts_primitive
     {
         return true;
+    }
+
+    // Case 3: Native rust_types registry has full type info
+    if let Some(type_info) = project_index.rust_types.get(&rust_base_clean) {
+        return matches!(
+            type_info.kind,
+            RustTypeKind::Struct | RustTypeKind::Enum
+        ); // Always safe: we have full type info
     }
 
     // Default: Unsafe to compare (might be Enum, Alias, or unknown)

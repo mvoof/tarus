@@ -14,7 +14,7 @@ pub mod utils;
 pub use utils::LangType;
 
 use crate::indexer::{FileIndex, Finding};
-use crate::syntax::ParseResult;
+use crate::syntax::{ParseResult, RustTypeInfo};
 use std::path::Path;
 
 use frontend_parser::{is_angular_file, parse_frontend};
@@ -38,18 +38,26 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
 
     let lang = LangType::from_extension(ext);
 
-    let mut findings: Vec<Finding> = match lang {
-        Some(LangType::Rust) => parse_rust(path, content)?,
+    let mut findings: Vec<Finding>;
+    let mut rust_types: Vec<(String, RustTypeInfo)> = Vec::new();
+
+    match lang {
+        Some(LangType::Rust) => {
+            let (f, t) = parse_rust(path, content)?;
+            findings = f;
+            rust_types = t;
+        }
         Some(LangType::TypeScript) => {
             // Check if it's an Angular component
-            // Check if it's an Angular component
-            if is_angular_file(content) {
+            findings = if is_angular_file(content) {
                 parse_frontend(path, content, LangType::Angular, 0)?
             } else {
                 parse_frontend(path, content, LangType::TypeScript, 0)?
-            }
+            };
         }
-        Some(LangType::JavaScript) => parse_frontend(path, content, LangType::JavaScript, 0)?,
+        Some(LangType::JavaScript) => {
+            findings = parse_frontend(path, content, LangType::JavaScript, 0)?;
+        }
         Some(LangType::Vue | LangType::Svelte) => {
             // Extract script blocks and parse each one
             let script_blocks = extract_script_blocks(content);
@@ -61,11 +69,15 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
                 all_findings.extend(block_findings);
             }
 
-            all_findings
+            findings = all_findings;
         }
-        Some(LangType::Angular) => parse_frontend(path, content, LangType::Angular, 0)?,
-        None => Vec::new(),
-    };
+        Some(LangType::Angular) => {
+            findings = parse_frontend(path, content, LangType::Angular, 0)?;
+        }
+        None => {
+            findings = Vec::new();
+        }
+    }
 
     // Sort findings by their range
     findings.sort_by(|a, b| {
@@ -79,5 +91,6 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
     Ok(FileIndex {
         path: path.to_path_buf(),
         findings,
+        rust_types,
     })
 }

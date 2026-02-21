@@ -2,7 +2,6 @@
 
 #![warn(clippy::all, clippy::pedantic)]
 
-pub mod bindings_reader;
 pub mod capabilities;
 pub mod file_processor;
 pub mod indexer;

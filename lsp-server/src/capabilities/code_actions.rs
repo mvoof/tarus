@@ -4,8 +4,8 @@ use crate::syntax::{camel_to_snake, map_ts_type_to_rust, Behavior, EntityType};
 use std::path::{Path, PathBuf};
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    DocumentChanges, OneOf, OptionalVersionedTextDocumentIdentifier, Position, Range,
-    TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
+    DocumentChanges, NumberOrString, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
+    Range, TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
 };
 
 /// Rust file candidate for command insertion
@@ -27,21 +27,57 @@ pub fn handle_code_action(
     src_tauri_dir: Option<&Path>,
 ) -> Option<CodeActionResponse> {
     let path = super::uri_to_path(&params.text_document.uri)?;
-    let (key, loc) = project_index.get_key_at_position(&path, params.range.start)?;
-
     let mut actions = Vec::new();
 
-    // Offer to sync types (reload external bindings)
-    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Sync all types (Reload external bindings)".to_string(),
-        kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
-        command: Some(tower_lsp_server::ls_types::Command {
-            title: "Sync all types".to_string(),
-            command: "tarus.syncTypes".to_string(),
-            arguments: None,
-        }),
-        ..Default::default()
-    }));
+    // --- Rename suggestion: TypeScript type name differs from Rust type name ---
+    // Triggered by the "tarus/return-type-name" hint diagnostic (set in diagnostics.rs).
+    // The diagnostic carries the replacement text in its `data` field.
+    for diag in &params.context.diagnostics {
+        if matches!(&diag.code, Some(NumberOrString::String(c)) if c == "tarus/return-type-name") {
+            if let Some(replacement) = diag
+                .data
+                .as_ref()
+                .and_then(|d| d.get("replacement"))
+                .and_then(|v| v.as_str())
+            {
+                let rust_type = diag
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("rustType"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(replacement);
+
+                if let Some(uri) = Uri::from_file_path(&path) {
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: format!("Rename to '{replacement}' (match Rust type '{rust_type}')"),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diag.clone()]),
+                        edit: Some(WorkspaceEdit {
+                            document_changes: Some(DocumentChanges::Edits(vec![
+                                TextDocumentEdit {
+                                    text_document: OptionalVersionedTextDocumentIdentifier {
+                                        uri,
+                                        version: None,
+                                    },
+                                    edits: vec![OneOf::Left(TextEdit {
+                                        range: diag.range,
+                                        new_text: replacement.to_string(),
+                                    })],
+                                },
+                            ])),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }));
+                }
+            }
+        }
+    }
+
+    // --- Key-based actions (generate command, event handler) ---
+    let Some((key, loc)) = project_index.get_key_at_position(&path, params.range.start) else {
+        return (!actions.is_empty()).then_some(actions);
+    };
 
     match (key.entity, loc.behavior) {
         (EntityType::Command, Behavior::Call) => {
@@ -64,7 +100,7 @@ pub fn handle_code_action(
                 &mut actions,
             );
         }
-        _ => {} // No actions for other combinations
+        _ => {}
     }
 
     (!actions.is_empty()).then_some(actions)
