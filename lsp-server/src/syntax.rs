@@ -89,10 +89,21 @@ fn extract_serde_kv(attr: &str, key: &str) -> Option<String> {
 /// Extract `rename = "name"` specifically, excluding `rename_all`
 fn extract_serde_rename(attr: &str) -> Option<String> {
     let start = attr.find("rename")?;
-    let before = if start > 0 { &attr[start - 1..start] } else { "" };
-    let after = if start + 6 < attr.len() { &attr[start + 6..start + 7] } else { "" };
+    let before = if start > 0 {
+        &attr[start - 1..start]
+    } else {
+        ""
+    };
+    let after = if start + 6 < attr.len() {
+        &attr[start + 6..start + 7]
+    } else {
+        ""
+    };
 
-    let not_prefix = before.chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_');
+    let not_prefix = before
+        .chars()
+        .next()
+        .is_none_or(|c| !c.is_alphanumeric() && c != '_');
     let not_suffix = after.chars().next().is_none_or(|c| c != '_');
 
     if not_prefix && not_suffix {

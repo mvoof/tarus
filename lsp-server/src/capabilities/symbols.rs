@@ -1,7 +1,6 @@
 //! Document and Workspace Symbol capabilities
 
 use crate::indexer::ProjectIndex;
-use std::path::PathBuf;
 use tower_lsp_server::ls_types::{
     DocumentSymbolParams, DocumentSymbolResponse, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };

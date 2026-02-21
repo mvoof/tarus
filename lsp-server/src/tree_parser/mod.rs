@@ -11,7 +11,7 @@ pub mod rust_parser;
 mod sfc;
 pub mod utils;
 
-pub use utils::{LangType, ParseContext};
+pub use utils::LangType;
 
 use crate::indexer::{FileIndex, Finding};
 use crate::syntax::ParseResult;

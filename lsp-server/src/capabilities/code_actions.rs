@@ -45,10 +45,24 @@ pub fn handle_code_action(
 
     match (key.entity, loc.behavior) {
         (EntityType::Command, Behavior::Call) => {
-            handle_command_call(&key, &loc, src_tauri_dir, params, project_index, &mut actions);
+            handle_command_call(
+                &key,
+                &loc,
+                src_tauri_dir,
+                params,
+                project_index,
+                &mut actions,
+            );
         }
         (EntityType::Event, Behavior::Call) => {
-            handle_event_call(&key, &loc, src_tauri_dir, params, project_index, &mut actions);
+            handle_event_call(
+                &key,
+                &loc,
+                src_tauri_dir,
+                params,
+                project_index,
+                &mut actions,
+            );
         }
         _ => {} // No actions for other combinations
     }

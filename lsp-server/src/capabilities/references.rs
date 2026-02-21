@@ -3,7 +3,6 @@
 //! Handles Shift+F12 to find all references
 
 use crate::indexer::ProjectIndex;
-use std::path::PathBuf;
 use tower_lsp_server::ls_types::{Location, ReferenceParams, Uri};
 
 /// Handle find references request (pure function)

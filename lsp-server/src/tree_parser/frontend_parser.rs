@@ -202,7 +202,7 @@ pub fn parse_frontend(
     };
 
     let ctx = ParseContext::new(&ts_lang, get_query_source(lang), content, path)?;
-    let mut cursor = ctx.cursor();
+    let mut cursor = ParseContext::cursor();
     let root = ctx.root_node();
 
     // Build alias map from imports
@@ -257,7 +257,7 @@ pub fn parse_frontend(
     }
 
     // Second pass: collect function calls and Specta calls
-    let mut cursor = ctx.cursor();
+    let mut cursor = ParseContext::cursor();
     let mut matches = cursor.matches(&ctx.query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {

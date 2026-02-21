@@ -20,7 +20,7 @@ use tower_lsp_server::ls_types::{
     TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri,
 };
 
-/// Convert LSP URI to PathBuf
+/// Convert LSP URI to `PathBuf`
 ///
 /// Helper to avoid repetitive `uri.to_file_path()?.into_owned()` pattern
 #[must_use]

@@ -3,11 +3,16 @@
 //! Handles auto-discovery of bindings files and parsing them to extract
 //! command signatures and types.
 
-use crate::indexer::{BindingEntry, BindingSource, ExternalTypeEntry, Parameter, ProjectIndex};
+use crate::indexer::{
+    BindingEntry, BindingSource, ExternalTypeEntry, Finding, Parameter, ProjectIndex,
+};
+use crate::syntax::{Behavior, EntityType};
 use crate::tree_parser::utils::ParseContext;
+
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use streaming_iterator::StreamingIterator;
+use tower_lsp_server::ls_types::{Position, Range};
 use walkdir::WalkDir;
 
 /// Configuration for bindings integration
@@ -153,12 +158,12 @@ pub fn find_bindings_files(project_root: &Path, config: &BindingsConfig) -> Vec<
 
     for p in common_paths {
         let path = project_root.join(p);
-        if path.exists() {
-            if !files.contains(&path) {
-                files.push(path);
-            }
+
+        if path.exists() && !files.contains(&path) {
+            files.push(path);
         }
     }
+
     files
 }
 
@@ -280,59 +285,64 @@ impl<'a> BindingCaptures<'a> {
     fn from_match(
         match_result: &tree_sitter::QueryMatch<'a, 'a>,
         content: &str,
-        func_name_idx: Option<u32>,
-        func_params_idx: Option<u32>,
-        return_type_idx: Option<u32>,
-        type_name_idx: Option<u32>,
-        type_value_idx: Option<u32>,
-        interface_name_idx: Option<u32>,
-        interface_body_idx: Option<u32>,
-        specta_object_name_idx: Option<u32>,
-        specta_method_name_idx: Option<u32>,
-        specta_method_params_idx: Option<u32>,
-        specta_method_return_idx: Option<u32>,
+        idx: &CaptureIndices,
     ) -> Self {
         let mut captures = Self::new();
 
         for capture in match_result.captures {
-            if Some(capture.index) == func_name_idx {
+            if Some(capture.index) == idx.func_name {
                 if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
                     captures.func_name = Some(text.to_string());
                 }
-            } else if Some(capture.index) == func_params_idx {
+            } else if Some(capture.index) == idx.func_params {
                 captures.params_node = Some(capture.node);
-            } else if Some(capture.index) == return_type_idx {
+            } else if Some(capture.index) == idx.return_type {
                 captures.return_type_node = Some(capture.node);
-            } else if Some(capture.index) == type_name_idx {
+            } else if Some(capture.index) == idx.type_name {
                 if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
                     captures.type_name = Some(text.to_string());
                 }
-            } else if Some(capture.index) == type_value_idx {
+            } else if Some(capture.index) == idx.type_value {
                 captures.type_value_node = Some(capture.node);
-            } else if Some(capture.index) == interface_name_idx {
+            } else if Some(capture.index) == idx.interface_name {
                 if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
                     captures.iface_name = Some(text.to_string());
                 }
-            } else if Some(capture.index) == interface_body_idx {
+            } else if Some(capture.index) == idx.interface_body {
                 captures.iface_body_node = Some(capture.node);
-            } else if Some(capture.index) == specta_object_name_idx {
+            } else if Some(capture.index) == idx.specta_object_name {
                 if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
                     captures.specta_object_name = Some(text.to_string());
                 }
-            } else if Some(capture.index) == specta_method_name_idx {
+            } else if Some(capture.index) == idx.specta_method_name {
                 captures.specta_method_name_node = Some(capture.node);
                 if let Ok(text) = capture.node.utf8_text(content.as_bytes()) {
                     captures.specta_method_name = Some(text.to_string());
                 }
-            } else if Some(capture.index) == specta_method_params_idx {
+            } else if Some(capture.index) == idx.specta_method_params {
                 captures.specta_params_node = Some(capture.node);
-            } else if Some(capture.index) == specta_method_return_idx {
+            } else if Some(capture.index) == idx.specta_method_return {
                 captures.specta_return_node = Some(capture.node);
             }
         }
 
         captures
     }
+}
+
+/// Collected capture indices for tree-sitter query matches
+struct CaptureIndices {
+    func_name: Option<u32>,
+    func_params: Option<u32>,
+    return_type: Option<u32>,
+    type_name: Option<u32>,
+    type_value: Option<u32>,
+    interface_name: Option<u32>,
+    interface_body: Option<u32>,
+    specta_object_name: Option<u32>,
+    specta_method_name: Option<u32>,
+    specta_method_params: Option<u32>,
+    specta_method_return: Option<u32>,
 }
 
 /// Read and index bindings from the specified file using tree-sitter
@@ -403,14 +413,12 @@ fn process_type_alias(
                 .unwrap_or("")
                 .to_string();
 
-            let (fields, variants) = parse_type_body(&raw_body);
+            let fields = parse_type_body(&raw_body);
 
             let entry = ExternalTypeEntry {
                 source: source.clone(),
                 ts_name: name.clone(),
                 fields,
-                variants,
-                raw_ts_body: Some(raw_body),
             };
             project_index.types_cache.insert(name.clone(), entry);
         }
@@ -437,8 +445,6 @@ fn process_interface_def(
                 source: source.clone(),
                 ts_name: name.clone(),
                 fields: Some(fields),
-                variants: None,
-                raw_ts_body: Some(raw_body),
             };
             project_index.types_cache.insert(name.clone(), entry);
         }
@@ -497,22 +503,18 @@ fn process_method_binding(
     let start = method_node.start_position();
     let end = method_node.end_position();
 
-    use crate::indexer::Finding;
-    use crate::syntax::{Behavior, EntityType};
-    use tower_lsp_server::ls_types::{Position, Range};
-
     Some(Finding {
         key: snake_case_name,
         entity: EntityType::Command,
         behavior: Behavior::Definition,
         range: Range {
             start: Position {
-                line: start.row as u32,
-                character: start.column as u32,
+                line: u32::try_from(start.row).unwrap_or(u32::MAX),
+                character: u32::try_from(start.column).unwrap_or(u32::MAX),
             },
             end: Position {
-                line: end.row as u32,
-                character: end.column as u32,
+                line: u32::try_from(end.row).unwrap_or(u32::MAX),
+                character: u32::try_from(end.column).unwrap_or(u32::MAX),
             },
         },
         parameters: Some(args),
@@ -538,25 +540,23 @@ pub fn parse_bindings_with_tree_sitter(
     let ctx = ParseContext::new(&language, query_source, content, path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-    let mut cursor = ctx.cursor();
+    let mut cursor = ParseContext::cursor();
     let mut matches = cursor.matches(&ctx.query, ctx.root_node(), content.as_bytes());
 
-    // Find capture indices for function bindings
-    let func_name_idx = ctx.query.capture_index_for_name("binding_func_name");
-    let func_params_idx = ctx.query.capture_index_for_name("binding_func_params");
-    let return_type_idx = ctx.query.capture_index_for_name("binding_return_type");
-
-    // Find capture indices for type definitions
-    let type_name_idx = ctx.query.capture_index_for_name("binding_type_name");
-    let type_value_idx = ctx.query.capture_index_for_name("binding_type_value");
-    let interface_name_idx = ctx.query.capture_index_for_name("binding_interface_name");
-    let interface_body_idx = ctx.query.capture_index_for_name("binding_interface_body");
-
-    // Find capture indices for Specta object methods
-    let specta_object_name_idx = ctx.query.capture_index_for_name("specta_object_name");
-    let specta_method_name_idx = ctx.query.capture_index_for_name("specta_method_name");
-    let specta_method_params_idx = ctx.query.capture_index_for_name("specta_method_params");
-    let specta_method_return_idx = ctx.query.capture_index_for_name("specta_method_return");
+    // Collect all capture indices
+    let idx = CaptureIndices {
+        func_name: ctx.query.capture_index_for_name("binding_func_name"),
+        func_params: ctx.query.capture_index_for_name("binding_func_params"),
+        return_type: ctx.query.capture_index_for_name("binding_return_type"),
+        type_name: ctx.query.capture_index_for_name("binding_type_name"),
+        type_value: ctx.query.capture_index_for_name("binding_type_value"),
+        interface_name: ctx.query.capture_index_for_name("binding_interface_name"),
+        interface_body: ctx.query.capture_index_for_name("binding_interface_body"),
+        specta_object_name: ctx.query.capture_index_for_name("specta_object_name"),
+        specta_method_name: ctx.query.capture_index_for_name("specta_method_name"),
+        specta_method_params: ctx.query.capture_index_for_name("specta_method_params"),
+        specta_method_return: ctx.query.capture_index_for_name("specta_method_return"),
+    };
 
     // Determine binding source from file path
     let source = detect_binding_source(path, content);
@@ -566,29 +566,14 @@ pub fn parse_bindings_with_tree_sitter(
 
     while let Some(match_result) = matches.next() {
         // Extract all captures from the match
-        let captures = BindingCaptures::from_match(
-            match_result,
-            content,
-            func_name_idx,
-            func_params_idx,
-            return_type_idx,
-            type_name_idx,
-            type_value_idx,
-            interface_name_idx,
-            interface_body_idx,
-            specta_object_name_idx,
-            specta_method_name_idx,
-            specta_method_params_idx,
-            specta_method_return_idx,
-        );
+        let captures = BindingCaptures::from_match(match_result, content, &idx);
 
         // Process each type of binding
         process_function_binding(&captures, content, project_index);
         process_type_alias(&captures, content, &source, project_index);
         process_interface_def(&captures, content, &source, project_index);
 
-        if let Some(finding) = process_method_binding(&captures, content, &source, project_index)
-        {
+        if let Some(finding) = process_method_binding(&captures, content, &source, project_index) {
             findings.push(finding);
         }
     }
@@ -643,8 +628,7 @@ fn find_ts_rs_bindings(project_root: &Path, files: &mut Vec<PathBuf>) {
     // Check TS_RS_EXPORT_DIR env variable first
     let ts_rs_dir = std::env::var("TS_RS_EXPORT_DIR")
         .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| project_root.join("bindings"));
+        .map_or_else(|| project_root.join("bindings"), PathBuf::from);
 
     if !ts_rs_dir.is_dir() {
         return;
@@ -713,41 +697,25 @@ fn detect_binding_source(path: &Path, content: &str) -> BindingSource {
     BindingSource::Custom
 }
 
-/// Parse a TypeScript type alias body to extract fields (for object types) or variants (for union types)
+/// Parse a TypeScript type alias body to extract fields (for object types)
 ///
 /// Examples:
 /// - `{ name: string; age: number }` → fields
-/// - `"active" | "inactive" | "pending"` → variants
-/// - `{ tag: "success"; value: T } | { tag: "error"; message: string }` → raw body only
-fn parse_type_body(body: &str) -> (Option<Vec<Parameter>>, Option<Vec<String>>) {
+/// - `"active" | "inactive" | "pending"` → None (union types not stored)
+/// - `{ tag: "success"; value: T } | { tag: "error"; message: string }` → None
+fn parse_type_body(body: &str) -> Option<Vec<Parameter>> {
     let trimmed = body.trim();
 
     // Check if it's an object type: { ... }
     if trimmed.starts_with('{') && trimmed.ends_with('}') {
         let fields = parse_interface_fields(trimmed);
         if fields.is_empty() {
-            return (None, None);
+            return None;
         }
-        return (Some(fields), None);
+        return Some(fields);
     }
 
-    // Check if it's a string literal union: "a" | "b" | "c"
-    if trimmed.contains('|') {
-        let parts: Vec<&str> = trimmed.split('|').map(str::trim).collect();
-        let all_string_literals = parts.iter().all(|p| {
-            (p.starts_with('"') && p.ends_with('"')) || (p.starts_with('\'') && p.ends_with('\''))
-        });
-
-        if all_string_literals {
-            let variants: Vec<String> = parts
-                .iter()
-                .map(|p| p.trim_matches(|c: char| c == '"' || c == '\'').to_string())
-                .collect();
-            return (None, Some(variants));
-        }
-    }
-
-    (None, None)
+    None
 }
 
 /// Parse interface/object type fields from a body string like `{ name: string; age: number }`
@@ -762,7 +730,7 @@ fn parse_interface_fields(body: &str) -> Vec<Parameter> {
     let mut fields = Vec::new();
 
     // Split by semicolons or newlines
-    for part in inner.split(|c: char| c == ';' || c == '\n') {
+    for part in inner.split([';', '\n']) {
         let part = part.trim();
         if part.is_empty() {
             continue;

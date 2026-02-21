@@ -28,9 +28,7 @@ pub fn handle_execute_command(
 
                 Ok(None)
             } else {
-                Err(Error::invalid_params(
-                    "No workspace root found".to_string(),
-                ))
+                Err(Error::invalid_params("No workspace root found".to_string()))
             }
         }
         _ => Err(Error::method_not_found()),

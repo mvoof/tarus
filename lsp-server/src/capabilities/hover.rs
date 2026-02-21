@@ -4,7 +4,6 @@ use crate::indexer::{LocationInfo, ProjectIndex};
 use crate::syntax::{Behavior, EntityType};
 use std::fmt::Write as _;
 use std::path::Path;
-use std::path::PathBuf;
 use tower_lsp_server::ls_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 
 /// Get file icon and filename for display purposes

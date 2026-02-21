@@ -114,11 +114,8 @@ fn test_parse_union_type() {
     let entry = index.types_cache.get("Status").unwrap();
     assert_eq!(entry.ts_name, "Status");
 
-    let variants = entry.variants.as_ref().unwrap();
-    assert_eq!(variants.len(), 3);
-    assert!(variants.contains(&"active".to_string()));
-    assert!(variants.contains(&"inactive".to_string()));
-    assert!(variants.contains(&"pending".to_string()));
+    // Union types no longer store variants — fields should be None
+    assert!(entry.fields.is_none());
 }
 
 #[test]

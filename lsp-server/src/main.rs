@@ -247,7 +247,9 @@ macro_rules! lsp_handler {
         if result.is_some() {
             $self.log_dev_info(&format!("✅ {} completed", $name)).await;
         } else {
-            $self.log_dev_info(&format!("⚠️ {} returned no results", $name)).await;
+            $self
+                .log_dev_info(&format!("⚠️ {} returned no results", $name))
+                .await;
         }
         Ok(result)
     }};
@@ -408,7 +410,8 @@ impl LanguageServer for Backend {
         if result.is_some() {
             self.log_dev_info("✅ WorkspaceSymbol completed").await;
         } else {
-            self.log_dev_info("⚠️ WorkspaceSymbol returned no results").await;
+            self.log_dev_info("⚠️ WorkspaceSymbol returned no results")
+                .await;
         }
 
         Ok(result)

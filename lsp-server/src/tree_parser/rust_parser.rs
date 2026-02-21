@@ -344,7 +344,7 @@ pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<Vec<Find
     let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
 
     let ctx = ParseContext::new(&ts_lang, get_query_source(LangType::Rust), content, path)?;
-    let mut cursor = ctx.cursor();
+    let mut cursor = ParseContext::cursor();
     let root = ctx.root_node();
 
     // Get capture indices using helper

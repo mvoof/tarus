@@ -52,6 +52,7 @@ const TS_QUERY: &str = include_str!("../queries/typescript.scm");
 const JS_QUERY: &str = include_str!("../queries/javascript.scm");
 
 /// Get the query string for a given language
+#[must_use]
 pub fn get_query_source(lang: LangType) -> &'static str {
     match lang {
         LangType::Rust => RUST_QUERY,
@@ -61,6 +62,7 @@ pub fn get_query_source(lang: LangType) -> &'static str {
 }
 
 /// Convert tree-sitter Point to LSP Position
+#[must_use]
 pub fn point_to_position(point: tree_sitter::Point) -> Position {
     Position {
         line: u32::try_from(point.row).unwrap_or(u32::MAX),
@@ -69,6 +71,7 @@ pub fn point_to_position(point: tree_sitter::Point) -> Position {
 }
 
 /// Adjust position by line offset (for Vue/Svelte script extraction)
+#[must_use]
 pub fn adjust_position(pos: Position, line_offset: usize) -> Position {
     Position {
         line: pos.line + u32::try_from(line_offset).unwrap_or(u32::MAX),
@@ -77,6 +80,7 @@ pub fn adjust_position(pos: Position, line_offset: usize) -> Position {
 }
 
 /// Adjust range by line offset
+#[must_use]
 pub fn adjust_range(range: Range, line_offset: usize) -> Range {
     Range {
         start: adjust_position(range.start, line_offset),
@@ -91,7 +95,6 @@ pub fn adjust_range(range: Range, line_offset: usize) -> Range {
 pub struct ParseContext {
     pub tree: Tree,
     pub query: Query,
-    pub language: Language,
 }
 
 impl ParseContext {
@@ -125,22 +128,18 @@ impl ParseContext {
             ParseError::Query(e.to_string(), Some(path.to_string_lossy().to_string()))
         })?;
 
-        Ok(Self {
-            tree,
-            query,
-            language: lang.clone(),
-        })
+        Ok(Self { tree, query })
     }
 
     /// Create a new query cursor for iterating over matches
     #[must_use]
-    pub fn cursor(&self) -> QueryCursor {
+    pub fn cursor() -> QueryCursor {
         QueryCursor::new()
     }
 
     /// Get the root node of the parsed tree
     #[must_use]
-    pub fn root_node(&self) -> Node {
+    pub fn root_node(&self) -> Node<'_> {
         self.tree.root_node()
     }
 }

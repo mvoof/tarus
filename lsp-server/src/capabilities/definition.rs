@@ -4,7 +4,6 @@
 
 use crate::indexer::{LocationInfo, ProjectIndex};
 use crate::syntax::Behavior;
-use std::path::PathBuf;
 use tower_lsp_server::ls_types::{GotoDefinitionParams, GotoDefinitionResponse, LocationLink, Uri};
 
 /// Handle go to definition request (pure function)

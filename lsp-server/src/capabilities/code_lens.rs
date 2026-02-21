@@ -2,7 +2,6 @@
 
 use crate::indexer::ProjectIndex;
 use serde_json::json;
-use std::path::PathBuf;
 use tower_lsp_server::ls_types::{CodeLens, CodeLensParams, Uri};
 
 /// Handle code lens request (pure function)
