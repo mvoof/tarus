@@ -73,7 +73,9 @@ fn test_undefined_command_action() {
     std::fs::write(temp_dir.join("src-tauri/tauri.conf.json"), "{}").unwrap();
     std::fs::write(temp_dir.join("src-tauri/src/main.rs"), "fn main() {}").unwrap();
 
-    let actions = handle_code_action(&params, &index, Some(&temp_dir));
+    // handle_code_action now expects the pre-computed src-tauri directory
+    let src_tauri_dir = temp_dir.join("src-tauri");
+    let actions = handle_code_action(&params, &index, Some(&src_tauri_dir));
 
     assert!(actions.is_some(), "Should return actions");
     let actions = actions.unwrap();

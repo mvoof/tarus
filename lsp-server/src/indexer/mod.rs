@@ -128,6 +128,15 @@ impl Default for ProjectIndex {
     }
 }
 
+/// Check if a path looks like a generated bindings file
+/// (e.g. inside `/bindings/` or named `bindings.ts`)
+#[must_use]
+pub fn is_generated_bindings_path(path_str: &str) -> bool {
+    path_str.contains("/bindings/")
+        || path_str.contains("\\bindings\\")
+        || path_str.ends_with("bindings.ts")
+}
+
 impl ProjectIndex {
     #[must_use]
     pub fn new() -> Self {

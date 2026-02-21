@@ -1,6 +1,5 @@
 use crate::indexer::IndexKey;
 use crate::indexer::ProjectIndex;
-use crate::scanner::find_src_tauri_dir;
 use crate::syntax::{camel_to_snake, map_ts_type_to_rust, Behavior, EntityType};
 use std::path::{Path, PathBuf};
 use tower_lsp_server::ls_types::{
@@ -18,13 +17,16 @@ pub struct RustFileCandidate {
 }
 
 /// Handle code action request (pure function)
+///
+/// `src_tauri_dir` is the pre-computed src-tauri directory (parent of tauri.conf.json).
+/// Pass `None` if workspace root is unavailable; code actions requiring Rust file candidates
+/// will be skipped.
 pub fn handle_code_action(
     params: &CodeActionParams,
     project_index: &ProjectIndex,
-    workspace_root: Option<&Path>,
+    src_tauri_dir: Option<&Path>,
 ) -> Option<CodeActionResponse> {
     let path = super::uri_to_path(&params.text_document.uri)?;
-    let root = workspace_root?;
     let (key, loc) = project_index.get_key_at_position(&path, params.range.start)?;
 
     let mut actions = Vec::new();
@@ -43,10 +45,10 @@ pub fn handle_code_action(
 
     match (key.entity, loc.behavior) {
         (EntityType::Command, Behavior::Call) => {
-            handle_command_call(&key, &loc, root, params, project_index, &mut actions);
+            handle_command_call(&key, &loc, src_tauri_dir, params, project_index, &mut actions);
         }
         (EntityType::Event, Behavior::Call) => {
-            handle_event_call(&key, &loc, root, params, project_index, &mut actions);
+            handle_event_call(&key, &loc, src_tauri_dir, params, project_index, &mut actions);
         }
         _ => {} // No actions for other combinations
     }
@@ -58,7 +60,7 @@ pub fn handle_code_action(
 fn handle_event_call(
     key: &IndexKey,
     _loc: &crate::indexer::LocationInfo,
-    root: &Path,
+    src_tauri_dir: Option<&Path>,
     params: &CodeActionParams,
     project_index: &ProjectIndex,
     actions: &mut Vec<CodeActionOrCommand>,
@@ -66,7 +68,7 @@ fn handle_event_call(
     let info = project_index.get_diagnostic_info(key);
 
     if !info.has_definition() {
-        let candidates = find_rust_file_candidates(root);
+        let candidates = find_rust_file_candidates(src_tauri_dir);
         for candidate in rank_and_limit(candidates) {
             let event_name = &key.name;
             let handler_name = format!("handle_{}", camel_to_snake(event_name));
@@ -106,7 +108,7 @@ fn handle_event_call(
 fn handle_command_call(
     key: &IndexKey,
     loc: &crate::indexer::LocationInfo,
-    root: &Path,
+    src_tauri_dir: Option<&Path>,
     params: &CodeActionParams,
     project_index: &ProjectIndex,
     actions: &mut Vec<CodeActionOrCommand>,
@@ -115,7 +117,7 @@ fn handle_command_call(
 
     if !info.has_definition() {
         // Undefined: Offer to create in Rust
-        let candidates = find_rust_file_candidates(root);
+        let candidates = find_rust_file_candidates(src_tauri_dir);
         let rust_args = infer_rust_args(loc);
 
         for candidate in rank_and_limit(candidates) {
@@ -205,12 +207,12 @@ fn create_rust_command_action(
     }))
 }
 
-fn find_rust_file_candidates(workspace_root: &Path) -> Vec<RustFileCandidate> {
-    let Some(src_tauri_dir) = find_src_tauri_dir(workspace_root) else {
+fn find_rust_file_candidates(src_tauri_dir: Option<&Path>) -> Vec<RustFileCandidate> {
+    let Some(dir) = src_tauri_dir else {
         return Vec::new();
     };
 
-    let src_dir = src_tauri_dir.join("src");
+    let src_dir = dir.join("src");
 
     if !src_dir.exists() {
         return Vec::new();

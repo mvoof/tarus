@@ -134,7 +134,7 @@ fn check_duplicate_types(
 
     // Heuristic: generated files often located in bindings/ or named bindings.ts
     let current_path_str = loc.path.to_string_lossy();
-    let current_is_generated = crate::scanner::is_generated_bindings_path(&current_path_str);
+    let current_is_generated = crate::indexer::is_generated_bindings_path(&current_path_str);
 
     // If current file IS generated, we don't warn here (we warn on the manual one)
     if current_is_generated {
@@ -142,7 +142,7 @@ fn check_duplicate_types(
     }
 
     let conflict = locations.iter().find(|l| {
-        l.path != loc.path && crate::scanner::is_generated_bindings_path(&l.path.to_string_lossy())
+        l.path != loc.path && crate::indexer::is_generated_bindings_path(&l.path.to_string_lossy())
     });
 
     if let Some(conflict_loc) = conflict {

@@ -367,6 +367,11 @@ impl LanguageServer for Backend {
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let src_tauri_dir = self
+            .workspace_roots
+            .get()
+            .and_then(|r| r.first())
+            .and_then(|root| scanner::find_src_tauri_dir(root));
         lsp_handler!(
             self,
             "CodeAction",
@@ -374,9 +379,7 @@ impl LanguageServer for Backend {
             capabilities::code_actions::handle_code_action(
                 &params,
                 &self.project_index,
-                self.workspace_roots
-                    .get()
-                    .and_then(|r| r.first().map(PathBuf::as_path)),
+                src_tauri_dir.as_deref(),
             )
         )
     }
