@@ -211,6 +211,46 @@ mod rust_parser_tests {
             "Should detect regular command without intermediate attributes"
         );
     }
+
+    #[test]
+    fn test_struct_fields_extracted_into_rust_types() {
+        let content = r#"
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SimpleUser1 {
+    pub name: String,
+    pub age: u8,
+}
+
+#[tauri::command]
+fn update_user(user: SimpleUser1) -> SimpleUser1 { user }
+"#;
+        let path = test_path("lib.rs");
+        let file_index = tree_parser::parse(&path, content).unwrap();
+
+        assert!(
+            !file_index.rust_types.is_empty(),
+            "rust_types should not be empty"
+        );
+
+        let (_, simple_user_info) = file_index
+            .rust_types
+            .iter()
+            .find(|(name, _)| *name == "SimpleUser1")
+            .expect("SimpleUser1 should be in rust_types");
+
+        assert_eq!(
+            simple_user_info.fields.len(),
+            2,
+            "SimpleUser1 should have 2 fields, got: {:?}",
+            simple_user_info.fields
+        );
+        assert_eq!(simple_user_info.fields[0].name, "name");
+        assert_eq!(simple_user_info.fields[0].type_name, "String");
+        assert_eq!(simple_user_info.fields[1].name, "age");
+        assert_eq!(simple_user_info.fields[1].type_name, "u8");
+    }
 }
 
 #[cfg(test)]

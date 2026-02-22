@@ -282,4 +282,107 @@ mod tests {
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
+
+    /// When rust_types registry has full struct info, field-level type mismatches
+    /// in invoke arguments should produce diagnostics.
+    #[test]
+    fn test_struct_field_type_mismatch_with_native_types() {
+        use lsp_server::syntax::{RustTypeInfo, RustTypeKind, SerdeAttributes};
+
+        let index = create_mock_project_index();
+        let file_path = PathBuf::from("src/test.ts");
+
+        // Register SimpleUser1 in rust_types with fields: name: String, age: u8
+        index.rust_types.insert(
+            "SimpleUser1".to_string(),
+            RustTypeInfo {
+                kind: RustTypeKind::Struct,
+                fields: vec![
+                    Parameter {
+                        name: "name".to_string(),
+                        type_name: "String".to_string(),
+                    },
+                    Parameter {
+                        name: "age".to_string(),
+                        type_name: "u8".to_string(),
+                    },
+                ],
+                variants: vec![],
+                serde: SerdeAttributes::default(),
+                generic_params: vec![],
+            },
+        );
+
+        // Command definition: update_user(user: SimpleUser1) -> SimpleUser1
+        index.map.insert(
+            IndexKey {
+                entity: EntityType::Command,
+                name: "update_user".to_string(),
+            },
+            vec![
+                LocationInfo {
+                    path: PathBuf::from("src-tauri/src/lib.rs"),
+                    range: Default::default(),
+                    behavior: Behavior::Definition,
+                    parameters: Some(vec![Parameter {
+                        name: "user".to_string(),
+                        type_name: "SimpleUser1".to_string(),
+                    }]),
+                    return_type: Some("SimpleUser1".to_string()),
+                    fields: None,
+                    attributes: None,
+                },
+                // Call site: invoke("update_user", { user: { name: "Alice", age: "twenty" } })
+                // age is string but should be number
+                LocationInfo {
+                    path: file_path.clone(),
+                    range: tower_lsp_server::ls_types::Range {
+                        start: tower_lsp_server::ls_types::Position {
+                            line: 10,
+                            character: 0,
+                        },
+                        end: tower_lsp_server::ls_types::Position {
+                            line: 10,
+                            character: 13,
+                        },
+                    },
+                    behavior: Behavior::Call,
+                    parameters: Some(vec![Parameter {
+                        name: "user".to_string(),
+                        type_name: "{ name: string, age: string }".to_string(),
+                    }]),
+                    return_type: None,
+                    fields: None,
+                    attributes: None,
+                },
+            ],
+        );
+
+        index.file_map.insert(
+            file_path.clone(),
+            vec![IndexKey {
+                entity: EntityType::Command,
+                name: "update_user".to_string(),
+            }],
+        );
+
+        let diags = compute_file_diagnostics(&file_path, &index);
+
+        let mismatch_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("Type mismatch"))
+            .collect();
+
+        assert_eq!(
+            mismatch_diags.len(),
+            1,
+            "Expected 1 field type mismatch (age: string vs u8), got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            mismatch_diags[0].message.contains("age"),
+            "Mismatch should mention 'age' field, got: {}",
+            mismatch_diags[0].message
+        );
+    }
 }

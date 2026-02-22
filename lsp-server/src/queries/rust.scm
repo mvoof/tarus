@@ -104,8 +104,8 @@
         type: (_) @field_type
       )*
     )
-  )
-) @struct_def
+  ) @struct_def
+)
 
 ; Enum definitions with attributes (captures all variant types)
 (
@@ -128,8 +128,8 @@
         (tuple_type) ? @variant_tuple_type
       )*
     )
-  )
-) @enum_def
+  ) @enum_def
+)
 
 ; Method calls: .emit("event"), .listen("event"), etc.
 ; First argument is the event name

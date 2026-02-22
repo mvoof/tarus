@@ -323,7 +323,7 @@ fn check_return_type_diagnostics(
                 // Check whether both sides are named types that differ only in name
                 let rust_base = get_base_rust_type(
                     crate::syntax::extract_result_ok_type(rust_ret)
-                ).to_owned();
+                ).clone();
                 let ts_base = ts_type.trim_end_matches("[]");
                 let rust_is_known = project_index.rust_types.contains_key(&rust_base);
                 let ts_is_named = !is_ts_primitive(ts_base) && !ts_base.starts_with('{');
