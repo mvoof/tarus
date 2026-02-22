@@ -54,6 +54,7 @@ fn test_undefined_command_warning() {
     };
 
     let info = index.get_diagnostic_info(&key);
+
     assert!(!info.has_definition(), "Command should not have definition");
     assert!(info.has_calls(), "Command should have calls");
 }
@@ -83,6 +84,7 @@ fn test_unused_command_warning() {
     };
 
     let info = index.get_diagnostic_info(&key);
+
     assert!(info.has_definition(), "Command should have definition");
     assert!(!info.has_calls(), "Command should not have calls");
 }
@@ -139,6 +141,7 @@ fn test_event_no_listener() {
     };
 
     let info = index.get_diagnostic_info(&key);
+
     assert!(info.has_emitters(), "Event should have emitters");
     assert!(!info.has_listeners(), "Event should not have listeners");
 }
@@ -176,6 +179,7 @@ fn test_complete_command_no_warnings() {
     };
 
     let info = index.get_diagnostic_info(&key);
+
     assert!(info.has_definition(), "Should have definition");
     assert!(info.has_calls(), "Should have calls");
 }
@@ -265,6 +269,7 @@ fn test_event_payload_type_mismatch() {
 
 /// Comprehensive reproducer test simulating the handling-events project
 /// This test mirrors the exact setup to identify any false diagnostics.
+/// TODO: delete?
 #[test]
 fn test_handling_events_project_diagnostics() {
     use lsp_server::indexer::Parameter;
@@ -280,6 +285,7 @@ fn test_handling_events_project_diagnostics() {
     // Struct: UserProfile { id: u32, username: String, roles: Vec<Role>, is_active: bool }
     let mut user_profile_struct =
         create_finding("UserProfile", EntityType::Struct, Behavior::Definition, 10);
+
     user_profile_struct.fields = Some(vec![
         Parameter {
             name: "id".into(),
@@ -316,6 +322,7 @@ fn test_handling_events_project_diagnostics() {
             type_name: "unit".into(),
         },
     ]);
+
     role_enum.attributes = Some(vec!["#[serde(rename_all = \"lowercase\")]".into()]);
     rust_findings.push(role_enum);
 
@@ -345,6 +352,7 @@ fn test_handling_events_project_diagnostics() {
     // Enum: Operation with #[serde(rename_all = "lowercase")]
     let mut operation_enum =
         create_finding("Operation", EntityType::Enum, Behavior::Definition, 33);
+
     operation_enum.fields = Some(vec![
         Parameter {
             name: "Add".into(),
@@ -363,6 +371,7 @@ fn test_handling_events_project_diagnostics() {
             type_name: "unit".into(),
         },
     ]);
+
     operation_enum.attributes = Some(vec!["#[serde(rename_all = \"lowercase\")]".into()]);
     rust_findings.push(operation_enum);
 
@@ -373,6 +382,7 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Definition,
         42,
     );
+
     calc_response_struct.fields = Some(vec![
         Parameter {
             name: "result".into(),
@@ -387,6 +397,7 @@ fn test_handling_events_project_diagnostics() {
             type_name: "CalculationStatus".into(),
         },
     ]);
+
     rust_findings.push(calc_response_struct);
 
     // Enum: CalculationStatus with #[serde(tag = "type", content = "data")]
@@ -396,6 +407,7 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Definition,
         49,
     );
+
     calc_status_enum.fields = Some(vec![
         Parameter {
             name: "Success".into(),
@@ -410,6 +422,7 @@ fn test_handling_events_project_diagnostics() {
             type_name: "struct".into(),
         },
     ]);
+
     calc_status_enum.attributes = Some(vec!["#[serde(tag = \"type\", content = \"data\")]".into()]);
     rust_findings.push(calc_status_enum);
 
@@ -434,10 +447,12 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Definition,
         72,
     );
+
     perform_calc_cmd.parameters = Some(vec![Parameter {
         name: "request".into(),
         type_name: "CalculationRequest".into(),
     }]);
+
     perform_calc_cmd.return_type = Some("Result<CalculationResponse, String>".into());
     rust_findings.push(perform_calc_cmd);
 
@@ -448,6 +463,7 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Definition,
         100,
     );
+
     start_periodic_cmd.parameters = Some(vec![
         Parameter {
             name: "app".into(),
@@ -458,6 +474,7 @@ fn test_handling_events_project_diagnostics() {
             type_name: "u64".into(),
         },
     ]);
+
     rust_findings.push(start_periodic_cmd);
 
     // Command: trigger_backend_listener(app: AppHandle, message: String)
@@ -467,6 +484,7 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Definition,
         119,
     );
+
     trigger_cmd.parameters = Some(vec![
         Parameter {
             name: "app".into(),
@@ -477,6 +495,7 @@ fn test_handling_events_project_diagnostics() {
             type_name: "String".into(),
         },
     ]);
+
     rust_findings.push(trigger_cmd);
 
     // Event: status-update (Rust emitter with CalculationStatus payload)
@@ -488,12 +507,14 @@ fn test_handling_events_project_diagnostics() {
     // Event: backend-pong (String payload)
     let mut backend_pong_emit =
         create_finding("backend-pong", EntityType::Event, Behavior::Emit, 134);
+
     backend_pong_emit.return_type = Some("String".into());
     rust_findings.push(backend_pong_emit);
 
     // Event: backend-ack (String payload)
     let mut backend_ack_emit =
         create_finding("backend-ack", EntityType::Event, Behavior::Emit, 140);
+
     backend_ack_emit.return_type = Some("String".into());
     rust_findings.push(backend_ack_emit);
 
@@ -504,20 +525,24 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Listen,
         132,
     ));
+
     rust_findings.push(create_finding(
         "setup-complete",
         EntityType::Event,
         Behavior::Listen,
         138,
     ));
+
     rust_findings.push(create_finding(
         "internal-event",
         EntityType::Event,
         Behavior::Listen,
         143,
     ));
+
     let mut internal_event_emit =
         create_finding("internal-event", EntityType::Event, Behavior::Emit, 121);
+
     internal_event_emit.return_type = Some("String".into());
     rust_findings.push(internal_event_emit);
 
@@ -533,33 +558,39 @@ fn test_handling_events_project_diagnostics() {
     // listen<number>("status-update") — WRONG TYPE (should be CalculationStatus)
     let mut status_listen =
         create_finding("status-update", EntityType::Event, Behavior::Listen, 31);
+
     status_listen.return_type = Some("number".into());
     ts_findings.push(status_listen);
 
     // listen<number>("periodic-tick") — no emitter
     let mut periodic_listen =
         create_finding("periodic-tick", EntityType::Event, Behavior::Listen, 35);
+
     periodic_listen.return_type = Some("number".into());
     ts_findings.push(periodic_listen);
 
     // listen<string>("backend-pong") — correct type
     let mut pong_listen = create_finding("backend-pong", EntityType::Event, Behavior::Listen, 39);
+
     pong_listen.return_type = Some("string".into());
     ts_findings.push(pong_listen);
 
     // listen<string>("backend-ack") — correct type
     let mut ack_listen = create_finding("backend-ack", EntityType::Event, Behavior::Listen, 44);
+
     ack_listen.return_type = Some("string".into());
     ts_findings.push(ack_listen);
 
     // invoke<UserProfile>("get_user_profile", { userId: id })
     let mut get_user_call =
         create_finding("get_user_profile", EntityType::Command, Behavior::Call, 57);
+
     get_user_call.return_type = Some("UserProfile".into());
     get_user_call.parameters = Some(vec![Parameter {
         name: "userId".into(),
         type_name: "any".into(),
     }]);
+
     ts_findings.push(get_user_call);
 
     // invoke<CalculationResponse>("perform_calculation", { request })
@@ -569,11 +600,13 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Call,
         83,
     );
+
     perform_calc_call.return_type = Some("CalculationResponse".into());
     perform_calc_call.parameters = Some(vec![Parameter {
         name: "request".into(),
         type_name: "any".into(),
     }]);
+
     ts_findings.push(perform_calc_call);
 
     // invoke("start_periodic_events", { intervalMs: 1500 })
@@ -583,10 +616,12 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Call,
         98,
     );
+
     start_periodic_call.parameters = Some(vec![Parameter {
         name: "intervalMs".into(),
         type_name: "number".into(),
     }]);
+
     ts_findings.push(start_periodic_call);
 
     // invoke("trigger_backend_listener", { message: "Internal Trigger" })
@@ -596,10 +631,12 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Call,
         113,
     );
+
     trigger_call.parameters = Some(vec![Parameter {
         name: "message".into(),
         type_name: "string".into(),
     }]);
+
     ts_findings.push(trigger_call);
 
     // emit("frontend-ping", "Hello from TS!")
@@ -626,6 +663,7 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Definition,
         27,
     );
+
     user_profile_iface.fields = Some(vec![
         Parameter {
             name: "id".into(),
@@ -644,6 +682,7 @@ fn test_handling_events_project_diagnostics() {
             type_name: "boolean".into(),
         },
     ]);
+
     types_findings.push(user_profile_iface);
 
     let mut calc_req_iface = create_finding(
@@ -652,6 +691,7 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Definition,
         34,
     );
+
     calc_req_iface.fields = Some(vec![
         Parameter {
             name: "operation".into(),
@@ -666,6 +706,7 @@ fn test_handling_events_project_diagnostics() {
             type_name: "number".into(),
         },
     ]);
+
     types_findings.push(calc_req_iface);
 
     let mut calc_resp_iface = create_finding(
@@ -674,6 +715,7 @@ fn test_handling_events_project_diagnostics() {
         Behavior::Definition,
         40,
     );
+
     calc_resp_iface.fields = Some(vec![
         Parameter {
             name: "result".into(),
@@ -688,6 +730,7 @@ fn test_handling_events_project_diagnostics() {
             type_name: "CalculationStatus".into(),
         },
     ]);
+
     types_findings.push(calc_resp_iface);
 
     index.add_file(FileIndex {
@@ -702,6 +745,7 @@ fn test_handling_events_project_diagnostics() {
 
     // Print all diagnostics for debugging
     eprintln!("\n=== ALL DIAGNOSTICS FOR main.ts ===");
+
     for (i, d) in diagnostics.iter().enumerate() {
         eprintln!("  [{}] line {}: {}", i, d.range.start.line, d.message);
     }
@@ -715,6 +759,7 @@ fn test_handling_events_project_diagnostics() {
         .iter()
         .filter(|d| d.message.contains("status-update") && d.message.contains("mismatch"))
         .collect();
+
     assert!(
         status_update_mismatches.is_empty(),
         "Should NOT have payload mismatch for 'status-update' without bindings (CalculationStatus is custom), got: {:?}",
@@ -726,6 +771,7 @@ fn test_handling_events_project_diagnostics() {
         .iter()
         .filter(|d| d.message.contains("periodic-tick"))
         .collect();
+
     assert!(
         !periodic_tick_warnings.is_empty(),
         "Expected 'listened for but never emitted' warning for 'periodic-tick'"
@@ -736,6 +782,7 @@ fn test_handling_events_project_diagnostics() {
         .iter()
         .filter(|d| d.message.contains("backend-pong") && d.message.contains("mismatch"))
         .collect();
+
     assert!(
         pong_mismatches.is_empty(),
         "Should NOT have payload mismatch for 'backend-pong' (string vs String), got: {:?}",
@@ -750,6 +797,7 @@ fn test_handling_events_project_diagnostics() {
         .iter()
         .filter(|d| d.message.contains("get_user_profile") && d.message.contains("mismatch"))
         .collect();
+
     assert!(
         user_profile_mismatches.is_empty(),
         "Should NOT have return type mismatch for 'get_user_profile', got: {:?}",
@@ -764,6 +812,7 @@ fn test_handling_events_project_diagnostics() {
         .iter()
         .filter(|d| d.message.contains("perform_calculation") && d.message.contains("mismatch"))
         .collect();
+
     assert!(
         calc_resp_mismatches.is_empty(),
         "Should NOT have return type mismatch for 'perform_calculation', got: {:?}",
@@ -781,6 +830,7 @@ fn test_handling_events_project_diagnostics() {
 
     if !false_mismatches.is_empty() {
         eprintln!("\n=== FALSE POSITIVE DIAGNOSTICS ===");
+
         for d in &false_mismatches {
             eprintln!("  FALSE: line {}: {}", d.range.start.line, d.message);
         }

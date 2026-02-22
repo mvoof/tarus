@@ -379,6 +379,7 @@ mod tests {
             "Expected 1 field type mismatch (age: string vs u8), got {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+
         assert!(
             mismatch_diags[0].message.contains("age"),
             "Mismatch should mention 'age' field, got: {}",

@@ -78,7 +78,9 @@ fn test_undefined_command_action() {
     let actions = handle_code_action(&params, &index, Some(&src_tauri_dir));
 
     assert!(actions.is_some(), "Should return actions");
+
     let actions = actions.unwrap();
+
     assert!(!actions.is_empty(), "Should have at least one action");
 
     let create_action = actions.iter().find(|a| {
@@ -97,10 +99,12 @@ fn test_undefined_command_action() {
     if let CodeActionOrCommand::CodeAction(ca) = create_action.unwrap() {
         let edit = ca.edit.as_ref().unwrap();
         let change = &edit.document_changes.as_ref().unwrap();
+
         if let DocumentChanges::Edits(edits) = change {
             let text_edit = &edits[0].edits[0]; // OneOf::Left
             if let OneOf::Left(te) = text_edit {
                 println!("New Text: {}", te.new_text);
+
                 assert!(
                     te.new_text
                         .contains("fn my_missing_cmd(id: i64, valid: bool)"),

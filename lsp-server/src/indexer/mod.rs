@@ -56,7 +56,6 @@ pub struct LocationInfo {
     pub attributes: Option<Vec<String>>,
 }
 
-
 #[derive(Debug)]
 pub struct ProjectIndex {
     pub map: DashMap<IndexKey, Vec<LocationInfo>>,
@@ -471,6 +470,4 @@ impl ProjectIndex {
 
         info
     }
-
 }
-

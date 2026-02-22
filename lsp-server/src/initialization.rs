@@ -27,6 +27,7 @@ pub fn spawn_background_indexing(
 
         // Scan workspace files
         let mut all_files = Vec::new();
+
         for root in roots_for_scan {
             let files = tokio::task::spawn_blocking(move || scan_workspace_files(&root))
                 .await

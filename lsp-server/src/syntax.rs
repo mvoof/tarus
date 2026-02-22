@@ -61,7 +61,9 @@ impl std::fmt::Display for ParseError {
             ParseError::Query(m, p) => ("Query", m, p),
             ParseError::Language(m, p) => ("Language", m, p),
         };
+
         let location = path.as_deref().unwrap_or("unknown file");
+
         write!(f, "{kind} error in {location}: {msg}")
     }
 }
@@ -140,11 +142,13 @@ fn extract_serde_kv(attr: &str, key: &str) -> Option<String> {
 /// Extract `rename = "name"` specifically, excluding `rename_all`
 fn extract_serde_rename(attr: &str) -> Option<String> {
     let start = attr.find("rename")?;
+
     let before = if start > 0 {
         &attr[start - 1..start]
     } else {
         ""
     };
+
     let after = if start + 6 < attr.len() {
         &attr[start + 6..start + 7]
     } else {
@@ -159,6 +163,7 @@ fn extract_serde_rename(attr: &str) -> Option<String> {
 
     if not_prefix && not_suffix {
         let eq_pos = attr[start..].find('=')?;
+
         extract_quoted_value(&attr[start + eq_pos + 1..])
     } else {
         None
@@ -184,18 +189,23 @@ pub fn parse_serde_attributes(attributes: Option<&Vec<String>>) -> SerdeAttribut
         if let Some(v) = extract_serde_kv(attr, "rename_all") {
             result.rename_all = Some(v);
         }
+
         if let Some(v) = extract_serde_kv(attr, "tag") {
             result.tag = Some(v);
         }
+
         if let Some(v) = extract_serde_kv(attr, "content") {
             result.content = Some(v);
         }
+
         if let Some(v) = extract_serde_rename(attr) {
             result.rename = Some(v);
         }
+
         if attr.contains("skip") && !attr.contains("skip_serializing_if") {
             result.skip = true;
         }
+
         if attr.contains("untagged") {
             result.untagged = true;
         }
@@ -244,9 +254,9 @@ pub fn apply_rename_all(field_name: &str, strategy: &str) -> String {
         "PascalCase" => {
             let camel = snake_to_camel(field_name);
             let mut chars = camel.chars();
-            chars
-                .next()
-                .map_or_else(String::new, |c| c.to_uppercase().to_string() + chars.as_str())
+            chars.next().map_or_else(String::new, |c| {
+                c.to_uppercase().to_string() + chars.as_str()
+            })
         }
         "SCREAMING_SNAKE_CASE" | "UPPERCASE" => field_name.to_uppercase(),
         "kebab-case" => field_name.replace('_', "-"),
@@ -373,11 +383,13 @@ pub fn map_rust_type_to_ts(rust_type: &str) -> String {
                 _ => {}
             }
         }
+
         return "Record<string, any>".to_string();
     }
 
     if rt.starts_with("HashSet<") {
         let inner = &rt[8..rt.len() - 1];
+
         return format!("Set<{}>", map_rust_type_to_ts(inner));
     }
 
@@ -385,10 +397,12 @@ pub fn map_rust_type_to_ts(rust_type: &str) -> String {
     if rt.starts_with('(') && rt.ends_with(')') {
         let inner = &rt[1..rt.len() - 1];
         let parts = split_at_depth_zero(inner, ',');
+
         let ts_parts: Vec<String> = parts
             .iter()
             .map(|p| map_rust_type_to_ts(p.trim()))
             .collect();
+
         return format!("[{}]", ts_parts.join(", "));
     }
 
@@ -400,6 +414,7 @@ pub fn map_rust_type_to_ts(rust_type: &str) -> String {
     // Module paths like "serde_json::Value" are already handled above
     if let Some(idx) = rt.find("::") {
         let before = &rt[..idx];
+
         if before.starts_with(|c: char| c.is_uppercase()) {
             return before.to_string();
         }
@@ -532,6 +547,7 @@ pub fn get_base_rust_type(rust_type: &str) -> String {
     // but preserve module paths (e.g., "serde_json::Value" stays as-is)
     if let Some(idx) = rt.find("::") {
         let before = &rt[..idx];
+
         // Enum types start with uppercase (CalculationStatus::Partial),
         // module paths start with lowercase (serde_json::Value)
         if before.starts_with(|c: char| c.is_uppercase()) {
@@ -563,6 +579,7 @@ pub enum TypeMatch {
 pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
     let ts = ts_type.trim();
     let rt = extract_result_ok_type(rust_type);
+
     let rt = rt
         .trim()
         .trim_start_matches('&')
@@ -581,6 +598,7 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
 
     // Direct primitive match
     let expected_ts = map_rust_type_to_ts(rt);
+
     if ts == expected_ts {
         return TypeMatch::Exact;
     }
@@ -588,9 +606,11 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
     // Option<T> vs T | null
     if rt.starts_with("Option<") {
         let inner_rust = &rt[7..rt.len() - 1];
+
         if let Some(ts_inner) = ts.strip_suffix(" | null") {
             return compare_types(inner_rust, ts_inner);
         }
+
         // Also accept the inner type without null (less strict)
         return compare_types(inner_rust, ts);
     }
@@ -598,12 +618,15 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
     // Vec<T> vs T[]
     if rt.starts_with("Vec<") {
         let inner_rust = &rt[4..rt.len() - 1];
+
         if let Some(ts_inner) = ts.strip_suffix("[]") {
             return compare_types(inner_rust, ts_inner);
         }
+
         // Also accept Array<T>
         if ts.starts_with("Array<") && ts.ends_with('>') {
             let ts_inner = &ts[6..ts.len() - 1];
+
             return compare_types(inner_rust, ts_inner);
         }
     }
@@ -612,16 +635,20 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
     if rt.starts_with("HashMap<") {
         let inner = &rt[8..rt.len() - 1];
         let mut depth = 0;
+
         for (i, c) in inner.char_indices() {
             match c {
                 '<' => depth += 1,
                 '>' => depth -= 1,
                 ',' if depth == 0 => {
                     let rust_value = inner[i + 1..].trim();
+
                     if ts.starts_with("Record<string,") && ts.ends_with('>') {
                         let ts_value = ts["Record<string,".len()..ts.len() - 1].trim();
+
                         return compare_types(rust_value, ts_value);
                     }
+
                     break;
                 }
                 _ => {}
@@ -632,8 +659,10 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
     // HashSet<T> vs Set<T>
     if rt.starts_with("HashSet<") {
         let inner_rust = &rt[8..rt.len() - 1];
+
         if ts.starts_with("Set<") && ts.ends_with('>') {
             let ts_inner = &ts[4..ts.len() - 1];
+
             return compare_types(inner_rust, ts_inner);
         }
     }
@@ -641,6 +670,7 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
     // Tuples: (A, B) vs [A, B]
     if rt.starts_with('(') && rt.ends_with(')') {
         let rust_inner = &rt[1..rt.len() - 1];
+
         if ts.starts_with('[') && ts.ends_with(']') {
             let ts_inner = &ts[1..ts.len() - 1];
             let rust_parts = split_at_depth_zero(rust_inner, ',');
@@ -656,10 +686,12 @@ pub fn compare_types(rust_type: &str, ts_type: &str) -> TypeMatch {
 
             for (rp, tp) in rust_parts.iter().zip(ts_parts.iter()) {
                 let result = compare_types(rp.trim(), tp.trim());
+
                 if let TypeMatch::Mismatch(msg) = result {
                     return TypeMatch::Mismatch(msg);
                 }
             }
+
             return TypeMatch::Exact;
         }
     }
@@ -704,6 +736,7 @@ pub fn parse_ts_object_string(s: &str) -> std::collections::HashMap<String, Stri
             _ => current_field.push(c),
         }
     }
+
     if !current_field.trim().is_empty() {
         parse_kv_pair(&current_field, &mut map);
     }
@@ -718,6 +751,7 @@ pub fn parse_kv_pair<S: std::hash::BuildHasher>(
     if let Some(idx) = s.find(':') {
         let key = s[..idx].trim().to_string();
         let value = s[idx + 1..].trim().to_string();
+
         map.insert(key, value);
     }
 }

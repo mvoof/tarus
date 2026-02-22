@@ -35,9 +35,11 @@ impl CaptureIndices {
     #[must_use]
     pub fn from_query(query: &Query, names: &[&str]) -> Self {
         let mut indices = HashMap::new();
+
         for name in names {
             indices.insert((*name).to_string(), query.capture_index_for_name(name));
         }
+
         Self { indices }
     }
 
@@ -59,6 +61,7 @@ impl CaptureIndices {
         name: &str,
     ) -> Option<&'a QueryCapture<'a>> {
         let idx = self.get(name)?;
+
         captures.iter().find(|c| c.index == idx)
     }
 
@@ -72,6 +75,7 @@ impl CaptureIndices {
         let Some(idx) = self.get(name) else {
             return Vec::new();
         };
+
         captures.iter().filter(|c| c.index == idx).collect()
     }
 }

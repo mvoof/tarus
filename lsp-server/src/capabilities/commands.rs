@@ -10,5 +10,6 @@ pub fn handle_execute_command(
     _roots: &[PathBuf],
 ) -> Option<Value> {
     // All commands are no-ops: type checking uses live Rust source directly
+    // TODO: mb delete?
     None
 }

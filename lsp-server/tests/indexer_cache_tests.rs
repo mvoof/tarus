@@ -76,6 +76,7 @@ fn test_lens_data_caching() {
 
     // First call - builds cache for backend (which has references now)
     let lens_data_1 = index.get_lens_data(&backend_path);
+
     assert!(
         !lens_data_1.is_empty(),
         "Should have lens data for backend with call"
@@ -83,6 +84,7 @@ fn test_lens_data_caching() {
 
     // Second call - should use cache (same result)
     let lens_data_2 = index.get_lens_data(&backend_path);
+
     assert_eq!(lens_data_1.len(), lens_data_2.len());
 }
 

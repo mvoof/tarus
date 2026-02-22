@@ -190,11 +190,15 @@ macro_rules! lsp_handler {
         let Some(path) = uri.to_file_path() else {
             return Ok(None);
         };
+
         if scanner::is_ignored(&path) {
             return Ok(None);
         }
+
         $self.log_dev_info(&format!("➡️ Request: {}", $name)).await;
+
         let result = $handler;
+
         if result.is_some() {
             $self.log_dev_info(&format!("✅ {} completed", $name)).await;
         } else {
@@ -202,6 +206,7 @@ macro_rules! lsp_handler {
                 .log_dev_info(&format!("⚠️ {} returned no results", $name))
                 .await;
         }
+
         Ok(result)
     }};
 }
@@ -209,8 +214,10 @@ macro_rules! lsp_handler {
 /// Helper: Extract path and content from document change params
 fn extract_change_params(params: DidChangeTextDocumentParams) -> Option<(PathBuf, String)> {
     let path = params.text_document.uri.to_file_path()?.into_owned();
+
     // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
     let content = params.content_changes.into_iter().next()?.text;
+
     Some((path, content))
 }
 
@@ -277,6 +284,7 @@ impl LanguageServer for Backend {
         let Some(roots) = self.workspace_roots.get() else {
             return;
         };
+
         self.spawn_background_indexing(roots);
     }
 
@@ -448,11 +456,8 @@ impl LanguageServer for Backend {
 
         let roots = self.workspace_roots.get().cloned().unwrap_or_default();
 
-        let res = capabilities::commands::handle_execute_command(
-            &params,
-            &self.project_index,
-            &roots,
-        );
+        let res =
+            capabilities::commands::handle_execute_command(&params, &self.project_index, &roots);
         self.log_dev_info("✅ Command executed successfully").await;
         Ok(res)
     }

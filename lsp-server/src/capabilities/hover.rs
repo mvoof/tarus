@@ -15,6 +15,7 @@ fn file_icon_and_name(path: &Path) -> (&'static str, &str) {
     };
 
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+
     (icon, name)
 }
 
@@ -62,6 +63,7 @@ impl BehaviorCounts {
             listens: 0,
             definitions: 0,
         };
+
         for loc in locations {
             match loc.behavior {
                 Behavior::Call => counts.calls += 1,
@@ -70,6 +72,7 @@ impl BehaviorCounts {
                 Behavior::Definition => counts.definitions += 1,
             }
         }
+
         counts
     }
 }

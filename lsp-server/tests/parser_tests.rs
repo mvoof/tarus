@@ -202,10 +202,12 @@ mod rust_parser_tests {
             command_names.contains(&"get_user_profile"),
             "Should detect command with one intermediate attribute"
         );
+
         assert!(
             command_names.contains(&"save_preferences"),
             "Should detect command with two intermediate attributes"
         );
+
         assert!(
             command_names.contains(&"delete_item"),
             "Should detect regular command without intermediate attributes"
@@ -246,6 +248,7 @@ fn update_user(user: SimpleUser1) -> SimpleUser1 { user }
             "SimpleUser1 should have 2 fields, got: {:?}",
             simple_user_info.fields
         );
+
         assert_eq!(simple_user_info.fields[0].name, "name");
         assert_eq!(simple_user_info.fields[0].type_name, "String");
         assert_eq!(simple_user_info.fields[1].name, "age");

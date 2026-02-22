@@ -47,6 +47,7 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
             findings = f;
             rust_types = t;
         }
+
         Some(LangType::TypeScript) => {
             // Check if it's an Angular component
             findings = if is_angular_file(content) {
@@ -55,9 +56,11 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
                 parse_frontend(path, content, LangType::TypeScript, 0)?
             };
         }
+
         Some(LangType::JavaScript) => {
             findings = parse_frontend(path, content, LangType::JavaScript, 0)?;
         }
+
         Some(LangType::Vue | LangType::Svelte) => {
             // Extract script blocks and parse each one
             let script_blocks = extract_script_blocks(content);
@@ -71,9 +74,11 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
 
             findings = all_findings;
         }
+
         Some(LangType::Angular) => {
             findings = parse_frontend(path, content, LangType::Angular, 0)?;
         }
+
         None => {
             findings = Vec::new();
         }

@@ -77,6 +77,7 @@ pub fn process_specta_call_match(
         let Some(obj_cap) = indices.find_capture(m.captures, obj_key) else {
             continue;
         };
+
         let Some(method_cap) = indices.find_capture(m.captures, method_key) else {
             continue;
         };
@@ -95,6 +96,7 @@ pub fn process_specta_call_match(
         }
 
         let method_name = method_cap.node.text_or_default(content);
+
         return Some(
             FindingBuilder::new(
                 crate::syntax::camel_to_snake(&method_name),
@@ -135,6 +137,7 @@ pub fn process_function_call_match<S: std::hash::BuildHasher>(
         let Some(func_cap) = indices.find_capture(m.captures, func_key) else {
             continue;
         };
+
         let Some(arg_cap) = indices.find_capture(m.captures, arg_key) else {
             continue;
         };

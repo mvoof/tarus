@@ -11,7 +11,13 @@ use std::path::PathBuf;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity};
 
 const TS_PRIMITIVE_TYPES: &[&str] = &[
-    "string", "number", "boolean", "void", "null", "undefined", "never",
+    "string",
+    "number",
+    "boolean",
+    "void",
+    "null",
+    "undefined",
+    "never",
 ];
 
 fn is_ts_primitive(ts_type: &str) -> bool {
@@ -279,11 +285,7 @@ fn check_parameters_diagnostics(
                 }
 
                 if ts_p.type_name != "any"
-                    && is_safe_to_compare(
-                        &rust_p.type_name,
-                        &ts_p.type_name,
-                        project_index,
-                    )
+                    && is_safe_to_compare(&rust_p.type_name, &ts_p.type_name, project_index)
                 {
                     // For known struct types with an object literal, collect ALL field errors.
                     let rust_base = get_base_rust_type(&rust_p.type_name);
@@ -309,12 +311,14 @@ fn check_parameters_diagnostics(
                             use tower_lsp_server::ls_types::NumberOrString;
                             let mut diag = warning(
                                 loc.range,
-                                format!("Type mismatch for argument '{}': {}", ts_p.name, fe.message),
+                                format!(
+                                    "Type mismatch for argument '{}': {}",
+                                    ts_p.name, fe.message
+                                ),
                             );
                             if let Some((wrong, correct)) = fe.rename_hint {
-                                diag.code = Some(NumberOrString::String(
-                                    "tarus/rename-field".to_string(),
-                                ));
+                                diag.code =
+                                    Some(NumberOrString::String("tarus/rename-field".to_string()));
                                 diag.data = Some(serde_json::json!({
                                     "wrongName": wrong,
                                     "correctName": correct,
@@ -324,11 +328,8 @@ fn check_parameters_diagnostics(
                             diagnostics.push(diag);
                         }
                     } else {
-                        let result = recursive_type_check(
-                            project_index,
-                            &rust_p.type_name,
-                            &ts_p.type_name,
-                        );
+                        let result =
+                            recursive_type_check(project_index, &rust_p.type_name, &ts_p.type_name);
                         if let TypeMatch::Mismatch(detail) = result {
                             diagnostics.push(warning(
                                 loc.range,
@@ -364,9 +365,8 @@ fn check_return_type_diagnostics(
             let result = compare_types(rust_ret, ts_type);
             if let TypeMatch::Mismatch(detail) = result {
                 // Check whether both sides are named types that differ only in name
-                let rust_base = get_base_rust_type(
-                    crate::syntax::extract_result_ok_type(rust_ret)
-                ).clone();
+                let rust_base =
+                    get_base_rust_type(crate::syntax::extract_result_ok_type(rust_ret)).clone();
                 let ts_base = ts_type.trim_end_matches("[]");
                 let rust_is_known = project_index.rust_types.contains_key(&rust_base);
                 let ts_is_named = !is_ts_primitive(ts_base) && !ts_base.starts_with('{');
@@ -439,13 +439,12 @@ fn compare_struct_fields_to_ts_object_multi(
                 if !is_optional {
                     // Check if the user provided the original (pre-rename) field name.
                     // e.g. `display_name` when `displayName` is the expected serialized key.
-                    let rename_hint = if serialized_name != field.name
-                        && ts_fields.contains_key(&field.name)
-                    {
-                        Some((field.name.clone(), serialized_name.clone()))
-                    } else {
-                        None
-                    };
+                    let rename_hint =
+                        if serialized_name != field.name && ts_fields.contains_key(&field.name) {
+                            Some((field.name.clone(), serialized_name.clone()))
+                        } else {
+                            None
+                        };
 
                     let message = if let Some((ref wn, ref cn)) = rename_hint {
                         format!("field '{wn}' should be renamed to '{cn}'")
@@ -453,7 +452,10 @@ fn compare_struct_fields_to_ts_object_multi(
                         format!("missing required field '{serialized_name}'")
                     };
 
-                    errors.push(FieldError { message, rename_hint });
+                    errors.push(FieldError {
+                        message,
+                        rename_hint,
+                    });
                 }
             }
         }
@@ -539,6 +541,7 @@ fn check_enum_matches_ts(
     // Unit variants serialize as "VariantName" strings
     // Check if ts_type is a string literal matching a variant
     let ts = ts_type.trim();
+
     if ts.starts_with('"') && ts.ends_with('"') && ts.len() >= 2 {
         let variant_name = &ts[1..ts.len() - 1];
         let rename_all = type_info.serde.rename_all.as_deref();
@@ -560,15 +563,14 @@ fn check_enum_matches_ts(
             // Also check with rename_all applied
             if let Some(strategy) = rename_all {
                 let renamed = apply_rename_all(&variant.name, strategy);
+
                 if renamed == variant_name {
                     return TypeMatch::Compatible;
                 }
             }
         }
 
-        return TypeMatch::Mismatch(format!(
-            "'{variant_name}' is not a variant of this enum"
-        ));
+        return TypeMatch::Mismatch(format!("'{variant_name}' is not a variant of this enum"));
     }
 
     // For object literals or type names, treat as compatible
@@ -583,6 +585,7 @@ fn recursive_type_check(
 ) -> TypeMatch {
     // 1. Basic check first
     let basic_match = compare_types(rust_type, ts_type_repr);
+
     if matches!(basic_match, TypeMatch::Exact | TypeMatch::Compatible) {
         return basic_match;
     }
@@ -595,6 +598,7 @@ fn recursive_type_check(
                 RustTypeKind::Struct => {
                     compare_struct_fields_to_ts_object(&type_info, ts_type_repr, project_index)
                 }
+
                 RustTypeKind::Enum => {
                     check_enum_matches_ts(&type_info, ts_type_repr, project_index)
                 }
@@ -674,10 +678,8 @@ fn is_safe_to_compare(rust_type: &str, ts_type: &str, project_index: &ProjectInd
 
     // Case 3: Native rust_types registry has full type info
     if let Some(type_info) = project_index.rust_types.get(&rust_base_clean) {
-        return matches!(
-            type_info.kind,
-            RustTypeKind::Struct | RustTypeKind::Enum
-        ); // Always safe: we have full type info
+        return matches!(type_info.kind, RustTypeKind::Struct | RustTypeKind::Enum);
+        // Always safe: we have full type info
     }
 
     // Default: Unsafe to compare (might be Enum, Alias, or unknown)

@@ -10,13 +10,17 @@ use tree_sitter::{Parser, Query, QueryCursor};
 // Helper to setup parser and query
 fn setup_parser(lang: LangType, query_source: &str) -> (Parser, Query) {
     let mut parser = Parser::new();
+
     let language = match lang {
         LangType::Rust => tree_sitter_rust::LANGUAGE.into(),
         LangType::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         _ => panic!("Unsupported language for test setup"),
     };
+
     parser.set_language(&language).unwrap();
+
     let query = Query::new(&language, query_source).unwrap();
+
     (parser, query)
 }
 

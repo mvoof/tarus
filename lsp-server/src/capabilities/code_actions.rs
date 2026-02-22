@@ -93,6 +93,7 @@ pub fn handle_code_action(
                 &mut actions,
             );
         }
+
         (EntityType::Event, Behavior::Call) => {
             handle_event_call(
                 &key,
@@ -122,6 +123,7 @@ fn handle_field_renames(
         if !matches!(&diag.code, Some(NumberOrString::String(c)) if c == "tarus/rename-field") {
             continue;
         }
+
         let Some(wrong_name) = diag
             .data
             .as_ref()
@@ -130,6 +132,7 @@ fn handle_field_renames(
         else {
             continue;
         };
+
         let Some(correct_name) = diag
             .data
             .as_ref()
@@ -152,26 +155,41 @@ fn handle_field_renames(
         let Ok(content) = std::fs::read_to_string(path) else {
             continue;
         };
+
         let lines: Vec<&str> = content.lines().collect();
         let search_end = (start_line + 30).min(lines.len());
         let key_pattern = format!("{wrong_name}:");
 
         let mut found_range: Option<Range> = None;
+
         for (idx, line_text) in lines[start_line..search_end].iter().enumerate() {
             if let Some(col) = line_text.find(key_pattern.as_str()) {
                 let abs_line = u32::try_from(start_line + idx).unwrap_or(u32::MAX);
                 let col_start = u32::try_from(col).unwrap_or(u32::MAX);
                 let col_end = u32::try_from(col + wrong_name.len()).unwrap_or(u32::MAX);
+
                 found_range = Some(Range {
-                    start: Position { line: abs_line, character: col_start },
-                    end: Position { line: abs_line, character: col_end },
+                    start: Position {
+                        line: abs_line,
+                        character: col_start,
+                    },
+                    end: Position {
+                        line: abs_line,
+                        character: col_end,
+                    },
                 });
+
                 break;
             }
         }
 
-        let Some(edit_range) = found_range else { continue };
-        let Some(uri) = Uri::from_file_path(path) else { continue };
+        let Some(edit_range) = found_range else {
+            continue;
+        };
+
+        let Some(uri) = Uri::from_file_path(path) else {
+            continue;
+        };
 
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: format!("Rename '{wrong_name}' to '{correct_name}'"),
@@ -179,10 +197,7 @@ fn handle_field_renames(
             diagnostics: Some(vec![diag.clone()]),
             edit: Some(WorkspaceEdit {
                 document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
-                    text_document: OptionalVersionedTextDocumentIdentifier {
-                        uri,
-                        version: None,
-                    },
+                    text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
                     edits: vec![OneOf::Left(TextEdit {
                         range: edit_range,
                         new_text: correct_name.to_string(),
@@ -208,6 +223,7 @@ fn handle_event_call(
 
     if !info.has_definition() {
         let candidates = find_rust_file_candidates(src_tauri_dir);
+
         for candidate in rank_and_limit(candidates) {
             let event_name = &key.name;
             let handler_name = format!("handle_{}", camel_to_snake(event_name));
@@ -284,6 +300,7 @@ fn infer_rust_args(loc: &crate::indexer::LocationInfo) -> String {
 
                 let mut args_strs = Vec::new();
                 let mut sorted_keys: Vec<_> = fields.keys().collect();
+
                 sorted_keys.sort();
 
                 for key in sorted_keys {

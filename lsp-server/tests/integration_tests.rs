@@ -17,6 +17,7 @@ fn test_full_workflow_rust_to_ts() {
     let rust_content = load_fixture("rust/simple_command.rs");
     let rust_path = test_path("backend.rs");
     let rust_result = tree_parser::parse(&rust_path, &rust_content);
+
     assert!(rust_result.is_ok());
     index.add_file(rust_result.unwrap());
 
@@ -24,6 +25,7 @@ fn test_full_workflow_rust_to_ts() {
     let ts_content = load_fixture("typescript/invoke.ts");
     let ts_path = test_path("frontend.ts");
     let ts_result = tree_parser::parse(&ts_path, &ts_content);
+
     assert!(ts_result.is_ok());
     index.add_file(ts_result.unwrap());
 
@@ -37,6 +39,7 @@ fn test_full_workflow_rust_to_ts() {
     // Verify we can find both backend and frontend locations
     let has_rust_file = locations.iter().any(|l| l.path == rust_path);
     let has_ts_file = locations.iter().any(|l| l.path == ts_path);
+
     assert!(has_rust_file, "Should include Rust file");
     assert!(has_ts_file, "Should include TypeScript file");
 }
@@ -49,6 +52,7 @@ fn test_full_workflow_events() {
     let rust_content = load_fixture("rust/events.rs");
     let rust_path = test_path("backend.rs");
     let rust_result = tree_parser::parse(&rust_path, &rust_content);
+
     assert!(rust_result.is_ok());
     index.add_file(rust_result.unwrap());
 
@@ -56,6 +60,7 @@ fn test_full_workflow_events() {
     let ts_content = load_fixture("typescript/emit.ts");
     let ts_path = test_path("frontend.ts");
     let ts_result = tree_parser::parse(&ts_path, &ts_content);
+
     assert!(ts_result.is_ok());
     index.add_file(ts_result.unwrap());
 
@@ -82,29 +87,34 @@ fn test_multi_language_project() {
     // Add Rust command
     let rust_content = load_fixture("rust/simple_command.rs");
     let rust_result = tree_parser::parse(&test_path("backend.rs"), &rust_content);
+
     assert!(rust_result.is_ok());
     index.add_file(rust_result.unwrap());
 
     // Add TypeScript call
     let ts_content = load_fixture("typescript/invoke.ts");
     let ts_result = tree_parser::parse(&test_path("app.ts"), &ts_content);
+
     assert!(ts_result.is_ok());
     index.add_file(ts_result.unwrap());
 
     // Add Vue call
     let vue_content = load_fixture("vue/single_script.vue");
     let vue_result = tree_parser::parse(&test_path("Component.vue"), &vue_content);
+
     assert!(vue_result.is_ok());
     index.add_file(vue_result.unwrap());
 
     // Add Angular call
     let angular_content = load_fixture("angular/component.component.ts");
     let angular_result = tree_parser::parse(&test_path("user.component.ts"), &angular_content);
+
     assert!(angular_result.is_ok());
     index.add_file(angular_result.unwrap());
 
     // Verify "greet" command is found across all languages
     let locations = index.get_locations(lsp_server::syntax::EntityType::Command, "greet");
+
     assert!(
         locations.len() >= 2,
         "Should find command across multiple languages"
@@ -137,6 +147,7 @@ fn test_tauri_2_frontend_events() {
 
     let ts_path = test_path("tauri2.ts");
     let ts_result = tree_parser::parse(&ts_path, ts_content);
+
     assert!(ts_result.is_ok());
     index.add_file(ts_result.unwrap());
 
@@ -147,6 +158,7 @@ fn test_tauri_2_frontend_events() {
     // Verify targeted-event (second arg)
     let locs_targeted =
         index.get_locations(lsp_server::syntax::EntityType::Event, "targeted-event");
+
     assert!(
         !locs_targeted.is_empty(),
         "Should find targeted-event from emitTo"
@@ -154,6 +166,7 @@ fn test_tauri_2_frontend_events() {
 
     // Verify window-event (method call)
     let locs_window = index.get_locations(lsp_server::syntax::EntityType::Event, "window-event");
+
     // Should have 2 locations: one Emit and one Listen
     assert_eq!(
         locs_window.len(),
@@ -170,6 +183,7 @@ fn test_project_update_cycle() {
     // Initial parse - simple command
     let content1 = load_fixture("rust/simple_command.rs");
     let result1 = tree_parser::parse(&path, &content1);
+
     assert!(result1.is_ok());
     index.add_file(result1.unwrap());
 
@@ -179,6 +193,7 @@ fn test_project_update_cycle() {
     // Update with multiple commands
     let content2 = load_fixture("rust/multiple_commands.rs");
     let result2 = tree_parser::parse(&path, &content2);
+
     assert!(result2.is_ok());
     index.add_file(result2.unwrap());
 

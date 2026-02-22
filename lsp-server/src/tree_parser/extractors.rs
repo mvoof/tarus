@@ -102,16 +102,19 @@ pub fn extract_rust_enum_variants_full(node: Node, content: &str) -> Vec<EnumVar
                 let Some(name_node) = variant.child_by_field_name("name") else {
                     continue;
                 };
+
                 let name = name_node.text_or_default(content);
 
                 // Collect variant-level serde attributes
                 let mut variant_attrs: Vec<String> = Vec::new();
                 let mut vc = variant.walk();
+
                 for vc_child in variant.children(&mut vc) {
                     if vc_child.kind() == "attribute_item" {
                         variant_attrs.push(vc_child.text_or_default(content));
                     }
                 }
+
                 let variant_serde = parse_serde_attributes(Some(&variant_attrs));
 
                 // Determine variant kind and extract payload info
@@ -260,6 +263,7 @@ fn infer_ts_type(node: Node, content: &str) -> String {
             // Recursively build { key: type, ... }
             let mut fields = Vec::new();
             let mut cursor = node.walk();
+
             for child in node.children(&mut cursor) {
                 if child.kind() == "pair" {
                     if let (Some(k), Some(v)) = (
@@ -275,6 +279,7 @@ fn infer_ts_type(node: Node, content: &str) -> String {
                     fields.push(format!("{name}: any"));
                 }
             }
+
             if fields.is_empty() {
                 "{}".to_string() // Empty object or treat as 'object'
             } else {

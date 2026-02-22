@@ -409,10 +409,7 @@ fn extract_enum_type_info(
 /// *   The Rust language could not be set for the parser.
 /// *   The content could not be parsed.
 /// *   The tree-sitter query could not be created.
-pub fn parse_rust(
-    path: &std::path::Path,
-    content: &str,
-) -> ParseResult<RustParseOutput> {
+pub fn parse_rust(path: &std::path::Path, content: &str) -> ParseResult<RustParseOutput> {
     let mut findings = Vec::new();
     let mut rust_types = Vec::new();
 

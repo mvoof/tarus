@@ -24,6 +24,7 @@ fn format_struct_fields(project_index: &ProjectIndex, base_type: &str) -> Option
         .find(|sl| sl.behavior == Behavior::Definition)?;
     let fields = sd.fields.as_ref()?;
     let rename = should_rename_to_camel(sd.attributes.as_ref());
+
     let field_strs: Vec<String> = fields
         .iter()
         .map(|f| {
@@ -35,6 +36,7 @@ fn format_struct_fields(project_index: &ProjectIndex, base_type: &str) -> Option
             format!("{}: {}", fname, map_rust_type_to_ts(&f.type_name))
         })
         .collect();
+
     Some(format!("{{ {} }}", field_strs.join(", ")))
 }
 
