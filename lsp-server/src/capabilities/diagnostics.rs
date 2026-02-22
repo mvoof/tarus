@@ -682,6 +682,13 @@ fn is_safe_to_compare(rust_type: &str, ts_type: &str, project_index: &ProjectInd
         // Always safe: we have full type info
     }
 
+    // Case 4: Rust is a primitive but TS is a named non-primitive type.
+    // e.g. invoke<Test>("cmd") but Rust returns String → definite mismatch.
+    // We can safely compare because compare_types will detect the mismatch.
+    if is_rust_primitive && !is_ts_primitive {
+        return true;
+    }
+
     // Default: Unsafe to compare (might be Enum, Alias, or unknown)
     false
 }
