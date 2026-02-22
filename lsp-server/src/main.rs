@@ -17,6 +17,7 @@ use tower_lsp_server::ls_types::{
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 // Refactored modules
+mod bindings_reader_v2;
 mod capabilities;
 mod config;
 mod file_processor;

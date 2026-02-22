@@ -14,6 +14,17 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tower_lsp_server::ls_types::{Position, Range, SymbolInformation};
 
+/// Which tool generated a bindings file
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeneratorKind {
+    /// ts-rs generated: `export type Name = { ... };`
+    TsRs,
+    /// tauri-specta generated: `export function name(params): Promise<ret>`
+    Specta,
+    /// tauri-plugin-typegen generated: same format as Specta
+    Typegen,
+}
+
 // Re-export Parameter from syntax so existing code continues to work
 pub use crate::syntax::Parameter;
 
@@ -68,6 +79,18 @@ pub struct ProjectIndex {
     pub rust_types: DashMap<String, RustTypeInfo>,
     /// Maps file path → type names defined in that file (for removal on file change)
     rust_type_paths: DashMap<PathBuf, Vec<String>>,
+    /// TypeScript type aliases from ts-rs / typegen generated files.
+    /// `UserProfile` → `{ id: number, username: string }`
+    pub ts_type_aliases: DashMap<String, String>,
+    /// Per-command parameter schemas from specta/typegen generated bindings.
+    /// `snake_case` command name → ordered `Vec<Parameter>` with camelCase names and TS types
+    pub command_schemas: DashMap<String, Vec<Parameter>>,
+    /// Which files are recognised as generated (to skip normal TS parsing for them).
+    pub generated_file_paths: DashMap<PathBuf, GeneratorKind>,
+    /// Maps generated file path → type alias names defined in it (for cleanup on removal)
+    generated_alias_sources: DashMap<PathBuf, Vec<String>>,
+    /// Maps generated file path → command schema names defined in it (for cleanup on removal)
+    generated_schema_sources: DashMap<PathBuf, Vec<String>>,
     cache: CacheManager,
     // Parse errors by file path
     pub parse_errors: DashMap<PathBuf, String>,
@@ -83,6 +106,11 @@ impl Default for ProjectIndex {
             method_map: DashMap::new(),
             rust_types: DashMap::new(),
             rust_type_paths: DashMap::new(),
+            ts_type_aliases: DashMap::new(),
+            command_schemas: DashMap::new(),
+            generated_file_paths: DashMap::new(),
+            generated_alias_sources: DashMap::new(),
+            generated_schema_sources: DashMap::new(),
             cache: CacheManager::new(),
             parse_errors: DashMap::new(),
             reference_limit: AtomicUsize::new(3),
@@ -222,6 +250,48 @@ impl ProjectIndex {
 
         // Also remove parse errors for this file
         self.parse_errors.remove(path);
+
+        // Clean up generated data if this was a generated file
+        self.remove_generated_data(path);
+    }
+
+    /// Remove all generated bindings data associated with a specific file.
+    pub fn remove_generated_data(&self, path: &PathBuf) {
+        self.generated_file_paths.remove(path);
+
+        if let Some((_, names)) = self.generated_alias_sources.remove(path) {
+            for name in names {
+                self.ts_type_aliases.remove(&name);
+            }
+        }
+
+        if let Some((_, names)) = self.generated_schema_sources.remove(path) {
+            for name in names {
+                self.command_schemas.remove(&name);
+            }
+        }
+    }
+
+    /// Register type aliases from a generated file.
+    pub fn add_generated_aliases(&self, path: PathBuf, aliases: Vec<(String, String)>) {
+        let names: Vec<String> = aliases.iter().map(|(n, _)| n.clone()).collect();
+        for (name, def) in aliases {
+            self.ts_type_aliases.insert(name, def);
+        }
+        if !names.is_empty() {
+            self.generated_alias_sources.insert(path, names);
+        }
+    }
+
+    /// Register command schemas from a generated file.
+    pub fn add_generated_schemas(&self, path: PathBuf, schemas: Vec<(String, Vec<Parameter>)>) {
+        let names: Vec<String> = schemas.iter().map(|(n, _)| n.clone()).collect();
+        for (name, params) in schemas {
+            self.command_schemas.insert(name, params);
+        }
+        if !names.is_empty() {
+            self.generated_schema_sources.insert(path, names);
+        }
     }
 
     /// Store a parse error for a file

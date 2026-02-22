@@ -386,4 +386,369 @@ mod tests {
             mismatch_diags[0].message
         );
     }
+
+    // ─── Bindings-reader integration tests ─────────────────────────────────
+
+    /// When a specta/typegen schema is present, parameter type mismatches should
+    /// be reported using the schema types (not the native Rust types).
+    #[test]
+    fn test_schema_param_type_mismatch() {
+        let index = create_mock_project_index();
+        let file_path = PathBuf::from("src/test.ts");
+
+        // Populate command_schemas as if specta generated it
+        index.command_schemas.insert(
+            "remove_localization".to_string(),
+            vec![
+                Parameter {
+                    name: "baseFolderPath".to_string(),
+                    type_name: "string".to_string(),
+                },
+                Parameter {
+                    name: "selectedLanguageCode".to_string(),
+                    type_name: "string".to_string(),
+                },
+            ],
+        );
+
+        // Command definition (native Rust — present but should be superseded by schema)
+        index.map.insert(
+            IndexKey {
+                entity: EntityType::Command,
+                name: "remove_localization".to_string(),
+            },
+            vec![
+                LocationInfo {
+                    path: PathBuf::from("src-tauri/src/lib.rs"),
+                    range: Default::default(),
+                    behavior: Behavior::Definition,
+                    parameters: Some(vec![
+                        Parameter {
+                            name: "base_folder_path".to_string(),
+                            type_name: "String".to_string(),
+                        },
+                        Parameter {
+                            name: "selected_language_code".to_string(),
+                            type_name: "String".to_string(),
+                        },
+                    ]),
+                    return_type: None,
+                    fields: None,
+                    attributes: None,
+                },
+                // Call site: baseFolderPath is number (wrong — schema expects string)
+                LocationInfo {
+                    path: file_path.clone(),
+                    range: tower_lsp_server::ls_types::Range {
+                        start: tower_lsp_server::ls_types::Position {
+                            line: 5,
+                            character: 0,
+                        },
+                        end: tower_lsp_server::ls_types::Position {
+                            line: 5,
+                            character: 20,
+                        },
+                    },
+                    behavior: Behavior::Call,
+                    parameters: Some(vec![
+                        Parameter {
+                            name: "baseFolderPath".to_string(),
+                            type_name: "number".to_string(), // wrong! schema says string
+                        },
+                        Parameter {
+                            name: "selectedLanguageCode".to_string(),
+                            type_name: "string".to_string(), // correct
+                        },
+                    ]),
+                    return_type: None,
+                    fields: None,
+                    attributes: None,
+                },
+            ],
+        );
+
+        index.file_map.insert(
+            file_path.clone(),
+            vec![IndexKey {
+                entity: EntityType::Command,
+                name: "remove_localization".to_string(),
+            }],
+        );
+
+        let diags = compute_file_diagnostics(&file_path, &index);
+
+        let param_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("bindings expect"))
+            .collect();
+
+        assert_eq!(
+            param_diags.len(),
+            1,
+            "Expected 1 param mismatch from schema, got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            param_diags[0].message.contains("baseFolderPath"),
+            "Diagnostic should mention 'baseFolderPath', got: {}",
+            param_diags[0].message
+        );
+    }
+
+    /// Missing parameters that appear in the schema but not in the call site
+    /// should trigger a warning.
+    #[test]
+    fn test_schema_missing_required_param() {
+        let index = create_mock_project_index();
+        let file_path = PathBuf::from("src/test.ts");
+
+        index.command_schemas.insert(
+            "save_data".to_string(),
+            vec![
+                Parameter {
+                    name: "key".to_string(),
+                    type_name: "string".to_string(),
+                },
+                Parameter {
+                    name: "value".to_string(),
+                    type_name: "string".to_string(),
+                },
+            ],
+        );
+
+        index.map.insert(
+            IndexKey {
+                entity: EntityType::Command,
+                name: "save_data".to_string(),
+            },
+            vec![
+                LocationInfo {
+                    path: PathBuf::from("src-tauri/src/lib.rs"),
+                    range: Default::default(),
+                    behavior: Behavior::Definition,
+                    parameters: None,
+                    return_type: None,
+                    fields: None,
+                    attributes: None,
+                },
+                // Call site: only 'key' is provided, 'value' is missing
+                LocationInfo {
+                    path: file_path.clone(),
+                    range: tower_lsp_server::ls_types::Range {
+                        start: tower_lsp_server::ls_types::Position {
+                            line: 3,
+                            character: 0,
+                        },
+                        end: tower_lsp_server::ls_types::Position {
+                            line: 3,
+                            character: 10,
+                        },
+                    },
+                    behavior: Behavior::Call,
+                    parameters: Some(vec![Parameter {
+                        name: "key".to_string(),
+                        type_name: "string".to_string(),
+                    }]),
+                    return_type: None,
+                    fields: None,
+                    attributes: None,
+                },
+            ],
+        );
+
+        index.file_map.insert(
+            file_path.clone(),
+            vec![IndexKey {
+                entity: EntityType::Command,
+                name: "save_data".to_string(),
+            }],
+        );
+
+        let diags = compute_file_diagnostics(&file_path, &index);
+
+        let missing_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("Missing required parameter"))
+            .collect();
+
+        assert_eq!(
+            missing_diags.len(),
+            1,
+            "Expected 1 missing-param diagnostic, got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            missing_diags[0].message.contains("value"),
+            "Missing param diagnostic should mention 'value', got: {}",
+            missing_diags[0].message
+        );
+    }
+
+    /// `ts_type_aliases` (Case 5 in `is_safe_to_compare`) should allow comparison
+    /// of known TypeScript types even when they aren't in `rust_types`.
+    #[test]
+    fn test_ts_type_aliases_enable_return_type_comparison() {
+        let index = create_mock_project_index();
+        let file_path = PathBuf::from("src/test.ts");
+
+        // Simulate ts-rs having generated UserProfile.ts
+        index
+            .ts_type_aliases
+            .insert("UserProfile".to_string(), "{ id: number, username: string }".to_string());
+
+        // Command definition: getUser() -> UserProfile (but NOT in rust_types)
+        index.map.insert(
+            IndexKey {
+                entity: EntityType::Command,
+                name: "get_user".to_string(),
+            },
+            vec![
+                LocationInfo {
+                    path: PathBuf::from("src-tauri/src/lib.rs"),
+                    range: Default::default(),
+                    behavior: Behavior::Definition,
+                    parameters: None,
+                    return_type: Some("UserProfile".to_string()),
+                    fields: None,
+                    attributes: None,
+                },
+                // invoke<WrongType>("get_user") — ts type not matching
+                LocationInfo {
+                    path: file_path.clone(),
+                    range: tower_lsp_server::ls_types::Range {
+                        start: tower_lsp_server::ls_types::Position {
+                            line: 1,
+                            character: 0,
+                        },
+                        end: tower_lsp_server::ls_types::Position {
+                            line: 1,
+                            character: 5,
+                        },
+                    },
+                    behavior: Behavior::Call,
+                    parameters: None,
+                    return_type: Some("UserProfile".to_string()), // same name → should be OK
+                    fields: None,
+                    attributes: None,
+                },
+            ],
+        );
+
+        index.file_map.insert(
+            file_path.clone(),
+            vec![IndexKey {
+                entity: EntityType::Command,
+                name: "get_user".to_string(),
+            }],
+        );
+
+        let diags = compute_file_diagnostics(&file_path, &index);
+
+        // invoke<UserProfile> on a UserProfile-returning command → no mismatch
+        let mismatch_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("mismatch"))
+            .collect();
+
+        assert_eq!(
+            mismatch_diags.len(),
+            0,
+            "Expected no mismatch for matching type names, got {:?}",
+            mismatch_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// With ts_type_aliases, a known TS type name that differs from the Rust type
+    /// should produce a HINT diagnostic (name-only mismatch).
+    #[test]
+    fn test_ts_type_aliases_name_mismatch_emits_hint() {
+        use lsp_server::syntax::{RustTypeInfo, RustTypeKind, SerdeAttributes};
+
+        let index = create_mock_project_index();
+        let file_path = PathBuf::from("src/test.ts");
+
+        // Rust has UserProfile in rust_types
+        index.rust_types.insert(
+            "UserProfile".to_string(),
+            RustTypeInfo {
+                kind: RustTypeKind::Struct,
+                fields: vec![Parameter {
+                    name: "id".to_string(),
+                    type_name: "u32".to_string(),
+                }],
+                variants: vec![],
+                serde: SerdeAttributes::default(),
+                generic_params: vec![],
+            },
+        );
+
+        // ts-rs has generated MyUser.ts → ts_type_aliases knows "MyUser"
+        index.ts_type_aliases.insert(
+            "MyUser".to_string(),
+            "{ id: number }".to_string(),
+        );
+
+        // Command definition: getUser() -> UserProfile
+        index.map.insert(
+            IndexKey {
+                entity: EntityType::Command,
+                name: "get_user".to_string(),
+            },
+            vec![
+                LocationInfo {
+                    path: PathBuf::from("src-tauri/src/lib.rs"),
+                    range: Default::default(),
+                    behavior: Behavior::Definition,
+                    parameters: None,
+                    return_type: Some("UserProfile".to_string()),
+                    fields: None,
+                    attributes: None,
+                },
+                // invoke<MyUser>("get_user") — name mismatch (MyUser vs UserProfile)
+                LocationInfo {
+                    path: file_path.clone(),
+                    range: tower_lsp_server::ls_types::Range {
+                        start: tower_lsp_server::ls_types::Position {
+                            line: 2,
+                            character: 0,
+                        },
+                        end: tower_lsp_server::ls_types::Position {
+                            line: 2,
+                            character: 10,
+                        },
+                    },
+                    behavior: Behavior::Call,
+                    parameters: None,
+                    return_type: Some("MyUser".to_string()),
+                    fields: None,
+                    attributes: None,
+                },
+            ],
+        );
+
+        index.file_map.insert(
+            file_path.clone(),
+            vec![IndexKey {
+                entity: EntityType::Command,
+                name: "get_user".to_string(),
+            }],
+        );
+
+        let diags = compute_file_diagnostics(&file_path, &index);
+
+        // Should emit a HINT suggesting rename (because rust type is known AND ts type is known
+        // from ts_type_aliases — now both sides are "named types")
+        use tower_lsp_server::ls_types::DiagnosticSeverity;
+        let hint_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::HINT))
+            .collect();
+
+        assert_eq!(
+            hint_diags.len(),
+            1,
+            "Expected 1 HINT for name-only return type mismatch, got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
 }

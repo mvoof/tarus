@@ -7,7 +7,9 @@ use streaming_iterator::StreamingIterator;
 use tower_lsp_server::ls_types::Range;
 use tree_sitter::Language;
 
-use super::extractors::{extract_ts_interface_fields, extract_ts_params, FindingBuilder};
+use super::extractors::{
+    collect_enclosing_fn_params, extract_ts_interface_fields, extract_ts_params, FindingBuilder,
+};
 use super::patterns::{get_all_frontend_patterns, ArgPosition, FunctionPatternWithPos};
 use super::query_helpers::CaptureIndices;
 use super::utils::{
@@ -155,7 +157,10 @@ pub fn process_function_call_match<S: std::hash::BuildHasher>(
 
         let parameters = indices
             .find_capture(m.captures, "invoke_args")
-            .map(|cap| extract_ts_params(cap.node, content));
+            .map(|cap| {
+                let fn_ctx = collect_enclosing_fn_params(cap.node, content);
+                extract_ts_params(cap.node, content, &fn_ctx)
+            });
 
         let return_type = indices
             .find_capture(m.captures, "type_args")

@@ -258,15 +258,63 @@ fn check_structural_diagnostics(
     msg.map(|message| warning(loc.range, message))
 }
 
+/// Compare invoke call-site params against a schema (from specta/typegen bindings).
+fn check_params_against_schema(
+    range: tower_lsp_server::ls_types::Range,
+    ts_params: &[crate::indexer::Parameter],
+    schema: &[crate::indexer::Parameter],
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    // Check each call-site param against the schema
+    for ts_p in ts_params {
+        if let Some(schema_p) = schema.iter().find(|sp| sp.name == ts_p.name) {
+            if ts_p.type_name != "any" && ts_p.type_name != schema_p.type_name {
+                diagnostics.push(warning(
+                    range,
+                    format!(
+                        "Parameter '{}' is {} but bindings expect {}",
+                        ts_p.name, ts_p.type_name, schema_p.type_name
+                    ),
+                ));
+            }
+        }
+    }
+
+    // Warn about required schema params missing from the call
+    for schema_p in schema {
+        if !ts_params.iter().any(|tp| tp.name == schema_p.name) {
+            diagnostics.push(warning(
+                range,
+                format!("Missing required parameter '{}'", schema_p.name),
+            ));
+        }
+    }
+
+    diagnostics
+}
+
 fn check_parameters_diagnostics(
-    _key: &IndexKey,
+    key: &IndexKey,
     loc: &crate::indexer::LocationInfo,
     def: &crate::indexer::LocationInfo,
     project_index: &crate::indexer::ProjectIndex,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    // Use native Rust parameter types from the definition
+    // Priority: use specta/typegen schema if available — it provides authoritative TS types.
+    if let Some(schema) = project_index.command_schemas.get(&key.name) {
+        if let Some(ts_params) = &loc.parameters {
+            diagnostics.extend(check_params_against_schema(
+                loc.range,
+                ts_params,
+                &schema.clone(),
+            ));
+        }
+        return diagnostics;
+    }
+
+    // Fallback: use native Rust parameter types from the definition
     if let (Some(ts_params), Some(rust_params)) = (&loc.parameters, &def.parameters) {
         for ts_p in ts_params {
             // Map camelCase TS argument name to snake_case Rust parameter name
@@ -686,6 +734,13 @@ fn is_safe_to_compare(rust_type: &str, ts_type: &str, project_index: &ProjectInd
     // e.g. invoke<Test>("cmd") but Rust returns String → definite mismatch.
     // We can safely compare because compare_types will detect the mismatch.
     if is_rust_primitive && !is_ts_primitive {
+        return true;
+    }
+
+    // Case 5: The TypeScript type name is known from a generated bindings file (ts-rs / specta).
+    // We have its definition, so the comparison is safe.
+    let ts_base_name = ts_type.trim_end_matches("[]");
+    if project_index.ts_type_aliases.contains_key(ts_base_name) {
         return true;
     }
 

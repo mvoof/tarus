@@ -2,6 +2,7 @@
 
 use super::utils::NodeTextExt;
 use crate::syntax::{parse_serde_attributes, EnumVariant, Parameter, VariantKind};
+use std::collections::HashMap;
 use tree_sitter::Node;
 
 /// Extract Rust function parameters
@@ -209,9 +210,83 @@ pub fn extract_ts_interface_fields(node: Node, content: &str) -> Vec<Parameter> 
     fields
 }
 
-/// Extract TypeScript parameters from an object literal (invoke arguments)
+/// Walk up the tree from `node` and collect parameter types from the first enclosing function.
+///
+/// Returns a map from parameter name to its TypeScript type annotation text.
+/// Returns an empty map if there is no enclosing function or if it has no typed parameters.
 #[must_use]
-pub fn extract_ts_params(node: Node, content: &str) -> Vec<Parameter> {
+pub fn collect_enclosing_fn_params(node: Node, content: &str) -> HashMap<String, String> {
+    let mut ctx = HashMap::new();
+    let mut current = node.parent();
+
+    while let Some(n) = current {
+        match n.kind() {
+            "function_declaration"
+            | "function"
+            | "arrow_function"
+            | "method_definition"
+            | "function_expression" => {
+                if let Some(params_node) = n.child_by_field_name("parameters") {
+                    let mut cursor = params_node.walk();
+                    for param in params_node.children(&mut cursor) {
+                        if param.kind() != "required_parameter"
+                            && param.kind() != "optional_parameter"
+                        {
+                            continue;
+                        }
+                        let name_node = param.child_by_field_name("pattern");
+                        let type_ann_node = param.child_by_field_name("type");
+
+                        if let (Some(n_node), Some(t_ann)) = (name_node, type_ann_node) {
+                            let name = n_node.text_or_default(content);
+                            // type_annotation wraps `: type`; find the actual type child
+                            let mut tc = t_ann.walk();
+                            let type_str = t_ann
+                                .children(&mut tc)
+                                .find(|c| c.kind() != ":" && !c.is_extra())
+                                .map_or_else(
+                                    || t_ann.text_or_default(content),
+                                    |c| c.text_or_default(content),
+                                );
+                            ctx.insert(name, type_str);
+                        }
+                    }
+                }
+                break; // Stop at the first enclosing function
+            }
+            _ => {}
+        }
+        current = n.parent();
+    }
+
+    ctx
+}
+
+/// Like `infer_ts_type` but resolves identifier names via `ctx` (enclosing fn params).
+fn infer_ts_type_with_ctx<S: std::hash::BuildHasher>(
+    node: Node,
+    content: &str,
+    ctx: &HashMap<String, String, S>,
+) -> String {
+    if node.kind() == "identifier" {
+        return ctx
+            .get(&node.text_or_default(content))
+            .cloned()
+            .unwrap_or_else(|| "any".to_string());
+    }
+    infer_ts_type(node, content)
+}
+
+/// Extract TypeScript parameters from an object literal (invoke arguments).
+///
+/// `ctx` maps variable names to their TypeScript types from the enclosing function,
+/// enabling resolution of identifier references (e.g., `{ count: n }` where `n: number`).
+#[must_use]
+pub fn extract_ts_params<S: std::hash::BuildHasher>(
+    node: Node,
+    content: &str,
+    ctx: &HashMap<String, String, S>,
+) -> Vec<Parameter> {
     let mut params = Vec::new();
 
     if node.kind() == "object" {
@@ -225,24 +300,21 @@ pub fn extract_ts_params(node: Node, content: &str) -> Vec<Parameter> {
 
                 if let Some(k) = key_node {
                     let name = k.text_or_default(content);
-                    let mut type_name = "any".to_string();
-
-                    if let Some(v) = value_node {
-                        type_name = infer_ts_type(v, content);
-                    }
-
+                    let type_name = value_node
+                        .map_or_else(|| "any".to_string(), |v| infer_ts_type_with_ctx(v, content, ctx));
                     params.push(Parameter { name, type_name });
                 }
             }
-            // Handle { name } shorthand syntax
+            // Handle { name } shorthand syntax — look up name in context
             else if child.kind() == "shorthand_property_identifier"
                 || child.kind() == "shorthand_property_identifier_pattern"
             {
                 let name = child.text_or_default(content);
-                params.push(Parameter {
-                    name,
-                    type_name: "any".to_string(), // Variable reference, treat as any
-                });
+                let type_name = ctx
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| "any".to_string());
+                params.push(Parameter { name, type_name });
             }
         }
     }

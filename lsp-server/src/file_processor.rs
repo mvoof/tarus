@@ -1,6 +1,8 @@
 //! File processing utilities
 
+use crate::bindings_reader_v2;
 use crate::indexer::ProjectIndex;
+use crate::scanner::detect_generator_kind;
 use crate::tree_parser;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +27,14 @@ pub fn is_supported_file(path: &Path) -> bool {
 pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectIndex) -> bool {
     if !is_supported_file(path) {
         return false;
+    }
+
+    // Route generated TypeScript files to the bindings reader instead of the normal parser.
+    if path.extension().and_then(|e| e.to_str()) == Some("ts") {
+        if let Some(kind) = detect_generator_kind(content) {
+            bindings_reader_v2::process_generated_file(path, content, kind, project_index);
+            return true;
+        }
     }
 
     match tree_parser::parse(path, content) {

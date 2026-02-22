@@ -166,6 +166,23 @@ fn complete_invoke_arguments(
         return None;
     }
 
+    // Priority: use specta/typegen schema (has authoritative camelCase TS types)
+    if let Some(schema) = project_index.command_schemas.get(cmd_name) {
+        let items: Vec<_> = schema
+            .iter()
+            .map(|p| CompletionItem {
+                label: p.name.clone(),
+                kind: Some(CompletionItemKind::PROPERTY),
+                detail: Some(format!(": {}", p.type_name)),
+                insert_text: Some(format!("{}: ", p.name)),
+                ..Default::default()
+            })
+            .collect();
+
+        return if items.is_empty() { None } else { Some(items) };
+    }
+
+    // Fallback: native Rust parameter types
     let locations = project_index.get_locations(EntityType::Command, cmd_name);
     let def = locations
         .iter()
