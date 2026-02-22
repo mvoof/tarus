@@ -47,6 +47,20 @@ pub fn handle_code_action(
                     .and_then(|v| v.as_str())
                     .unwrap_or(replacement);
 
+                // `data.tsType` is the base TS type name (without `[]`) stored by
+                // `type_name_hint`. We use it to locate the generic argument `<TsType...>`
+                // in the source file so the edit targets the type arg, not the command string.
+                let ts_type = diag
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("tsType"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let edit_range =
+                    find_generic_type_range(&path, diag.range.start.line, ts_type, replacement)
+                        .unwrap_or(diag.range);
+
                 if let Some(uri) = Uri::from_file_path(&path) {
                     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                         title: format!("Rename to '{replacement}' (match Rust type '{rust_type}')"),
@@ -60,7 +74,7 @@ pub fn handle_code_action(
                                         version: None,
                                     },
                                     edits: vec![OneOf::Left(TextEdit {
-                                        range: diag.range,
+                                        range: edit_range,
                                         new_text: replacement.to_string(),
                                     })],
                                 },
@@ -108,6 +122,78 @@ pub fn handle_code_action(
     }
 
     (!actions.is_empty()).then_some(actions)
+}
+
+/// Find the source range covering the content of a generic type argument `<TsType>` near `line`.
+///
+/// `ts_type` is the base type name without `[]` (e.g., `"SimpleUser"`).
+/// `replacement` is the full replacement text (e.g., `"SimpleUser1[]"`), used to
+/// determine how many characters of the generic content to select.
+///
+/// Searches `line` and up to 2 lines before it (the `<T>` is usually on the invoke keyword line,
+/// while the string literal — and thus the diagnostic — may be on the same or a later line).
+/// Returns `None` if the pattern is not found.
+fn find_generic_type_range(
+    path: &Path,
+    diag_line: u32,
+    ts_type: &str,
+    replacement: &str,
+) -> Option<Range> {
+    if ts_type.is_empty() {
+        return None;
+    }
+
+    let content = std::fs::read_to_string(path).ok()?;
+    let lines: Vec<&str> = content.lines().collect();
+    let diag_line_idx = usize::try_from(diag_line).ok()?;
+
+    // Search from 2 lines before the diagnostic up to the diagnostic line itself.
+    // The generic `<T>` and the string literal are almost always on the same line.
+    let search_start = diag_line_idx.saturating_sub(2);
+    let search_end = diag_line_idx + 1;
+
+    let pattern = format!("<{ts_type}");
+
+    for abs_idx in (search_start..search_end.min(lines.len())).rev() {
+        let line_text = lines[abs_idx];
+        let Some(bracket_col) = line_text.find(&pattern) else {
+            continue;
+        };
+
+        // Start is the character right after `<`
+        let start_col = bracket_col + 1; // skip `<`
+
+        // End: scan forward from start_col to find where the generic content ends.
+        // Stop at the matching `>`, or at `,` / whitespace that closes the type arg.
+        let after_open = &line_text[start_col..];
+        let content_len = after_open
+            .find(['>', ','])
+            .unwrap_or(after_open.len());
+
+        // Sanity: the content we found must be at least as long as ts_type itself.
+        if content_len < ts_type.len() {
+            continue;
+        }
+
+        // Also verify: replacement must fit (avoid replacing unrelated `<` tokens).
+        // The current generic text must start with ts_type.
+        if !after_open[..content_len].starts_with(ts_type) {
+            continue;
+        }
+
+        let _ = replacement; // replacement length doesn't constrain the selection
+
+        let abs_line_u32 = u32::try_from(abs_idx).ok()?;
+        let start_col_u32 = u32::try_from(start_col).ok()?;
+        let end_col_u32 = u32::try_from(start_col + content_len).ok()?;
+
+        return Some(Range {
+            start: Position { line: abs_line_u32, character: start_col_u32 },
+            end: Position { line: abs_line_u32, character: end_col_u32 },
+        });
+    }
+
+    None
 }
 
 /// Handle `tarus/rename-field` diagnostics.
