@@ -74,6 +74,9 @@ pub fn handle_code_action(
         }
     }
 
+    // --- Rename suggestion: TypeScript field name doesn't match serde serialized name ---
+    handle_field_renames(&path, &params.context.diagnostics, &mut actions);
+
     // --- Key-based actions (generate command, event handler) ---
     let Some((key, loc)) = project_index.get_key_at_position(&path, params.range.start) else {
         return (!actions.is_empty()).then_some(actions);
@@ -104,6 +107,92 @@ pub fn handle_code_action(
     }
 
     (!actions.is_empty()).then_some(actions)
+}
+
+/// Handle `tarus/rename-field` diagnostics.
+///
+/// For each diagnostic, reads the file to locate the exact `wrong_name:` key and
+/// generates a `TextEdit` renaming it to `correct_name`.
+fn handle_field_renames(
+    path: &Path,
+    diagnostics: &[tower_lsp_server::ls_types::Diagnostic],
+    actions: &mut Vec<CodeActionOrCommand>,
+) {
+    for diag in diagnostics {
+        if !matches!(&diag.code, Some(NumberOrString::String(c)) if c == "tarus/rename-field") {
+            continue;
+        }
+        let Some(wrong_name) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("wrongName"))
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let Some(correct_name) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("correctName"))
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+
+        // Search from the invoke call line downward (up to 30 lines).
+        let start_line = usize::try_from(
+            diag.data
+                .as_ref()
+                .and_then(|d| d.get("line"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(u64::from(diag.range.start.line)),
+        )
+        .unwrap_or(0);
+
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        let search_end = (start_line + 30).min(lines.len());
+        let key_pattern = format!("{wrong_name}:");
+
+        let mut found_range: Option<Range> = None;
+        for (idx, line_text) in lines[start_line..search_end].iter().enumerate() {
+            if let Some(col) = line_text.find(key_pattern.as_str()) {
+                let abs_line = u32::try_from(start_line + idx).unwrap_or(u32::MAX);
+                let col_start = u32::try_from(col).unwrap_or(u32::MAX);
+                let col_end = u32::try_from(col + wrong_name.len()).unwrap_or(u32::MAX);
+                found_range = Some(Range {
+                    start: Position { line: abs_line, character: col_start },
+                    end: Position { line: abs_line, character: col_end },
+                });
+                break;
+            }
+        }
+
+        let Some(edit_range) = found_range else { continue };
+        let Some(uri) = Uri::from_file_path(path) else { continue };
+
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: format!("Rename '{wrong_name}' to '{correct_name}'"),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diag.clone()]),
+            edit: Some(WorkspaceEdit {
+                document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                    text_document: OptionalVersionedTextDocumentIdentifier {
+                        uri,
+                        version: None,
+                    },
+                    edits: vec![OneOf::Left(TextEdit {
+                        range: edit_range,
+                        new_text: correct_name.to_string(),
+                    })],
+                }])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+    }
 }
 
 /// Handle event call (emit) - offer to create Rust handler (listen)

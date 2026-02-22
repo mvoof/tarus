@@ -285,13 +285,56 @@ fn check_parameters_diagnostics(
                         project_index,
                     )
                 {
-                    let result =
-                        recursive_type_check(project_index, &rust_p.type_name, &ts_p.type_name);
-                    if let TypeMatch::Mismatch(detail) = result {
-                        diagnostics.push(warning(
-                            loc.range,
-                            format!("Type mismatch for argument '{}': {detail}", ts_p.name),
-                        ));
+                    // For known struct types with an object literal, collect ALL field errors.
+                    let rust_base = get_base_rust_type(&rust_p.type_name);
+                    let is_known_struct = project_index
+                        .rust_types
+                        .get(&rust_base)
+                        .is_some_and(|ti| matches!(ti.kind, RustTypeKind::Struct));
+
+                    if is_known_struct && ts_p.type_name.starts_with('{') {
+                        // Clone to release the DashMap read-guard before calling into
+                        // compare_struct_fields_to_ts_object_multi (which takes new guards).
+                        let type_info = project_index
+                            .rust_types
+                            .get(&rust_base)
+                            .map(|ti| ti.clone())
+                            .unwrap(); // safe: is_known_struct == true
+
+                        for fe in compare_struct_fields_to_ts_object_multi(
+                            &type_info,
+                            &ts_p.type_name,
+                            project_index,
+                        ) {
+                            use tower_lsp_server::ls_types::NumberOrString;
+                            let mut diag = warning(
+                                loc.range,
+                                format!("Type mismatch for argument '{}': {}", ts_p.name, fe.message),
+                            );
+                            if let Some((wrong, correct)) = fe.rename_hint {
+                                diag.code = Some(NumberOrString::String(
+                                    "tarus/rename-field".to_string(),
+                                ));
+                                diag.data = Some(serde_json::json!({
+                                    "wrongName": wrong,
+                                    "correctName": correct,
+                                    "line": loc.range.start.line,
+                                }));
+                            }
+                            diagnostics.push(diag);
+                        }
+                    } else {
+                        let result = recursive_type_check(
+                            project_index,
+                            &rust_p.type_name,
+                            &ts_p.type_name,
+                        );
+                        if let TypeMatch::Mismatch(detail) = result {
+                            diagnostics.push(warning(
+                                loc.range,
+                                format!("Type mismatch for argument '{}': {detail}", ts_p.name),
+                            ));
+                        }
                     }
                 }
             }
@@ -343,6 +386,80 @@ fn check_return_type_diagnostics(
     }
 
     diagnostics
+}
+
+/// Field-level error from struct comparison
+struct FieldError {
+    /// Human-readable description, e.g. "field 'displayName': expected number, got string"
+    message: String,
+    /// If the user likely wrote the pre-rename (`snake_case`) key when `camelCase` was expected:
+    /// `(wrong_name, correct_name)` — used to generate a rename code action.
+    rename_hint: Option<(String, String)>,
+}
+
+/// Compare struct fields against a TS object, collecting ALL field errors (no early return).
+///
+/// Unlike `compare_struct_fields_to_ts_object`, this does not stop at the first mismatch.
+fn compare_struct_fields_to_ts_object_multi(
+    type_info: &RustTypeInfo,
+    ts_type_repr: &str,
+    project_index: &ProjectIndex,
+) -> Vec<FieldError> {
+    if !ts_type_repr.starts_with('{') || !ts_type_repr.ends_with('}') {
+        return vec![];
+    }
+
+    let ts_fields = parse_ts_object_string(ts_type_repr);
+    let rename_strategy = type_info.serde.rename_all.as_deref();
+    let mut errors = Vec::new();
+
+    for field in &type_info.fields {
+        let serialized_name = if let Some(strategy) = rename_strategy {
+            apply_rename_all(&field.name, strategy)
+        } else {
+            field.name.clone()
+        };
+
+        let is_optional = field.type_name.starts_with("Option<");
+
+        match ts_fields.get(&serialized_name) {
+            Some(ts_field_type) => {
+                if ts_field_type != "any" {
+                    let result =
+                        recursive_type_check(project_index, &field.type_name, ts_field_type);
+                    if let TypeMatch::Mismatch(msg) = result {
+                        errors.push(FieldError {
+                            message: format!("field '{serialized_name}': {msg}"),
+                            rename_hint: None,
+                        });
+                    }
+                }
+            }
+            None => {
+                if !is_optional {
+                    // Check if the user provided the original (pre-rename) field name.
+                    // e.g. `display_name` when `displayName` is the expected serialized key.
+                    let rename_hint = if serialized_name != field.name
+                        && ts_fields.contains_key(&field.name)
+                    {
+                        Some((field.name.clone(), serialized_name.clone()))
+                    } else {
+                        None
+                    };
+
+                    let message = if let Some((ref wn, ref cn)) = rename_hint {
+                        format!("field '{wn}' should be renamed to '{cn}'")
+                    } else {
+                        format!("missing required field '{serialized_name}'")
+                    };
+
+                    errors.push(FieldError { message, rename_hint });
+                }
+            }
+        }
+    }
+
+    errors
 }
 
 /// Compare Rust struct fields against a TypeScript object literal `{ key: type, ... }`
