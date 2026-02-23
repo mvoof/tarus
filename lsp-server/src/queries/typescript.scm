@@ -108,3 +108,13 @@
     (string
       (string_fragment) @arg_value_second))
 ) @call_await_generic_second_arg
+
+; === SPECTA CALLS (commands.methodName(...)) ===
+
+; commands.getUserProfile(...)
+(call_expression
+  function: (member_expression
+    object: (identifier) @_specta_obj
+    property: (property_identifier) @specta_method_name)
+  (#eq? @_specta_obj "commands")
+) @specta_call

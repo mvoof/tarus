@@ -1,29 +1,9 @@
 ; Rust queries for Tauri commands and events
 
-; #[tauri::command] fn name() - attribute followed immediately by function
-(
-  (attribute_item
-    (attribute
-      (scoped_identifier
-        path: (identifier) @_attr_path
-        name: (identifier) @_attr_name)))
-  .
-  (function_item
-    name: (identifier) @command_name)
-  (#eq? @_attr_path "tauri")
-  (#eq? @_attr_name "command")
-)
-
-; #[command] fn name() - simplified attribute
-(
-  (attribute_item
-    (attribute
-      (identifier) @_attr_simple))
-  .
-  (function_item
-    name: (identifier) @command_name)
-  (#eq? @_attr_simple "command")
-)
+; Function items — #[tauri::command] detection is done via sibling walk in Rust code.
+; This handles any number of attributes between #[tauri::command] and fn.
+(function_item
+  name: (identifier) @fn_name) @fn_item
 
 ; Method calls: .emit("event"), .listen("event"), etc.
 ; First argument is the event name

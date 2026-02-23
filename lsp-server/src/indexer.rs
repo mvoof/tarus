@@ -2,19 +2,57 @@ use crate::syntax::{Behavior, EntityType};
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
 use tower_lsp_server::lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Uri};
 use tower_lsp_server::UriExt;
 
+/// Which tool generated the binding file (or the source itself)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeneratorKind {
+    TsRs,
+    Specta,
+    Typegen,
+    RustSource,
+}
+
+/// A type generator discovered from project configuration files
+#[derive(Debug, Clone)]
+pub struct DiscoveredGenerator {
+    pub kind: GeneratorKind,
+    /// Absolute, normalized output path (file or directory)
+    pub output_path: PathBuf,
+    /// `true` for directory-match generators (ts-rs, typegen); `false` for exact-file generators (specta)
+    pub is_directory: bool,
+}
+
+/// A single parameter in a command schema
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamSchema {
+    pub name: String,
+    pub ts_type: String,
+}
+
+/// Type signature of a Tauri command, extracted from bindings or Rust source
+#[derive(Debug, Clone)]
+pub struct CommandSchema {
+    pub command_name: String,
+    pub params: Vec<ParamSchema>,
+    pub return_type: String,
+    pub source_path: PathBuf,
+    pub generator: GeneratorKind,
+}
+
 /// A single occurrence in a file (parser result)
 #[derive(Debug, Clone)]
 pub struct Finding {
-    pub key: String,        // Name ("save_file")
-    pub entity: EntityType, // Command or Event
-    pub behavior: Behavior, // Call, Emit, Listen
-    pub range: Range,       // Coordinates
+    pub key: String,                          // Name ("save_file")
+    pub entity: EntityType,                   // Command or Event
+    pub behavior: Behavior,                   // Call, Emit, Listen
+    pub range: Range,                         // Coordinates
+    pub call_arg_count: Option<u32>,          // For SpectaCall: positional arg count
+    pub call_param_keys: Option<Vec<String>>, // For Call: object literal keys in second arg
 }
 
 #[derive(Debug)]
@@ -36,6 +74,8 @@ pub struct LocationInfo {
     pub path: PathBuf,
     pub range: Range,
     pub behavior: Behavior,
+    pub call_arg_count: Option<u32>,
+    pub call_param_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -53,6 +93,16 @@ pub struct ProjectIndex {
     pub parse_errors: DashMap<PathBuf, String>,
     // Configuration: Max number of individual file links to show in CodeLens before summarizing
     pub reference_limit: AtomicUsize,
+    // Schema storage: command_name -> CommandSchema
+    pub command_schemas: DashMap<String, CommandSchema>,
+    // Reverse index: source_path -> list of command names (for stale removal)
+    pub generated_file_paths: DashMap<PathBuf, Vec<String>>,
+    // Type alias storage: alias_name -> type definition string
+    pub type_aliases: DashMap<String, String>,
+    // Reverse index: source_path -> list of alias names (for stale removal)
+    pub generated_alias_paths: DashMap<PathBuf, Vec<String>>,
+    // Generators discovered from project configuration files
+    pub generator_bindings: RwLock<Vec<DiscoveredGenerator>>,
 }
 
 impl Default for ProjectIndex {
@@ -65,6 +115,11 @@ impl Default for ProjectIndex {
             diagnostic_info_cache: DashMap::new(),
             parse_errors: DashMap::new(),
             reference_limit: AtomicUsize::new(3),
+            command_schemas: DashMap::new(),
+            generated_file_paths: DashMap::new(),
+            type_aliases: DashMap::new(),
+            generated_alias_paths: DashMap::new(),
+            generator_bindings: RwLock::new(Vec::new()),
         }
     }
 }
@@ -142,6 +197,8 @@ impl ProjectIndex {
                 path: path_ref.clone(),
                 range: finding.range,
                 behavior: finding.behavior,
+                call_arg_count: finding.call_arg_count,
+                call_param_keys: finding.call_param_keys,
             };
 
             self.map.entry(key.clone()).or_default().push(info);
@@ -195,6 +252,91 @@ impl ProjectIndex {
     /// Get parse error for a file (if any)
     pub fn get_parse_error(&self, path: &PathBuf) -> Option<String> {
         self.parse_errors.get(path).map(|e| e.value().clone())
+    }
+
+    /// Store a command schema (replaces any existing schema for the same command name)
+    pub fn add_schema(&self, schema: CommandSchema) {
+        let path = schema.source_path.clone();
+        let name = schema.command_name.clone();
+        self.command_schemas.insert(name.clone(), schema);
+        self.generated_file_paths
+            .entry(path)
+            .or_default()
+            .push(name);
+    }
+
+    /// Remove all schemas associated with a specific file
+    pub fn remove_schemas_for_file(&self, path: &PathBuf) {
+        if let Some((_, names)) = self.generated_file_paths.remove(path) {
+            for name in names {
+                self.command_schemas.remove(&name);
+            }
+        }
+    }
+
+    /// Retrieve a command schema by command name
+    pub fn get_schema(&self, name: &str) -> Option<CommandSchema> {
+        self.command_schemas.get(name).map(|v| v.clone())
+    }
+
+    /// Returns true if at least one binding file (Specta / ts-rs / typegen) has been indexed.
+    ///
+    /// Used to gate type-level diagnostics: type checking is only meaningful when
+    /// a generated bindings file is present in the workspace.
+    pub fn has_bindings_files(&self) -> bool {
+        self.command_schemas
+            .iter()
+            .any(|e| matches!(e.value().generator, GeneratorKind::Specta | GeneratorKind::TsRs | GeneratorKind::Typegen))
+            || !self.type_aliases.is_empty()
+    }
+
+    /// Replace the list of config-discovered generators.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned (only if another thread panicked while holding it).
+    pub fn set_generator_bindings(&self, bindings: Vec<DiscoveredGenerator>) {
+        *self.generator_bindings.write().unwrap() = bindings;
+    }
+
+    /// Return the `GeneratorKind` for a given file path based on config-discovered generators.
+    ///
+    /// For directory-match generators the path must be inside the output directory.
+    /// For exact-file generators the path must equal the output file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned (only if another thread panicked while holding it).
+    pub fn get_generator_for_file(&self, path: &Path) -> Option<GeneratorKind> {
+        let bindings = self.generator_bindings.read().unwrap();
+        for b in bindings.iter() {
+            if b.is_directory {
+                if path.starts_with(&b.output_path) {
+                    return Some(b.kind.clone());
+                }
+            } else if path == b.output_path {
+                return Some(b.kind.clone());
+            }
+        }
+        None
+    }
+
+    /// Store a type alias (name -> definition string)
+    pub fn add_type_alias(&self, name: String, def: String, path: PathBuf) {
+        self.type_aliases.insert(name.clone(), def);
+        self.generated_alias_paths
+            .entry(path)
+            .or_default()
+            .push(name);
+    }
+
+    /// Remove all type aliases associated with a specific file
+    pub fn remove_type_aliases_for_file(&self, path: &PathBuf) {
+        if let Some((_, names)) = self.generated_alias_paths.remove(path) {
+            for name in names {
+                self.type_aliases.remove(&name);
+            }
+        }
     }
 
     /// Retrieves all locations associated with a specific entity
@@ -466,6 +608,7 @@ impl ProjectIndex {
                     let behavior_label = match loc.behavior {
                         Behavior::Definition => "command",
                         Behavior::Call => "invoke",
+                        Behavior::SpectaCall => "commands",
                         Behavior::Emit => "emit",
                         Behavior::Listen => "listen",
                     };
@@ -516,6 +659,7 @@ impl ProjectIndex {
                 let behavior_label = match loc.behavior {
                     Behavior::Definition => "command",
                     Behavior::Call => "invoke",
+                    Behavior::SpectaCall => "commands",
                     Behavior::Emit => "emit",
                     Behavior::Listen => "listen",
                 };
@@ -592,7 +736,9 @@ impl ProjectIndex {
         let locations = self.map.get(key).map(|v| v.clone()).unwrap_or_default();
         let info = DiagnosticInfo {
             has_definition: locations.iter().any(|l| l.behavior == Behavior::Definition),
-            has_calls: locations.iter().any(|l| l.behavior == Behavior::Call),
+            has_calls: locations
+                .iter()
+                .any(|l| matches!(l.behavior, Behavior::Call | Behavior::SpectaCall)),
             has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit),
             has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen),
         };

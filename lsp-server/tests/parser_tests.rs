@@ -51,6 +51,29 @@ mod rust_parser_tests {
     }
 
     #[test]
+    fn test_parse_rust_multi_attr_commands() {
+        let content = load_fixture("rust/multi_attr_command.rs");
+        let path = test_path("multi_attr_command.rs");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let file_index = result.unwrap();
+        let definitions: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.behavior == Behavior::Definition)
+            .collect();
+
+        assert_eq!(definitions.len(), 3, "Expected 3 command definitions, got {:?}", definitions.iter().map(|f| &f.key).collect::<Vec<_>>());
+
+        let names: Vec<&str> = definitions.iter().map(|f| f.key.as_str()).collect();
+        assert!(names.contains(&"single_extra_attr"), "Missing single_extra_attr");
+        assert!(names.contains(&"multiple_extra_attrs"), "Missing multiple_extra_attrs");
+        assert!(names.contains(&"simple_command"), "Missing simple_command");
+    }
+
+    #[test]
     fn test_parse_rust_events() {
         let content = load_fixture("rust/events.rs");
         let path = test_path("events.rs");
@@ -269,3 +292,4 @@ mod angular_parser_tests {
         assert!(!invokes.is_empty(), "Expected invoke in Angular component");
     }
 }
+

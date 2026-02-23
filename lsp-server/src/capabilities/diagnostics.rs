@@ -1,8 +1,14 @@
 //! Diagnostics capability
 //!
-//! Computes diagnostics (warnings) for Tauri commands and events
+//! Computes diagnostics (warnings) for Tauri commands and events.
+//!
+//! Two layers of diagnostics are provided:
+//! 1. **Structural diagnostics** — always active: undefined commands/events, unused definitions.
+//! 2. **Type diagnostics** — active ONLY when at least one binding file (ts-rs / tauri-specta /
+//!    tauri-typegen) has been indexed. Uses `CommandSchema` sourced from those generators;
+//!    `GeneratorKind::RustSource` schemas are intentionally excluded from type checking.
 
-use crate::indexer::{DiagnosticInfo, IndexKey, ProjectIndex};
+use crate::indexer::{DiagnosticInfo, GeneratorKind, IndexKey, LocationInfo, ProjectIndex};
 use crate::syntax::Behavior;
 use std::path::PathBuf;
 use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
@@ -23,6 +29,8 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
         None => return diagnostics,
     };
 
+    let has_bindings = project_index.has_bindings_files();
+
     for key in &keys {
         let info: DiagnosticInfo = project_index.get_diagnostic_info(key);
         let locations = project_index.get_locations(key.entity, &key.name);
@@ -33,15 +41,15 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
         // Find first occurrence of each behavior type
         let first_call = local_locations
             .iter()
-            .find(|l| matches!(l.behavior, Behavior::Call))
+            .find(|l| matches!(l.behavior, Behavior::Call | Behavior::SpectaCall))
             .map(|l| l.range);
         let first_emit = local_locations
             .iter()
             .find(|l| matches!(l.behavior, Behavior::Emit))
             .map(|l| l.range);
 
-        for loc in local_locations {
-            // Determine if we should show diagnostic for this location
+        for loc in &local_locations {
+            // --- Layer 1: Structural diagnostics (always active) ---
             let msg = match loc.behavior {
                 // Show on Definition if command never called
                 Behavior::Definition if !info.has_calls => Some((
@@ -51,8 +59,8 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                         key.name
                     ),
                 )),
-                // Show on FIRST Call only if command not defined
-                Behavior::Call if !info.has_definition => {
+                // Show on FIRST Call/SpectaCall only if command not defined
+                Behavior::Call | Behavior::SpectaCall if !info.has_definition => {
                     if first_call == Some(loc.range) {
                         Some((
                             DiagnosticSeverity::WARNING,
@@ -90,8 +98,100 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                     ..Default::default()
                 });
             }
+
+            // --- Layer 2: Type diagnostics (only when binding files are present) ---
+            if has_bindings {
+                if let Some(d) = check_param_keys(loc, &key.name, project_index) {
+                    diagnostics.push(d);
+                }
+            }
         }
     }
 
     diagnostics
+}
+
+/// Validate the argument keys passed to an `invoke()` call against the expected
+/// parameters in the `CommandSchema` from a binding generator.
+///
+/// Only activates when:
+/// - The location is a `Call` (i.e. `invoke("name", { key: val, ... })`)
+/// - The call has `call_param_keys` recorded by the parser
+/// - A `CommandSchema` exists for this command sourced from a binding generator
+///   (`Specta`, `TsRs`, or `Typegen`) — **not** `RustSource`
+///
+/// Reports:
+/// - `WARNING` for missing required parameters
+/// - `WARNING` for unexpected (extra) parameters
+fn check_param_keys(
+    loc: &LocationInfo,
+    command_name: &str,
+    project_index: &ProjectIndex,
+) -> Option<Diagnostic> {
+    // Only validate regular invoke() calls that have recorded param keys
+    if !matches!(loc.behavior, Behavior::Call) {
+        return None;
+    }
+
+    let call_keys = loc.call_param_keys.as_ref()?;
+
+    // Get schema — must come from a bindings generator, not from Rust source analysis
+    let schema = project_index.get_schema(command_name)?;
+    if matches!(schema.generator, GeneratorKind::RustSource) {
+        return None;
+    }
+
+    // Build sets for comparison
+    let expected: Vec<&str> = schema.params.iter().map(|p| p.name.as_str()).collect();
+    let actual: std::collections::HashSet<&str> =
+        call_keys.iter().map(String::as_str).collect();
+    let expected_set: std::collections::HashSet<&str> = expected.iter().copied().collect();
+
+    // Missing required params (present in schema, absent in call)
+    let missing: Vec<&str> = expected
+        .iter()
+        .copied()
+        .filter(|e| !actual.contains(e))
+        .collect();
+
+    if !missing.is_empty() {
+        return Some(Diagnostic {
+            range: loc.range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("tarus".to_string()),
+            message: format!(
+                "invoke('{}') is missing required argument{}: {}",
+                command_name,
+                if missing.len() == 1 { "" } else { "s" },
+                missing.join(", ")
+            ),
+            ..Default::default()
+        });
+    }
+
+    // Unexpected extra params (present in call, absent from schema)
+    let extra: Vec<&str> = actual
+        .iter()
+        .copied()
+        .filter(|a| !expected_set.contains(a))
+        .collect();
+
+    if !extra.is_empty() {
+        let mut sorted_extra = extra;
+        sorted_extra.sort_unstable();
+        return Some(Diagnostic {
+            range: loc.range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("tarus".to_string()),
+            message: format!(
+                "invoke('{}') has unexpected argument{}: {}",
+                command_name,
+                if sorted_extra.len() == 1 { "" } else { "s" },
+                sorted_extra.join(", ")
+            ),
+            ..Default::default()
+        });
+    }
+
+    None
 }

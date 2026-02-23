@@ -27,6 +27,8 @@ pub enum Behavior {
     Emit,
     /// Event listen (listen("event"))
     Listen,
+    /// Specta-style command call (Frontend: commands.methodName(...))
+    SpectaCall,
 }
 
 /// Parse error types

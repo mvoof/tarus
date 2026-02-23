@@ -3,7 +3,9 @@
 mod common_paths;
 
 use common_paths::test_path;
-use lsp_server::indexer::{FileIndex, Finding, IndexKey, ProjectIndex};
+use lsp_server::indexer::{
+    CommandSchema, FileIndex, Finding, GeneratorKind, IndexKey, ParamSchema, ProjectIndex,
+};
 use lsp_server::syntax::{Behavior, EntityType};
 use tower_lsp_server::lsp_types::{Position, Range};
 
@@ -16,6 +18,8 @@ fn create_test_finding(key: &str, entity: EntityType, behavior: Behavior) -> Fin
             start: Position { line: 0, character: 0 },
             end: Position { line: 0, character: key.len() as u32 },
         },
+        call_arg_count: None,
+        call_param_keys: None,
     }
 }
 
@@ -112,6 +116,8 @@ fn test_get_key_at_position() {
             start: Position { line: 5, character: 10 },
             end: Position { line: 5, character: 15 },
         },
+        call_arg_count: None,
+        call_param_keys: None,
     };
     
     let file_index = FileIndex {
@@ -166,7 +172,7 @@ fn test_get_diagnostic_info() {
 #[test]
 fn test_multiple_files_same_command() {
     let index = ProjectIndex::new();
-    
+
     // Add command definition
     index.add_file(FileIndex {
         path: test_path("backend.rs"),
@@ -174,7 +180,7 @@ fn test_multiple_files_same_command() {
             create_test_finding("get_user", EntityType::Command, Behavior::Definition),
         ],
     });
-    
+
     // Add multiple calls from different files
     index.add_file(FileIndex {
         path: test_path("app.ts"),
@@ -182,14 +188,129 @@ fn test_multiple_files_same_command() {
             create_test_finding("get_user", EntityType::Command, Behavior::Call),
         ],
     });
-    
+
     index.add_file(FileIndex {
         path: test_path("profile.tsx"),
         findings: vec![
             create_test_finding("get_user", EntityType::Command, Behavior::Call),
         ],
     });
-    
+
     let locations = index.get_locations(EntityType::Command, "get_user");
     assert_eq!(locations.len(), 3, "Should find definition + 2 calls");
+}
+
+fn make_schema(command_name: &str, path: &str, generator: GeneratorKind) -> CommandSchema {
+    CommandSchema {
+        command_name: command_name.to_string(),
+        params: vec![ParamSchema {
+            name: "id".to_string(),
+            ts_type: "number".to_string(),
+        }],
+        return_type: "string".to_string(),
+        source_path: test_path(path),
+        generator,
+    }
+}
+
+#[test]
+fn test_add_schema_to_index() {
+    let index = ProjectIndex::new();
+    let schema = make_schema("get_user", "bindings.ts", GeneratorKind::Specta);
+
+    index.add_schema(schema);
+
+    let result = index.get_schema("get_user");
+    assert!(result.is_some());
+    let s = result.unwrap();
+    assert_eq!(s.command_name, "get_user");
+    assert_eq!(s.return_type, "string");
+    assert_eq!(s.params.len(), 1);
+}
+
+#[test]
+fn test_remove_schemas_for_file() {
+    let index = ProjectIndex::new();
+    let path = "bindings.ts";
+
+    index.add_schema(make_schema("get_user", path, GeneratorKind::Specta));
+    index.add_schema(make_schema("create_user", path, GeneratorKind::Specta));
+
+    assert!(index.get_schema("get_user").is_some());
+    assert!(index.get_schema("create_user").is_some());
+
+    index.remove_schemas_for_file(&test_path(path));
+
+    assert!(index.get_schema("get_user").is_none(), "get_user schema should be removed");
+    assert!(index.get_schema("create_user").is_none(), "create_user schema should be removed");
+}
+
+#[test]
+fn test_schema_survives_file_map_remove() {
+    let index = ProjectIndex::new();
+
+    // Add a Rust finding for the command
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![
+            create_test_finding("get_user", EntityType::Command, Behavior::Definition),
+        ],
+    });
+
+    // Add a schema from bindings
+    index.add_schema(make_schema("get_user", "bindings.ts", GeneratorKind::Specta));
+
+    // Remove the Rust file from the main index
+    index.remove_file(&test_path("lib.rs"));
+
+    // Schema should still be there (it's in a separate map)
+    let result = index.get_schema("get_user");
+    assert!(result.is_some(), "Schema should survive remove_file on Rust file");
+}
+
+#[test]
+fn test_overwrite_schema() {
+    let index = ProjectIndex::new();
+
+    // Add initial schema
+    let schema1 = make_schema("get_user", "bindings.ts", GeneratorKind::Specta);
+    index.add_schema(schema1);
+
+    // Overwrite with a new schema that has different params
+    let schema2 = CommandSchema {
+        command_name: "get_user".to_string(),
+        params: vec![
+            ParamSchema { name: "id".to_string(), ts_type: "number".to_string() },
+            ParamSchema { name: "token".to_string(), ts_type: "string".to_string() },
+        ],
+        return_type: "User".to_string(),
+        source_path: test_path("bindings.ts"),
+        generator: GeneratorKind::Specta,
+    };
+    index.add_schema(schema2);
+
+    let result = index.get_schema("get_user").unwrap();
+    assert_eq!(result.params.len(), 2, "Second add should overwrite first");
+    assert_eq!(result.return_type, "User");
+}
+
+#[test]
+fn test_type_aliases() {
+    let index = ProjectIndex::new();
+    let path = test_path("types.ts");
+
+    index.add_type_alias(
+        "UserProfile".to_string(),
+        "{ id: number; name: string }".to_string(),
+        path.clone(),
+    );
+
+    assert_eq!(
+        index.type_aliases.get("UserProfile").map(|v| v.clone()),
+        Some("{ id: number; name: string }".to_string())
+    );
+
+    index.remove_type_aliases_for_file(&path);
+
+    assert!(index.type_aliases.get("UserProfile").is_none(), "Alias should be removed");
 }
