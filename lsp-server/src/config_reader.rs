@@ -1,0 +1,280 @@
+//! Config-based discovery of generator output paths.
+//!
+//! Reads project configuration files to find where each binding generator places its output,
+//! rather than sniffing file headers at scan time.
+
+use crate::indexer::{DiscoveredGenerator, GeneratorKind};
+use std::path::{Component, Path, PathBuf};
+use walkdir::WalkDir;
+
+// ────────────────────────────────────────────────────────────────────────────
+// Public API
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Discover all type generators configured in the project and return their output paths.
+#[must_use]
+pub fn discover_generators(workspace_root: &Path) -> Vec<DiscoveredGenerator> {
+    // find_tauri_config also gives us the exact config file path, which we pass to discover_typegen
+    // so it doesn't need to hardcode a filename.
+    let Some(tauri_config_path) = crate::scanner::find_tauri_config(workspace_root) else {
+        return Vec::new();
+    };
+    let Some(src_tauri_dir) = tauri_config_path.parent() else {
+        return Vec::new();
+    };
+
+    let mut results = Vec::new();
+
+    if let Some(g) = discover_specta(src_tauri_dir) {
+        results.push(g);
+    }
+    if let Some(g) = discover_typegen(&tauri_config_path, src_tauri_dir) {
+        results.push(g);
+    }
+    if let Some(g) = discover_ts_rs(workspace_root, src_tauri_dir) {
+        results.push(g);
+    }
+
+    results
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Individual generator discovery
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Discover the tauri-specta output file by scanning Rust sources for `.export(` calls.
+fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
+    for entry in WalkDir::new(src_tauri_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("rs"))
+    {
+        let Ok(content) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+
+        // Fast pre-filter: skip files that don't use tauri_specta
+        if !content.contains("tauri_specta") {
+            continue;
+        }
+
+        // Look for lines containing .export( and extract the path argument
+        for line in content.lines() {
+            if !line.contains(".export(") {
+                continue;
+            }
+
+            if let Some(path_str) = extract_last_quoted_string(line) {
+                let ext_ok = Path::new(&path_str)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("ts") || e.eq_ignore_ascii_case("js"));
+
+                if ext_ok {
+                    let resolved = normalize_path(&src_tauri_dir.join(&path_str));
+                    return Some(DiscoveredGenerator {
+                        kind: GeneratorKind::Specta,
+                        output_path: resolved,
+                        is_directory: false,
+                    });
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Discover the tauri-typegen output directory from the Tauri config file.
+///
+/// Supports `.json` and `.json5` config formats (parsed with `serde_json`).
+/// Returns `None` for `.toml` configs or if no `plugins.typegen` section is present.
+fn discover_typegen(tauri_config_path: &Path, src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
+    // Only attempt JSON parsing; TOML configs are not supported by serde_json
+    let ext = tauri_config_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if ext == "toml" {
+        return None;
+    }
+
+    let content = std::fs::read_to_string(tauri_config_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    // Section must exist; if absent typegen is not configured
+    let typegen = json.get("plugins")?.get("typegen")?;
+
+    let output_path = if let Some(p) = typegen.get("outputPath").and_then(|v| v.as_str()) {
+        normalize_path(&src_tauri_dir.join(p))
+    } else {
+        normalize_path(&src_tauri_dir.join("../src/generated"))
+    };
+
+    Some(DiscoveredGenerator {
+        kind: GeneratorKind::Typegen,
+        output_path,
+        is_directory: true,
+    })
+}
+
+/// Discover the ts-rs output directory from `.cargo/config.toml` or `Cargo.toml`.
+fn discover_ts_rs(workspace_root: &Path, src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
+    let candidates = [
+        workspace_root.join(".cargo/config.toml"),
+        src_tauri_dir.join(".cargo/config.toml"),
+    ];
+
+    for config_path in &candidates {
+        if !config_path.exists() {
+            continue;
+        }
+
+        let Ok(content) = std::fs::read_to_string(config_path) else {
+            continue;
+        };
+
+        if let Some(output_path) = parse_ts_rs_export_dir(&content, config_path, src_tauri_dir) {
+            return Some(DiscoveredGenerator {
+                kind: GeneratorKind::TsRs,
+                output_path,
+                is_directory: true,
+            });
+        }
+    }
+
+    // No TS_RS_EXPORT_DIR found; fall back to checking Cargo.toml for a ts-rs dependency
+    let cargo_toml_path = src_tauri_dir.join("Cargo.toml");
+    let cargo_content = std::fs::read_to_string(cargo_toml_path).ok()?;
+
+    if cargo_content.contains("\"ts-rs\"")
+        || cargo_content.contains("ts-rs =")
+        || cargo_content.contains("ts-rs=")
+    {
+        let default_path = normalize_path(&src_tauri_dir.join("bindings"));
+        return Some(DiscoveredGenerator {
+            kind: GeneratorKind::TsRs,
+            output_path: default_path,
+            is_directory: true,
+        });
+    }
+
+    None
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Parsing helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Parse `TS_RS_EXPORT_DIR` from a `.cargo/config.toml` `[env]` section.
+///
+/// Handles both plain-string and inline-table forms:
+/// - `TS_RS_EXPORT_DIR = "some/path"`
+/// - `TS_RS_EXPORT_DIR = { value = "some/path", relative = true }`
+fn parse_ts_rs_export_dir(
+    content: &str,
+    config_path: &Path,
+    src_tauri_dir: &Path,
+) -> Option<PathBuf> {
+    let mut in_env_section = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Track section headers
+        if trimmed.starts_with('[') {
+            in_env_section = trimmed == "[env]";
+            continue;
+        }
+
+        if !in_env_section {
+            continue;
+        }
+
+        if !trimmed.starts_with("TS_RS_EXPORT_DIR") {
+            continue;
+        }
+
+        // Get everything after the `=`
+        let after_eq = trimmed.split_once('=')?.1.trim();
+
+        if after_eq.starts_with('{') {
+            // Inline-table form: { value = "some/path", relative = true }
+            let value = extract_toml_table_string(after_eq, "value")?;
+            let is_relative = extract_toml_table_bool(after_eq, "relative").unwrap_or(false);
+
+            let base: &Path = if is_relative {
+                // Base = parent of the `.cargo/` directory
+                config_path
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .unwrap_or(src_tauri_dir)
+            } else {
+                src_tauri_dir
+            };
+
+            return Some(normalize_path(&base.join(value)));
+        }
+
+        // Plain-string form: "some/path"
+        let value = after_eq.trim_matches('"');
+        return Some(normalize_path(&src_tauri_dir.join(value)));
+    }
+
+    None
+}
+
+/// Extract the last double-quoted string from a line (handles multiple quotes per line).
+fn extract_last_quoted_string(line: &str) -> Option<String> {
+    let mut last: Option<String> = None;
+    let mut remaining = line;
+
+    while let Some(open) = remaining.find('"') {
+        remaining = &remaining[open + 1..];
+        if let Some(close) = remaining.find('"') {
+            last = Some(remaining[..close].to_string());
+            remaining = &remaining[close + 1..];
+        } else {
+            break;
+        }
+    }
+
+    last
+}
+
+/// Extract a string value for `key` from a TOML inline-table string, e.g. `{ value = "foo" }`.
+fn extract_toml_table_string<'a>(table_str: &'a str, key: &str) -> Option<&'a str> {
+    let pattern = format!("{key} = \"");
+    let start = table_str.find(pattern.as_str())? + pattern.len();
+    let end = table_str[start..].find('"')? + start;
+    Some(&table_str[start..end])
+}
+
+/// Extract a boolean value for `key` from a TOML inline-table string, e.g. `{ relative = true }`.
+fn extract_toml_table_bool(table_str: &str, key: &str) -> Option<bool> {
+    let pattern = format!("{key} = ");
+    let start = table_str.find(pattern.as_str())? + pattern.len();
+    let rest = &table_str[start..];
+    if rest.starts_with("true") {
+        Some(true)
+    } else if rest.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Resolve `..` and `.` path components without requiring the path to exist on disk.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut components: Vec<Component<'_>> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                components.pop();
+            }
+            Component::CurDir => {}
+            c => components.push(c),
+        }
+    }
+    components.iter().collect()
+}

@@ -33,10 +33,14 @@ pub fn handle_goto_definition(
                 }
 
                 match origin_loc.behavior {
-                    // If on Definition (Rust) -> Look for Call (JS/TS)
-                    Behavior::Definition => target.behavior == Behavior::Call,
-                    // If on Call (JS/TS) -> Search for Definition (Rust)
-                    Behavior::Call => target.behavior == Behavior::Definition,
+                    // If on Definition (Rust) -> Look for Call or SpectaCall (JS/TS)
+                    Behavior::Definition => {
+                        matches!(target.behavior, Behavior::Call | Behavior::SpectaCall)
+                    }
+                    // If on Call or SpectaCall (JS/TS) -> Search for Definition (Rust)
+                    Behavior::Call | Behavior::SpectaCall => {
+                        target.behavior == Behavior::Definition
+                    }
                     // If on Emit -> Search for Listen
                     Behavior::Emit => target.behavior == Behavior::Listen,
                     // If on Listen -> Search for Emit

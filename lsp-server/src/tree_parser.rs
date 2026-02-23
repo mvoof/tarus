@@ -4,6 +4,7 @@
 //! using Tree-sitter queries defined in external .scm files.
 
 use crate::indexer::{FileIndex, Finding};
+use crate::rust_type_extractor;
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use std::collections::HashMap;
 use std::path::Path;
@@ -152,7 +153,8 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
     let root = tree.root_node();
 
     // Get capture indices
-    let command_name_idx = query.capture_index_for_name("command_name");
+    let fn_name_idx = query.capture_index_for_name("fn_name");
+    let fn_item_idx = query.capture_index_for_name("fn_item");
     let method_name_idx = query.capture_index_for_name("method_name");
     let event_name_idx = query.capture_index_for_name("event_name");
 
@@ -160,21 +162,27 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
 
     let mut matches = cursor.matches(&query, root, content.as_bytes());
     while let Some(m) = matches.next() {
-        // Process command definitions
-        if let Some(cmd_idx) = command_name_idx {
-            for capture in m.captures.iter().filter(|c| c.index == cmd_idx) {
-                let node = capture.node;
-                let name = node.utf8_text(content.as_bytes()).unwrap_or_default();
+        // Process function_item — check if it's a #[tauri::command] via sibling walk
+        if let (Some(name_idx), Some(item_idx)) = (fn_name_idx, fn_item_idx) {
+            let name_cap = m.captures.iter().find(|c| c.index == name_idx);
+            let item_cap = m.captures.iter().find(|c| c.index == item_idx);
 
-                findings.push(Finding {
-                    key: name.to_string(),
-                    entity: EntityType::Command,
-                    behavior: Behavior::Definition,
-                    range: Range {
-                        start: point_to_position(node.start_position()),
-                        end: point_to_position(node.end_position()),
-                    },
-                });
+            if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
+                if rust_type_extractor::has_tauri_command_attr(item_cap.node, content) {
+                    let name = name_cap.node.utf8_text(content.as_bytes()).unwrap_or_default();
+                    findings.push(Finding {
+                        key: name.to_string(),
+                        entity: EntityType::Command,
+                        behavior: Behavior::Definition,
+                        range: Range {
+                            start: point_to_position(name_cap.node.start_position()),
+                            end: point_to_position(name_cap.node.end_position()),
+                        },
+                        call_arg_count: None,
+                        call_param_keys: None,
+                    });
+                }
+                continue;
             }
         }
 
@@ -202,6 +210,8 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                             start: point_to_position(event_cap.node.start_position()),
                             end: point_to_position(event_cap.node.end_position()),
                         },
+                        call_arg_count: None,
+                        call_param_keys: None,
                     });
                 }
             }
@@ -303,6 +313,9 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
     // Get capture indices for imports
     let imported_name_idx = query.capture_index_for_name("imported_name");
     let local_alias_idx = query.capture_index_for_name("local_alias");
+    // Get capture indices for Specta calls
+    let specta_method_name_idx = query.capture_index_for_name("specta_method_name");
+    let specta_call_idx = query.capture_index_for_name("specta_call");
 
     let all_patterns = get_all_frontend_patterns();
 
@@ -367,6 +380,8 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         entity: pattern.entity,
                         behavior: pattern.behavior,
                         range: adjust_range(range, line_offset),
+                        call_arg_count: None,
+                        call_param_keys: None,
                     });
                 }
             }
@@ -407,13 +422,79 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         entity: pattern.entity,
                         behavior: pattern.behavior,
                         range: adjust_range(range, line_offset),
+                        call_arg_count: None,
+                        call_param_keys: None,
                     });
                 }
+            }
+        }
+
+        // Try SpectaCall pattern (commands.methodName(...))
+        if let Some(specta_idx) = specta_method_name_idx {
+            if let Some(specta_cap) = m.captures.iter().find(|c| c.index == specta_idx) {
+                let camel_name = specta_cap
+                    .node
+                    .utf8_text(content.as_bytes())
+                    .unwrap_or_default();
+                let snake_name = crate::utils::camel_to_snake(camel_name);
+
+                let method_range = Range {
+                    start: point_to_position(specta_cap.node.start_position()),
+                    end: point_to_position(specta_cap.node.end_position()),
+                };
+
+                // Count arguments by walking the call_expression node's arguments
+                let arg_count = count_specta_call_args(m, specta_call_idx, content);
+
+                findings.push(Finding {
+                    key: snake_name,
+                    entity: EntityType::Command,
+                    behavior: Behavior::SpectaCall,
+                    range: adjust_range(method_range, line_offset),
+                    call_arg_count: Some(arg_count),
+                    call_param_keys: None,
+                });
             }
         }
     }
 
     Ok(findings)
+}
+
+/// Count the positional arguments in a SpectaCall expression.
+fn count_specta_call_args(
+    m: &tree_sitter::QueryMatch<'_, '_>,
+    specta_call_idx: Option<u32>,
+    content: &str,
+) -> u32 {
+    let Some(call_idx) = specta_call_idx else {
+        return 0;
+    };
+    let Some(call_cap) = m.captures.iter().find(|c| c.index == call_idx) else {
+        return 0;
+    };
+
+    // Find the arguments node among children of the call_expression
+    let call_node = call_cap.node;
+    let mut tree_cursor = call_node.walk();
+    let children: Vec<_> = call_node.children(&mut tree_cursor).collect();
+
+    for child in &children {
+        if child.kind() == "arguments" {
+            // Count non-punctuation children of arguments
+            let mut arg_cursor = child.walk();
+            let count = child
+                .children(&mut arg_cursor)
+                .filter(|n| n.kind() != "," && n.kind() != "(" && n.kind() != ")")
+                .count();
+            #[allow(clippy::cast_possible_truncation)]
+            return count as u32;
+        }
+    }
+
+    // Fallback: look for arguments via text
+    let _ = content;
+    0
 }
 
 /// Check if TypeScript file contains Angular decorators

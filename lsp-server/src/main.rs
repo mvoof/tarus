@@ -21,12 +21,16 @@ use tower_lsp_server::lsp_types::{MessageType, Uri, InitializeParams, Initialize
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
 // Refactored modules
+mod bindings_reader;
 mod capabilities;
+mod config_reader;
 mod file_processor;
 mod indexer;
+mod rust_type_extractor;
 mod scanner;
 mod syntax;
 mod tree_parser;
+mod utils;
 
 use capabilities::{build_server_capabilities, diagnostics};
 use indexer::{IndexKey, ProjectIndex};
@@ -182,6 +186,29 @@ impl LanguageServer for Backend {
             Some(r) => r,
             None => return,
         };
+
+        // Discover type generators from project configuration files
+        let generators = config_reader::discover_generators(root);
+
+        if generators.is_empty() {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    "TARUS: No type generator configurations found. Using content-based detection as fallback.",
+                )
+                .await;
+        } else {
+            for g in &generators {
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        &format!("TARUS: Detected {:?} generator → {}", g.kind, g.output_path.display()),
+                    )
+                    .await;
+            }
+        }
+
+        self.project_index.set_generator_bindings(generators);
 
         let root_clone = root.clone();
         let project_index_clone = self.project_index.clone();
