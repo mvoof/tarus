@@ -34,6 +34,15 @@ pub struct ParamSchema {
     pub ts_type: String,
 }
 
+/// Type signature of a Tauri event payload, extracted from bindings or Rust source
+#[derive(Debug, Clone)]
+pub struct EventSchema {
+    pub event_name: String,
+    pub payload_type: String,
+    pub source_path: PathBuf,
+    pub generator: GeneratorKind,
+}
+
 /// Type signature of a Tauri command, extracted from bindings or Rust source
 #[derive(Debug, Clone)]
 pub struct CommandSchema {
@@ -107,6 +116,10 @@ pub struct ProjectIndex {
     pub type_aliases: DashMap<String, String>,
     // Reverse index: source_path -> list of alias names (for stale removal)
     pub generated_alias_paths: DashMap<PathBuf, Vec<String>>,
+    // Event schema storage: event_name -> EventSchema
+    pub event_schemas: DashMap<String, EventSchema>,
+    // Reverse index: source_path -> list of event names (for stale removal)
+    pub generated_event_paths: DashMap<PathBuf, Vec<String>>,
     // Generators discovered from project configuration files
     pub generator_bindings: RwLock<Vec<DiscoveredGenerator>>,
 }
@@ -125,6 +138,8 @@ impl Default for ProjectIndex {
             generated_file_paths: DashMap::new(),
             type_aliases: DashMap::new(),
             generated_alias_paths: DashMap::new(),
+            event_schemas: DashMap::new(),
+            generated_event_paths: DashMap::new(),
             generator_bindings: RwLock::new(Vec::new()),
         }
     }
@@ -301,6 +316,12 @@ impl ProjectIndex {
                 GeneratorKind::Specta | GeneratorKind::TsRs | GeneratorKind::Typegen
             )
         }) || !self.type_aliases.is_empty()
+            || self.event_schemas.iter().any(|e| {
+                matches!(
+                    e.value().generator,
+                    GeneratorKind::Specta | GeneratorKind::TsRs | GeneratorKind::Typegen
+                )
+            })
     }
 
     /// Replace the list of config-discovered generators.
@@ -350,6 +371,31 @@ impl ProjectIndex {
                 self.type_aliases.remove(&name);
             }
         }
+    }
+
+    /// Store an event schema (replaces any existing schema for the same event name)
+    pub fn add_event_schema(&self, schema: EventSchema) {
+        let path = schema.source_path.clone();
+        let name = schema.event_name.clone();
+        self.event_schemas.insert(name.clone(), schema);
+        self.generated_event_paths
+            .entry(path)
+            .or_default()
+            .push(name);
+    }
+
+    /// Remove all event schemas associated with a specific file
+    pub fn remove_event_schemas_for_file(&self, path: &Path) {
+        if let Some((_, names)) = self.generated_event_paths.remove(&path.to_path_buf()) {
+            for name in names {
+                self.event_schemas.remove(&name);
+            }
+        }
+    }
+
+    /// Retrieve an event schema by event name
+    pub fn get_event_schema(&self, name: &str) -> Option<EventSchema> {
+        self.event_schemas.get(name).map(|v| v.clone())
     }
 
     /// Retrieves all locations associated with a specific entity

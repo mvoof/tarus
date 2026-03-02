@@ -395,9 +395,15 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                     ));
 
                     // Extract type argument from generic calls: invoke<T>("cmd") → "T"
-                    let type_arg_info = extract_type_argument_info(m, call_generic_idx, call_await_generic_idx, content);
+                    let type_arg_info = extract_type_argument_info(
+                        m,
+                        call_generic_idx,
+                        call_await_generic_idx,
+                        content,
+                    );
                     let return_type = type_arg_info.as_ref().map(|i| i.type_text.clone());
-                    let type_arg_range = type_arg_info.map(|i| adjust_range(i.type_arg_range, line_offset));
+                    let type_arg_range =
+                        type_arg_info.map(|i| adjust_range(i.type_arg_range, line_offset));
 
                     findings.push(Finding {
                         key: arg_value.to_string(),
@@ -517,8 +523,7 @@ fn extract_type_argument_info(
     let call_node = call_generic_idx
         .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
         .or_else(|| {
-            call_await_generic_idx
-                .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            call_await_generic_idx.and_then(|idx| m.captures.iter().find(|c| c.index == idx))
         })?;
 
     // Walk children to find type_arguments

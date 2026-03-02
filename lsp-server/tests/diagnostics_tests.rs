@@ -5,7 +5,7 @@ mod common_paths;
 use common_paths::test_path;
 use lsp_server::capabilities::diagnostics::compute_file_diagnostics;
 use lsp_server::indexer::{
-    CommandSchema, FileIndex, Finding, GeneratorKind, ParamSchema, ProjectIndex,
+    CommandSchema, EventSchema, FileIndex, Finding, GeneratorKind, ParamSchema, ProjectIndex,
 };
 use lsp_server::syntax::{Behavior, EntityType};
 use tower_lsp_server::lsp_types::{Position, Range};
@@ -500,7 +500,9 @@ fn test_return_type_mismatch_warning() {
     ));
 
     let diags = compute_file_diagnostics(&path, &index);
-    let rt_diag = diags.iter().find(|d| d.message.contains("return type mismatch"));
+    let rt_diag = diags
+        .iter()
+        .find(|d| d.message.contains("return type mismatch"));
     assert!(
         rt_diag.is_some(),
         "Expected return type mismatch diagnostic, got: {diags:?}"
@@ -538,7 +540,9 @@ fn test_return_type_match_no_warning() {
 
     let diags = compute_file_diagnostics(&path, &index);
     assert!(
-        diags.iter().all(|d| !d.message.contains("return type mismatch")),
+        diags
+            .iter()
+            .all(|d| !d.message.contains("return type mismatch")),
         "Matching return type should not produce diagnostic, got: {diags:?}"
     );
 }
@@ -571,7 +575,9 @@ fn test_return_type_void_skipped() {
 
     let diags = compute_file_diagnostics(&path, &index);
     assert!(
-        diags.iter().all(|d| !d.message.contains("return type mismatch")),
+        diags
+            .iter()
+            .all(|d| !d.message.contains("return type mismatch")),
         "void return type should be skipped, got: {diags:?}"
     );
 }
@@ -604,7 +610,9 @@ fn test_return_type_any_skipped() {
 
     let diags = compute_file_diagnostics(&path, &index);
     assert!(
-        diags.iter().all(|d| !d.message.contains("return type mismatch")),
+        diags
+            .iter()
+            .all(|d| !d.message.contains("return type mismatch")),
         "any return type should be skipped, got: {diags:?}"
     );
 }
@@ -645,7 +653,9 @@ fn test_return_type_rust_source_skipped_without_alias() {
 
     let diags = compute_file_diagnostics(&path, &index);
     assert!(
-        diags.iter().all(|d| !d.message.contains("return type mismatch")),
+        diags
+            .iter()
+            .all(|d| !d.message.contains("return type mismatch")),
         "RustSource without matching alias should not trigger diagnostic, got: {diags:?}"
     );
 }
@@ -760,7 +770,12 @@ fn test_missing_return_type_void_no_hint() {
     });
     index.add_file(FileIndex {
         path: path.clone(),
-        findings: vec![create_finding("ping", EntityType::Command, Behavior::Call, 5)],
+        findings: vec![create_finding(
+            "ping",
+            EntityType::Command,
+            Behavior::Call,
+            5,
+        )],
     });
 
     index.add_schema(make_schema_with_return(
@@ -776,4 +791,313 @@ fn test_missing_return_type_void_no_hint() {
             .all(|d| !d.message.contains("missing return type")),
         "void return should not trigger missing return type hint, got: {diags:?}"
     );
+}
+
+// ─── Event payload type diagnostic tests ──────────────────────────────────────
+
+fn make_event_finding(event: &str, behavior: Behavior, line: u32) -> Finding {
+    Finding {
+        key: event.to_string(),
+        entity: EntityType::Event,
+        behavior,
+        range: Range {
+            start: Position { line, character: 0 },
+            end: Position {
+                line,
+                character: event.len() as u32,
+            },
+        },
+        call_arg_count: None,
+        call_param_keys: None,
+        return_type: None,
+        call_name_end: None,
+        type_arg_range: None,
+    }
+}
+
+fn make_event_finding_with_type(
+    event: &str,
+    behavior: Behavior,
+    line: u32,
+    return_type: &str,
+) -> Finding {
+    Finding {
+        key: event.to_string(),
+        entity: EntityType::Event,
+        behavior,
+        range: Range {
+            start: Position { line, character: 0 },
+            end: Position {
+                line,
+                character: event.len() as u32,
+            },
+        },
+        call_arg_count: None,
+        call_param_keys: None,
+        return_type: Some(return_type.to_string()),
+        call_name_end: None,
+        type_arg_range: None,
+    }
+}
+
+fn make_event_schema(event: &str, payload: &str, generator: GeneratorKind) -> EventSchema {
+    EventSchema {
+        event_name: event.to_string(),
+        payload_type: payload.to_string(),
+        source_path: test_path("bindings.ts"),
+        generator,
+    }
+}
+
+/// No event type diagnostic without bindings files.
+#[test]
+fn test_event_no_type_diagnostic_without_bindings() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("backend.rs"),
+        findings: vec![create_finding(
+            "my-event",
+            EntityType::Event,
+            Behavior::Emit,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_event_finding("my-event", Behavior::Listen, 5)],
+    });
+
+    assert!(!index.has_bindings_files());
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags.iter().all(|d| !d.message.contains("payload type")),
+        "Should not produce event type diagnostics without bindings, got: {diags:?}"
+    );
+}
+
+/// listen("event") without <T> when payload is non-void → HINT.
+#[test]
+fn test_event_missing_payload_type_hint() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("backend.rs"),
+        findings: vec![create_finding(
+            "user-updated",
+            EntityType::Event,
+            Behavior::Emit,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_event_finding("user-updated", Behavior::Listen, 5)],
+    });
+
+    index.add_event_schema(make_event_schema(
+        "user-updated",
+        "UserProfile",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    let missing_diag = diags
+        .iter()
+        .find(|d| d.message.contains("missing payload type"));
+    assert!(
+        missing_diag.is_some(),
+        "Expected missing payload type diagnostic, got: {diags:?}"
+    );
+    let d = missing_diag.unwrap();
+    assert!(d.message.contains("UserProfile"));
+    assert_eq!(
+        d.severity,
+        Some(tower_lsp_server::lsp_types::DiagnosticSeverity::HINT)
+    );
+}
+
+/// listen<Wrong>("event") → WARNING.
+#[test]
+fn test_event_wrong_payload_type_warning() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("backend.rs"),
+        findings: vec![create_finding(
+            "user-updated",
+            EntityType::Event,
+            Behavior::Emit,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_event_finding_with_type(
+            "user-updated",
+            Behavior::Listen,
+            5,
+            "string",
+        )],
+    });
+
+    index.add_event_schema(make_event_schema(
+        "user-updated",
+        "UserProfile",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    let mismatch = diags
+        .iter()
+        .find(|d| d.message.contains("payload type mismatch"));
+    assert!(
+        mismatch.is_some(),
+        "Expected payload type mismatch diagnostic, got: {diags:?}"
+    );
+    let d = mismatch.unwrap();
+    assert!(d.message.contains("string"));
+    assert!(d.message.contains("UserProfile"));
+    assert_eq!(
+        d.severity,
+        Some(tower_lsp_server::lsp_types::DiagnosticSeverity::WARNING)
+    );
+}
+
+/// Correct payload type → no diagnostic.
+#[test]
+fn test_event_correct_payload_type_no_warning() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("backend.rs"),
+        findings: vec![create_finding(
+            "user-updated",
+            EntityType::Event,
+            Behavior::Emit,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_event_finding_with_type(
+            "user-updated",
+            Behavior::Listen,
+            5,
+            "UserProfile",
+        )],
+    });
+
+    index.add_event_schema(make_event_schema(
+        "user-updated",
+        "UserProfile",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags.iter().all(|d| !d.message.contains("payload type")),
+        "Correct payload type should not produce diagnostic, got: {diags:?}"
+    );
+}
+
+/// void payload → no diagnostic.
+#[test]
+fn test_event_void_payload_no_hint() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("backend.rs"),
+        findings: vec![create_finding(
+            "app-ready",
+            EntityType::Event,
+            Behavior::Emit,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_event_finding("app-ready", Behavior::Listen, 5)],
+    });
+
+    index.add_event_schema(make_event_schema(
+        "app-ready",
+        "void",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags.iter().all(|d| !d.message.contains("payload type")),
+        "void payload should not trigger diagnostic, got: {diags:?}"
+    );
+}
+
+/// Specta event schema parsing test.
+#[test]
+fn test_specta_event_schema_parsing() {
+    let content = r#"
+// This file was generated by [tauri-specta]. Do not edit this file manually.
+export const events = __makeEvents__<{
+    DemoEvent: string,
+    UserUpdated: UserProfile,
+}>({
+    DemoEvent: "demo-event",
+    UserUpdated: "user-updated",
+})
+"#;
+
+    let schemas =
+        lsp_server::bindings_reader::parse_specta_events(content, &test_path("bindings.ts"));
+    assert_eq!(schemas.len(), 2, "Should parse 2 event schemas");
+
+    let demo = schemas.iter().find(|s| s.event_name == "demo-event");
+    assert!(demo.is_some(), "Should find demo-event");
+    assert_eq!(demo.unwrap().payload_type, "string");
+
+    let user = schemas.iter().find(|s| s.event_name == "user-updated");
+    assert!(user.is_some(), "Should find user-updated");
+    assert_eq!(user.unwrap().payload_type, "UserProfile");
+}
+
+/// Typegen event schema parsing test.
+#[test]
+fn test_typegen_event_schema_parsing() {
+    let content = r#"
+import { listen } from '@tauri-apps/api/event';
+
+export async function onNotificationSent(
+  handler: (payload: types.Message) => void
+): Promise<UnlistenFn> {
+  return listen<types.Message>('notification-sent', (event) => {
+    handler(event.payload);
+  });
+}
+
+export async function onAppReady(
+  handler: (payload: string) => void
+): Promise<UnlistenFn> {
+  return listen<string>('app-ready', (event) => {
+    handler(event.payload);
+  });
+}
+"#;
+
+    let schemas =
+        lsp_server::bindings_reader::parse_typegen_events(content, &test_path("events.ts"));
+    assert_eq!(schemas.len(), 2, "Should parse 2 event schemas");
+
+    let notif = schemas.iter().find(|s| s.event_name == "notification-sent");
+    assert!(notif.is_some(), "Should find notification-sent");
+    assert_eq!(notif.unwrap().payload_type, "Message");
+
+    let ready = schemas.iter().find(|s| s.event_name == "app-ready");
+    assert!(ready.is_some(), "Should find app-ready");
+    assert_eq!(ready.unwrap().payload_type, "string");
 }
