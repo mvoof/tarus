@@ -285,10 +285,10 @@ fn parse_rust_param(s: &str) -> Option<ParamSchema> {
     let rust_type = s[colon_pos + 1..].trim();
 
     // Skip Tauri-injected parameters (not user data)
-    let skip_types = ["AppHandle", "State<", "Window", "WebviewWindow", "Webview"];
-    if skip_types.iter().any(|t| rust_type.contains(t)) {
-        return None;
-    }
+    let skip_types = ["AppHandle", "Window", "WebviewWindow", "Webview"];  
+    if skip_types.contains(&rust_type) || rust_type.starts_with("State<") {  
+        return None;  
+    }  
 
     // Skip `self` parameter
     if name == "self" || name == "&self" || name == "&mut self" {

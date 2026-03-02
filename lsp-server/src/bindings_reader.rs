@@ -280,17 +280,12 @@ fn parse_interface_blocks(content: &str) -> HashMap<String, String> {
                         // Parse `fieldName: type;`
                         if let Some(colon) = field_line.find(':') {
                             let field_name = field_line[..colon].trim();
-                            let mut field_type = field_line[colon + 1..]
+                            let field_type = field_line[colon + 1..]
                                 .trim()
                                 .trim_end_matches(';')
                                 .trim()
                                 .to_string();
 
-                            // Strip trailing `;` inside the type string
-                            if field_type.ends_with(';') {
-                                field_type.pop();
-                                field_type = field_type.trim_end().to_string();
-                            }
 
                             if !field_name.is_empty() && !field_type.is_empty() {
                                 fields.push(format!("{field_name}: {field_type}"));
@@ -319,13 +314,7 @@ fn parse_type_alias_line(line: &str) -> Option<(String, String)> {
     let line = line.strip_prefix("export type ")?;
     let eq_pos = line.find('=')?;
     let name = line[..eq_pos].trim().to_string();
-    let mut def = line[eq_pos + 1..].trim().to_string();
-
-    // Remove trailing semicolon
-    if def.ends_with(';') {
-        def.pop();
-        def = def.trim_end().to_string();
-    }
+    let def = line[eq_pos + 1..].trim_end_matches(';').trim().to_string();
 
     if name.is_empty() || def.is_empty() {
         return None;
