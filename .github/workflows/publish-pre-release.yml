@@ -1,23 +1,32 @@
-name: Publish Extension
+name: Publish Pre-Release Extension
 
 on:
   push:
     tags:
-      - "v*"
-      - "!v*-preview"
+      - "v*-pre-release"
 
 jobs:
   build:
     uses: ./.github/workflows/build.yml
 
   publish:
-    name: Publish VS Code Extension
+    name: Publish Pre-Release
     runs-on: ubuntu-latest
     needs: build
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard — must not be on main
+        run: |
+          BRANCHES=$(git branch -r --contains "${{ github.sha }}" | grep -v HEAD || true)
+          if echo "$BRANCHES" | grep -qE '^\s*origin/main$'; then
+            echo "::error::Pre-release tags must not be pushed from main branch"
+            exit 1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -54,16 +63,10 @@ jobs:
           npm ci
           npm pkg set scripts.vscode:prepublish="npm run compile-client"
 
-      - name: Publish to Visual Studio Marketplace
+      - name: Publish Pre-Release to Visual Studio Marketplace
         uses: HaaLeo/publish-vscode-extension@v2
         with:
           pat: ${{ secrets.VS_MARKETPLACE_TOKEN }}
           registryUrl: https://marketplace.visualstudio.com
           packagePath: extension
-
-      - name: Publish to Open VSX Registry
-        if: env.OPEN_VSX_TOKEN != ''
-        uses: HaaLeo/publish-vscode-extension@v2
-        with:
-          pat: ${{ secrets.OPEN_VSX_TOKEN }}
-          packagePath: extension
+          preRelease: true
