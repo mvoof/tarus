@@ -26,6 +26,9 @@ fn create_test_finding(key: &str, entity: EntityType, behavior: Behavior) -> Fin
         },
         call_arg_count: None,
         call_param_keys: None,
+        return_type: None,
+        call_name_end: None,
+        type_arg_range: None,
     }
 }
 
@@ -138,6 +141,9 @@ fn test_get_key_at_position() {
         },
         call_arg_count: None,
         call_param_keys: None,
+        return_type: None,
+        call_name_end: None,
+        type_arg_range: None,
     };
 
     let file_index = FileIndex {

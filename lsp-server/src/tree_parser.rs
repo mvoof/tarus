@@ -184,6 +184,9 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                         },
                         call_arg_count: None,
                         call_param_keys: None,
+                        return_type: None,
+                        call_name_end: None,
+                        type_arg_range: None,
                     });
                 }
                 continue;
@@ -216,6 +219,9 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                         },
                         call_arg_count: None,
                         call_param_keys: None,
+                        return_type: None,
+                        call_name_end: None,
+                        type_arg_range: None,
                     });
                 }
             }
@@ -317,6 +323,9 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
     // Get capture indices for imports
     let imported_name_idx = query.capture_index_for_name("imported_name");
     let local_alias_idx = query.capture_index_for_name("local_alias");
+    // Get capture indices for generic call nodes (to extract type_arguments)
+    let call_generic_idx = query.capture_index_for_name("call_generic");
+    let call_await_generic_idx = query.capture_index_for_name("call_await_generic");
     // Get capture indices for Specta calls
     let specta_method_name_idx = query.capture_index_for_name("specta_method_name");
     let specta_call_idx = query.capture_index_for_name("specta_call");
@@ -379,6 +388,17 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         end: point_to_position(arg_cap.node.end_position()),
                     };
 
+                    // Extract call_name_end: end of the function identifier (e.g. end of "invoke")
+                    let call_name_end = Some(adjust_position(
+                        point_to_position(func_cap.node.end_position()),
+                        line_offset,
+                    ));
+
+                    // Extract type argument from generic calls: invoke<T>("cmd") → "T"
+                    let type_arg_info = extract_type_argument_info(m, call_generic_idx, call_await_generic_idx, content);
+                    let return_type = type_arg_info.as_ref().map(|i| i.type_text.clone());
+                    let type_arg_range = type_arg_info.map(|i| adjust_range(i.type_arg_range, line_offset));
+
                     findings.push(Finding {
                         key: arg_value.to_string(),
                         entity: pattern.entity,
@@ -386,6 +406,9 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         range: adjust_range(range, line_offset),
                         call_arg_count: None,
                         call_param_keys: None,
+                        return_type,
+                        call_name_end,
+                        type_arg_range,
                     });
                 }
             }
@@ -428,6 +451,9 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         range: adjust_range(range, line_offset),
                         call_arg_count: None,
                         call_param_keys: None,
+                        return_type: None,
+                        call_name_end: None,
+                        type_arg_range: None,
                     });
                 }
             }
@@ -457,12 +483,68 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                     range: adjust_range(method_range, line_offset),
                     call_arg_count: Some(arg_count),
                     call_param_keys: None,
+                    return_type: None,
+                    call_name_end: None,
+                    type_arg_range: None,
                 });
             }
         }
     }
 
     Ok(findings)
+}
+
+/// Result of extracting type argument info from a generic call expression.
+struct TypeArgInfo {
+    /// The type text (e.g. "User" from `invoke<User>`)
+    type_text: String,
+    /// The range of the full `<User>` including angle brackets
+    type_arg_range: Range,
+}
+
+/// Extract the type argument text and range from a generic call expression.
+///
+/// For `invoke<User>("cmd")`, the `call_expression` node has a `type_arguments` child
+/// containing `<User>`. We strip the angle brackets to return `"User"` and also
+/// return the range of `<User>` for code action replacement.
+fn extract_type_argument_info(
+    m: &tree_sitter::QueryMatch<'_, '_>,
+    call_generic_idx: Option<u32>,
+    call_await_generic_idx: Option<u32>,
+    content: &str,
+) -> Option<TypeArgInfo> {
+    // Find the call_expression node from the generic pattern captures
+    let call_node = call_generic_idx
+        .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+        .or_else(|| {
+            call_await_generic_idx
+                .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+        })?;
+
+    // Walk children to find type_arguments
+    let node = call_node.node;
+    let mut tree_cursor = node.walk();
+    for child in node.children(&mut tree_cursor) {
+        if child.kind() == "type_arguments" {
+            let text = child.utf8_text(content.as_bytes()).unwrap_or_default();
+            let type_arg_range = Range {
+                start: point_to_position(child.start_position()),
+                end: point_to_position(child.end_position()),
+            };
+            // Strip angle brackets: "<User>" → "User"
+            let trimmed = text.strip_prefix('<').unwrap_or(text);
+            let trimmed = trimmed.strip_suffix('>').unwrap_or(trimmed);
+            let trimmed = trimmed.trim();
+            if !trimmed.is_empty() {
+                return Some(TypeArgInfo {
+                    type_text: trimmed.to_string(),
+                    type_arg_range,
+                });
+            }
+        }
+    }
+
+    None
 }
 
 /// Count the positional arguments in a `SpectaCall` expression.
