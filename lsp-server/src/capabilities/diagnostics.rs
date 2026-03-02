@@ -143,8 +143,7 @@ fn check_param_keys(
 
     // Build sets for comparison
     let expected: Vec<&str> = schema.params.iter().map(|p| p.name.as_str()).collect();
-    let actual: std::collections::HashSet<&str> =
-        call_keys.iter().map(String::as_str).collect();
+    let actual: std::collections::HashSet<&str> = call_keys.iter().map(String::as_str).collect();
     let expected_set: std::collections::HashSet<&str> = expected.iter().copied().collect();
 
     // Missing required params (present in schema, absent in call)

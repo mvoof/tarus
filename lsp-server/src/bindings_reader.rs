@@ -8,7 +8,7 @@
 use crate::indexer::{CommandSchema, GeneratorKind, ParamSchema};
 use crate::utils::camel_to_snake;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Parse a Specta-generated bindings file and return a list of `CommandSchema`.
 ///
@@ -18,7 +18,7 @@ use std::path::PathBuf;
 /// ```
 /// inside an `export const commands = { ... }` block.
 #[must_use]
-pub fn parse_specta_bindings(content: &str, source_path: PathBuf) -> Vec<CommandSchema> {
+pub fn parse_specta_bindings(content: &str, source_path: &Path) -> Vec<CommandSchema> {
     let mut schemas = Vec::new();
     let mut in_commands_block = false;
 
@@ -47,7 +47,7 @@ pub fn parse_specta_bindings(content: &str, source_path: PathBuf) -> Vec<Command
                 command_name,
                 params,
                 return_type,
-                source_path: source_path.clone(),
+                source_path: source_path.to_path_buf(),
                 generator: GeneratorKind::Specta,
             });
         }
@@ -280,8 +280,11 @@ fn parse_interface_blocks(content: &str) -> HashMap<String, String> {
                         // Parse `fieldName: type;`
                         if let Some(colon) = field_line.find(':') {
                             let field_name = field_line[..colon].trim();
-                            let mut field_type =
-                                field_line[colon + 1..].trim().trim_end_matches(';').trim().to_string();
+                            let mut field_type = field_line[colon + 1..]
+                                .trim()
+                                .trim_end_matches(';')
+                                .trim()
+                                .to_string();
 
                             // Strip trailing `;` inside the type string
                             if field_type.ends_with(';') {

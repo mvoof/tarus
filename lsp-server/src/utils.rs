@@ -1,6 +1,6 @@
 //! Shared utility functions
 
-/// Convert a camelCase or PascalCase identifier to snake_case
+/// Convert a camelCase or `PascalCase` identifier to `snake_case`
 ///
 /// Examples:
 /// - `getUserProfile` → `get_user_profile`
@@ -17,7 +17,7 @@ pub fn camel_to_snake(s: &str) -> String {
             // - not at position 0
             // - previous char is lowercase OR (next char is lowercase AND previous is uppercase)
             let prev_is_lower = i > 0 && chars[i - 1].is_ascii_lowercase();
-            let next_is_lower = chars.get(i + 1).is_some_and(|c| c.is_ascii_lowercase());
+            let next_is_lower = chars.get(i + 1).is_some_and(char::is_ascii_lowercase);
             let prev_is_upper = i > 0 && chars[i - 1].is_ascii_uppercase();
 
             if prev_is_lower || (next_is_lower && prev_is_upper) {

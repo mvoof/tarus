@@ -30,7 +30,8 @@ pub enum LangType {
 
 impl LangType {
     /// Get language type from file extension
-    #[must_use] pub fn from_extension(ext: &str) -> Option<Self> {
+    #[must_use]
+    pub fn from_extension(ext: &str) -> Option<Self> {
         match ext {
             "rs" => Some(Self::Rust),
             "ts" | "tsx" => Some(Self::TypeScript),
@@ -169,7 +170,10 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
 
             if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
                 if rust_type_extractor::has_tauri_command_attr(item_cap.node, content) {
-                    let name = name_cap.node.utf8_text(content.as_bytes()).unwrap_or_default();
+                    let name = name_cap
+                        .node
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or_default();
                     findings.push(Finding {
                         key: name.to_string(),
                         entity: EntityType::Command,
@@ -286,9 +290,9 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
     };
 
     let mut parser = Parser::new();
-    parser.set_language(&ts_lang).map_err(|e| {
-        ParseError::LanguageError(format!("Failed to set {lang:?} language: {e}"))
-    })?;
+    parser
+        .set_language(&ts_lang)
+        .map_err(|e| ParseError::LanguageError(format!("Failed to set {lang:?} language: {e}")))?;
 
     let tree = parser
         .parse(content, None)
@@ -461,7 +465,7 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
     Ok(findings)
 }
 
-/// Count the positional arguments in a SpectaCall expression.
+/// Count the positional arguments in a `SpectaCall` expression.
 fn count_specta_call_args(
     m: &tree_sitter::QueryMatch<'_, '_>,
     specta_call_idx: Option<u32>,

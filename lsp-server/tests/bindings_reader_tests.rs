@@ -30,11 +30,13 @@ fn test_camel_to_snake() {
 #[test]
 fn test_parse_specta_extracts_schemas() {
     let content = load_fixture("bindings/specta_bindings.ts");
-    let schemas = parse_specta_bindings(&content, test_path("specta_bindings.ts"));
+    let schemas = parse_specta_bindings(&content, &test_path("specta_bindings.ts"));
 
     assert_eq!(schemas.len(), 3, "Should parse 3 command schemas");
 
-    let get_user = schemas.iter().find(|s| s.command_name == "get_user_profile");
+    let get_user = schemas
+        .iter()
+        .find(|s| s.command_name == "get_user_profile");
     assert!(get_user.is_some(), "Should find get_user_profile");
     let s = get_user.unwrap();
     assert_eq!(s.params.len(), 1);
@@ -46,7 +48,7 @@ fn test_parse_specta_extracts_schemas() {
 #[test]
 fn test_parse_specta_camel_to_snake() {
     let content = load_fixture("bindings/specta_bindings.ts");
-    let schemas = parse_specta_bindings(&content, test_path("specta_bindings.ts"));
+    let schemas = parse_specta_bindings(&content, &test_path("specta_bindings.ts"));
 
     // getUserProfile → get_user_profile
     assert!(schemas.iter().any(|s| s.command_name == "get_user_profile"));
@@ -57,17 +59,20 @@ fn test_parse_specta_camel_to_snake() {
 #[test]
 fn test_parse_specta_result_return_unwrapped() {
     let content = load_fixture("bindings/specta_bindings.ts");
-    let schemas = parse_specta_bindings(&content, test_path("specta_bindings.ts"));
+    let schemas = parse_specta_bindings(&content, &test_path("specta_bindings.ts"));
 
     // getUserProfile returns Promise<Result<UserProfile, string>> → "UserProfile"
-    let s = schemas.iter().find(|s| s.command_name == "get_user_profile").unwrap();
+    let s = schemas
+        .iter()
+        .find(|s| s.command_name == "get_user_profile")
+        .unwrap();
     assert_eq!(s.return_type, "UserProfile");
 }
 
 #[test]
 fn test_parse_specta_no_params() {
     let content = load_fixture("bindings/specta_bindings.ts");
-    let schemas = parse_specta_bindings(&content, test_path("specta_bindings.ts"));
+    let schemas = parse_specta_bindings(&content, &test_path("specta_bindings.ts"));
 
     let ping = schemas.iter().find(|s| s.command_name == "ping").unwrap();
     assert!(ping.params.is_empty(), "ping should have no params");
@@ -77,10 +82,13 @@ fn test_parse_specta_no_params() {
 #[test]
 fn test_parse_specta_multi_params() {
     let content = load_fixture("bindings/specta_bindings.ts");
-    let schemas = parse_specta_bindings(&content, test_path("specta_bindings.ts"));
+    let schemas = parse_specta_bindings(&content, &test_path("specta_bindings.ts"));
 
     // createUser(name: string, age: number)
-    let s = schemas.iter().find(|s| s.command_name == "create_user").unwrap();
+    let s = schemas
+        .iter()
+        .find(|s| s.command_name == "create_user")
+        .unwrap();
     assert_eq!(s.params.len(), 2);
     assert_eq!(s.params[0].name, "name");
     assert_eq!(s.params[0].ts_type, "string");
@@ -97,7 +105,10 @@ fn test_parse_ts_rs_type_aliases() {
     let content = load_fixture("bindings/ts_rs_types.ts");
     let aliases = parse_ts_rs_types(&content);
 
-    assert!(aliases.contains_key("UserProfile"), "Should find UserProfile");
+    assert!(
+        aliases.contains_key("UserProfile"),
+        "Should find UserProfile"
+    );
     assert!(aliases.contains_key("TaskState"), "Should find TaskState");
 
     let user_profile = &aliases["UserProfile"];
@@ -115,7 +126,10 @@ fn test_parse_typegen_export_type_lines() {
     let aliases = parse_typegen_types(&content);
 
     assert!(aliases.contains_key("SimpleUser"), "Should find SimpleUser");
-    assert!(aliases.contains_key("ApiResponse"), "Should find ApiResponse");
+    assert!(
+        aliases.contains_key("ApiResponse"),
+        "Should find ApiResponse"
+    );
     assert!(aliases.contains_key("TaskState"), "Should find TaskState");
 }
 
@@ -125,11 +139,23 @@ fn test_parse_typegen_export_interface_blocks() {
     let aliases = parse_typegen_types(&content);
 
     // export interface UserProfile { id: number; name: string; ... }
-    assert!(aliases.contains_key("UserProfile"), "Should find UserProfile interface");
+    assert!(
+        aliases.contains_key("UserProfile"),
+        "Should find UserProfile interface"
+    );
     let profile = &aliases["UserProfile"];
-    assert!(profile.contains("id"), "UserProfile should contain 'id' field");
-    assert!(profile.contains("name"), "UserProfile should contain 'name' field");
-    assert!(profile.contains("email"), "UserProfile should contain 'email' field");
+    assert!(
+        profile.contains("id"),
+        "UserProfile should contain 'id' field"
+    );
+    assert!(
+        profile.contains("name"),
+        "UserProfile should contain 'name' field"
+    );
+    assert!(
+        profile.contains("email"),
+        "UserProfile should contain 'email' field"
+    );
 }
 
 #[test]
@@ -138,9 +164,15 @@ fn test_parse_typegen_interface_skips_index_signatures() {
     let aliases = parse_typegen_types(&content);
 
     // GreetParams has `[key: string]: unknown` which should be skipped
-    assert!(aliases.contains_key("GreetParams"), "Should find GreetParams interface");
+    assert!(
+        aliases.contains_key("GreetParams"),
+        "Should find GreetParams interface"
+    );
     let greet_params = &aliases["GreetParams"];
-    assert!(greet_params.contains("name"), "GreetParams should contain 'name' field");
+    assert!(
+        greet_params.contains("name"),
+        "GreetParams should contain 'name' field"
+    );
     assert!(
         !greet_params.contains("[key"),
         "GreetParams should NOT contain index signature"
@@ -200,7 +232,10 @@ import { invoke } from '@tauri-apps/api';
 const result = await invoke('get_user');
 "#;
     let kind = detect_generator_kind(content);
-    assert!(kind.is_none(), "Regular TS file should not be detected as a generator");
+    assert!(
+        kind.is_none(),
+        "Regular TS file should not be detected as a generator"
+    );
 }
 
 // ============================================================
@@ -217,7 +252,10 @@ fn test_process_specta_file_populates_schema() {
     assert!(result, "process_file_content should return true");
 
     let schema = index.get_schema("get_user_profile");
-    assert!(schema.is_some(), "get_user_profile schema should be in index");
+    assert!(
+        schema.is_some(),
+        "get_user_profile schema should be in index"
+    );
     assert_eq!(schema.unwrap().generator, GeneratorKind::Specta);
 }
 
@@ -248,7 +286,10 @@ fn test_rust_file_populates_rust_source_schema() {
     process_file_content(&path, &content, &index);
 
     let schema = index.get_schema("get_user");
-    assert!(schema.is_some(), "get_user schema should be extracted from Rust");
+    assert!(
+        schema.is_some(),
+        "get_user schema should be extracted from Rust"
+    );
     assert_eq!(schema.unwrap().generator, GeneratorKind::RustSource);
 }
 

@@ -30,7 +30,10 @@ fn test_rust_type_to_ts_primitives() {
 fn test_rust_type_to_ts_result() {
     assert_eq!(rust_type_to_ts("Result<String, String>"), "string");
     assert_eq!(rust_type_to_ts("Result<u32, String>"), "number");
-    assert_eq!(rust_type_to_ts("Result<UserProfile, String>"), "UserProfile");
+    assert_eq!(
+        rust_type_to_ts("Result<UserProfile, String>"),
+        "UserProfile"
+    );
 }
 
 #[test]
@@ -58,7 +61,7 @@ fn test_rust_type_to_ts_unknown_passthrough() {
 #[test]
 fn test_extract_single_param() {
     let content = load_fixture("rust/typed_commands.rs");
-    let schemas = extract_command_schemas(&content, test_path("lib.rs"));
+    let schemas = extract_command_schemas(&content, &test_path("lib.rs"));
 
     let get_user = schemas.iter().find(|s| s.command_name == "get_user");
     assert!(get_user.is_some(), "Should find get_user");
@@ -73,7 +76,7 @@ fn test_extract_single_param() {
 #[test]
 fn test_extract_multi_param() {
     let content = load_fixture("rust/typed_commands.rs");
-    let schemas = extract_command_schemas(&content, test_path("lib.rs"));
+    let schemas = extract_command_schemas(&content, &test_path("lib.rs"));
 
     let create_user = schemas.iter().find(|s| s.command_name == "create_user");
     assert!(create_user.is_some(), "Should find create_user");
@@ -88,7 +91,7 @@ fn test_extract_multi_param() {
 #[test]
 fn test_extract_no_param() {
     let content = load_fixture("rust/typed_commands.rs");
-    let schemas = extract_command_schemas(&content, test_path("lib.rs"));
+    let schemas = extract_command_schemas(&content, &test_path("lib.rs"));
 
     let ping = schemas.iter().find(|s| s.command_name == "ping");
     assert!(ping.is_some(), "Should find ping");
@@ -100,7 +103,7 @@ fn test_extract_no_param() {
 #[test]
 fn test_extract_vec_return() {
     let content = load_fixture("rust/typed_commands.rs");
-    let schemas = extract_command_schemas(&content, test_path("lib.rs"));
+    let schemas = extract_command_schemas(&content, &test_path("lib.rs"));
 
     let get_items = schemas.iter().find(|s| s.command_name == "get_items");
     assert!(get_items.is_some());
@@ -110,7 +113,7 @@ fn test_extract_vec_return() {
 #[test]
 fn test_extract_option_return() {
     let content = load_fixture("rust/typed_commands.rs");
-    let schemas = extract_command_schemas(&content, test_path("lib.rs"));
+    let schemas = extract_command_schemas(&content, &test_path("lib.rs"));
 
     let find_user = schemas.iter().find(|s| s.command_name == "find_user");
     assert!(find_user.is_some());
@@ -120,9 +123,12 @@ fn test_extract_option_return() {
 #[test]
 fn test_only_tauri_command_extracted() {
     let content = load_fixture("rust/typed_commands.rs");
-    let schemas = extract_command_schemas(&content, test_path("lib.rs"));
+    let schemas = extract_command_schemas(&content, &test_path("lib.rs"));
 
     // helper_fn has no #[tauri::command] and should NOT be extracted
     let helper = schemas.iter().find(|s| s.command_name == "helper_fn");
-    assert!(helper.is_none(), "helper_fn should not be extracted (no #[tauri::command])");
+    assert!(
+        helper.is_none(),
+        "helper_fn should not be extracted (no #[tauri::command])"
+    );
 }

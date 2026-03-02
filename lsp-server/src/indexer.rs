@@ -9,7 +9,7 @@ use tower_lsp_server::lsp_types::{Location, Position, Range, SymbolInformation, 
 use tower_lsp_server::UriExt;
 
 /// Which tool generated the binding file (or the source itself)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeneratorKind {
     TsRs,
     Specta,
@@ -133,15 +133,15 @@ impl ProjectIndex {
     /// Search for a key by cursor position (Reverse Lookup)
     pub fn get_key_at_position(
         &self,
-        path: &PathBuf,
+        path: &Path,
         position: Position,
     ) -> Option<(IndexKey, LocationInfo)> {
-        let keys_in_file = self.file_map.get(path)?;
+        let keys_in_file = self.file_map.get(&path.to_path_buf())?;
 
         for key in keys_in_file.value() {
             if let Some(locations) = self.map.get(key) {
                 for loc in locations.value() {
-                    if loc.path == *path && Self::is_position_in_range(position, loc.range) {
+                    if loc.path == path && Self::is_position_in_range(position, loc.range) {
                         return Some((key.clone(), loc.clone()));
                     }
                 }
@@ -219,12 +219,12 @@ impl ProjectIndex {
     /// # Panics
     ///
     /// Panics if the cache lock is poisoned (only occurs if another thread panicked while holding the lock)
-    pub fn remove_file(&self, path: &PathBuf) {
+    pub fn remove_file(&self, path: &Path) {
         // If the file has already been indexed...
-        if let Some((_, keys)) = self.file_map.remove(path) {
+        if let Some((_, keys)) = self.file_map.remove(&path.to_path_buf()) {
             for key in keys {
                 self.map.entry(key.clone()).and_modify(|locs| {
-                    locs.retain(|loc| loc.path != *path);
+                    locs.retain(|loc| loc.path != path);
                 });
 
                 // If the list becomes empty, you can remove the key from the map,
@@ -241,7 +241,7 @@ impl ProjectIndex {
         }
 
         // Also remove parse errors for this file
-        self.parse_errors.remove(path);
+        self.parse_errors.remove(&path.to_path_buf());
     }
 
     /// Store a parse error for a file
@@ -250,8 +250,10 @@ impl ProjectIndex {
     }
 
     /// Get parse error for a file (if any)
-    pub fn get_parse_error(&self, path: &PathBuf) -> Option<String> {
-        self.parse_errors.get(path).map(|e| e.value().clone())
+    pub fn get_parse_error(&self, path: &Path) -> Option<String> {
+        self.parse_errors
+            .get(&path.to_path_buf())
+            .map(|e| e.value().clone())
     }
 
     /// Store a command schema (replaces any existing schema for the same command name)
@@ -266,8 +268,8 @@ impl ProjectIndex {
     }
 
     /// Remove all schemas associated with a specific file
-    pub fn remove_schemas_for_file(&self, path: &PathBuf) {
-        if let Some((_, names)) = self.generated_file_paths.remove(path) {
+    pub fn remove_schemas_for_file(&self, path: &Path) {
+        if let Some((_, names)) = self.generated_file_paths.remove(&path.to_path_buf()) {
             for name in names {
                 self.command_schemas.remove(&name);
             }
@@ -284,10 +286,12 @@ impl ProjectIndex {
     /// Used to gate type-level diagnostics: type checking is only meaningful when
     /// a generated bindings file is present in the workspace.
     pub fn has_bindings_files(&self) -> bool {
-        self.command_schemas
-            .iter()
-            .any(|e| matches!(e.value().generator, GeneratorKind::Specta | GeneratorKind::TsRs | GeneratorKind::Typegen))
-            || !self.type_aliases.is_empty()
+        self.command_schemas.iter().any(|e| {
+            matches!(
+                e.value().generator,
+                GeneratorKind::Specta | GeneratorKind::TsRs | GeneratorKind::Typegen
+            )
+        }) || !self.type_aliases.is_empty()
     }
 
     /// Replace the list of config-discovered generators.
@@ -312,10 +316,10 @@ impl ProjectIndex {
         for b in bindings.iter() {
             if b.is_directory {
                 if path.starts_with(&b.output_path) {
-                    return Some(b.kind.clone());
+                    return Some(b.kind);
                 }
             } else if path == b.output_path {
-                return Some(b.kind.clone());
+                return Some(b.kind);
             }
         }
         None
@@ -331,8 +335,8 @@ impl ProjectIndex {
     }
 
     /// Remove all type aliases associated with a specific file
-    pub fn remove_type_aliases_for_file(&self, path: &PathBuf) {
-        if let Some((_, names)) = self.generated_alias_paths.remove(path) {
+    pub fn remove_type_aliases_for_file(&self, path: &Path) {
+        if let Some((_, names)) = self.generated_alias_paths.remove(&path.to_path_buf()) {
             for name in names {
                 self.type_aliases.remove(&name);
             }
@@ -350,11 +354,11 @@ impl ProjectIndex {
     }
 
     /// Preparing data for `CodeLens`
-    pub fn get_lens_data(&self, path: &PathBuf) -> Vec<(Range, String, Vec<LocationInfo>)> {
+    pub fn get_lens_data(&self, path: &Path) -> Vec<(Range, String, Vec<LocationInfo>)> {
         let mut result = Vec::new();
 
         // Collect keys
-        let Some(keys) = self.file_map.get(path) else {
+        let Some(keys) = self.file_map.get(&path.to_path_buf()) else {
             return result;
         };
 
@@ -372,13 +376,13 @@ impl ProjectIndex {
 
             // Find where exactly in the CURRENT file this key is located
             let current_file_locations: Vec<&LocationInfo> =
-                all_locations.iter().filter(|l| l.path == *path).collect();
+                all_locations.iter().filter(|l| l.path == path).collect();
 
             // Define "Targets" - where the lens should point
             // These are all the locations MINUS the current file (so as not to reference itself)
             let targets: Vec<LocationInfo> = all_locations
                 .iter()
-                .filter(|l| l.path != *path) // Exclude the current file
+                .filter(|l| l.path != path) // Exclude the current file
                 .cloned()
                 .collect();
 
@@ -401,116 +405,85 @@ impl ProjectIndex {
                     }
                 }
 
+                let limit = self.reference_limit.load(Ordering::Relaxed);
+
                 if is_current_rust {
                     // Rust Logic: Show frontend files separately
-
-                    // Group by file path
-                    let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-                    for t in frontend_targets.iter() {
-                        files_map.entry(t.path.clone()).or_default().push(t.clone());
-                    }
-
-                    let limit = self.reference_limit.load(Ordering::Relaxed);
-
-                    if files_map.len() <= limit {
-                        // If <= limit files, show distinct link for EACH file
-                        let mut sorted_files: Vec<_> = files_map.into_iter().collect();
-                        // Sort for consistency
-                        sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        for (fpath, locs) in sorted_files {
-                            let fname = fpath
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-
-                            result.push((my_loc.range, format!("Go to {}", fname), locs));
-                        }
-                    } else {
-                        // If > limit files, show summary
-                        result.push((
-                            my_loc.range,
-                            format!("{} references", frontend_targets.len()),
-                            frontend_targets.clone(),
-                        ));
-                    }
+                    Self::push_file_lenses(
+                        &mut result,
+                        my_loc.range,
+                        frontend_targets,
+                        limit,
+                        "references",
+                    );
                 } else {
                     // Frontend Logic: "Go to Rust" + "Go to others"
-
-                    let limit = self.reference_limit.load(Ordering::Relaxed);
-
                     // 1. Link to Rust (if exists)
-
-                    if !rust_targets.is_empty() {
-                        // Group by file path
-                        let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-                        for t in rust_targets.iter() {
-                            files_map.entry(t.path.clone()).or_default().push(t.clone());
-                        }
-
-                        if files_map.len() <= limit {
-                            // If <= limit files, show distinct link for EACH file
-                            let mut sorted_files: Vec<_> = files_map.into_iter().collect();
-                            sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-                            for (fpath, locs) in sorted_files {
-                                let fname = fpath
-                                    .file_name()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-
-                                result.push((my_loc.range, format!("Go to {}", fname), locs));
-                            }
-                        } else {
-                            // If > limit files, show summary
-                            result.push((
-                                my_loc.range,
-                                format!("{} rust refs", rust_targets.len()),
-                                rust_targets,
-                            ));
-                        }
-                    }
-
+                    Self::push_file_lenses(
+                        &mut result,
+                        my_loc.range,
+                        rust_targets,
+                        limit,
+                        "rust refs",
+                    );
                     // 2. Links to other frontend files
-                    // Group by file path
-                    let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-
-                    for t in frontend_targets.iter() {
-                        files_map.entry(t.path.clone()).or_default().push(t.clone());
-                    }
-
-                    if files_map.len() <= limit {
-                        // If <= limit files, show distinct link for EACH file
-                        let mut sorted_files: Vec<_> = files_map.into_iter().collect();
-                        sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        for (fpath, locs) in sorted_files {
-                            let fname = fpath
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-
-                            result.push((my_loc.range, format!("Go to {}", fname), locs));
-                        }
-                    } else {
-                        // If > limit files, show summary
-                        result.push((
-                            my_loc.range,
-                            format!("{} references", frontend_targets.len()),
-                            frontend_targets,
-                        ));
-                    }
+                    Self::push_file_lenses(
+                        &mut result,
+                        my_loc.range,
+                        frontend_targets,
+                        limit,
+                        "references",
+                    );
                 }
             }
         }
         result
     }
 
+    fn push_file_lenses(
+        result: &mut Vec<(Range, String, Vec<LocationInfo>)>,
+        range: Range,
+        targets: Vec<LocationInfo>,
+        limit: usize,
+        summary_label: &str,
+    ) {
+        if targets.is_empty() {
+            return;
+        }
+
+        // Group by file path
+        let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
+        for t in &targets {
+            files_map.entry(t.path.clone()).or_default().push(t.clone());
+        }
+
+        if files_map.len() <= limit {
+            // If <= limit files, show distinct link for EACH file
+            let mut sorted_files: Vec<_> = files_map.into_iter().collect();
+            // Sort for consistency
+            sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+            for (fpath, locs) in sorted_files {
+                let fname = fpath
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                result.push((range, format!("Go to {fname}"), locs));
+            }
+        } else {
+            // If > limit files, show summary
+            result.push((
+                range,
+                format!("{} {}", targets.len(), summary_label),
+                targets,
+            ));
+        }
+    }
+
     /// Generates a report only for a specific file (delta update)
-    pub fn file_report(&self, path: &PathBuf) -> String {
+    pub fn file_report(&self, path: &Path) -> String {
         let filename = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -520,7 +493,7 @@ impl ProjectIndex {
 
         let _ = writeln!(report_message, "\n📝 === UPDATE REPORT: {filename} ===");
 
-        let Some(keys) = self.file_map.get(path) else {
+        let Some(keys) = self.file_map.get(&path.to_path_buf()) else {
             return format!("📝 File update: {filename:?} (No Tarus keys found)");
         };
 
@@ -533,7 +506,7 @@ impl ProjectIndex {
         for key in &keys_clone {
             if let Some(locs) = self.map.get(key) {
                 let file_locs: Vec<LocationInfo> =
-                    locs.iter().filter(|l| l.path == *path).cloned().collect();
+                    locs.iter().filter(|l| l.path == path).cloned().collect();
 
                 if !file_locs.is_empty() {
                     delta_map.insert(key.clone(), file_locs);
@@ -550,7 +523,7 @@ impl ProjectIndex {
         report_message.push_str("\n📄 === 2. REVERSE FILE MAP (Delta Subset) ===\n");
 
         let mut delta_file_map: HashMap<PathBuf, Vec<IndexKey>> = HashMap::new();
-        delta_file_map.insert(path.clone(), keys_clone);
+        delta_file_map.insert(path.to_path_buf(), keys_clone);
 
         let _ = writeln!(report_message, "{delta_file_map:#?}");
 
@@ -585,10 +558,10 @@ impl ProjectIndex {
     }
 
     /// Get document symbols for outline view
-    pub fn get_document_symbols(&self, path: &PathBuf) -> Vec<SymbolInformation> {
+    pub fn get_document_symbols(&self, path: &Path) -> Vec<SymbolInformation> {
         let mut symbols = Vec::new();
 
-        let Some(keys) = self.file_map.get(path) else {
+        let Some(keys) = self.file_map.get(&path.to_path_buf()) else {
             return symbols;
         };
 
@@ -598,7 +571,7 @@ impl ProjectIndex {
 
         for key in keys.value() {
             if let Some(locations) = self.map.get(key) {
-                for loc in locations.iter().filter(|l| l.path == *path) {
+                for loc in locations.iter().filter(|l| l.path == path) {
                     let kind = match key.entity {
                         EntityType::Command => SymbolKind::FUNCTION,
                         EntityType::Event => SymbolKind::EVENT,

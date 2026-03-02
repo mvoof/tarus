@@ -1,19 +1,19 @@
-//! Extract parameter and return type information from Rust #[tauri::command] functions
+//! Extract parameter and return type information from Rust #[`tauri::command`] functions
 
 use crate::indexer::{CommandSchema, GeneratorKind, ParamSchema};
-use std::path::PathBuf;
+use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 /// Embedded query for extracting Rust command parameter and return types.
 /// Uses a local query, NOT modifying queries/rust.scm.
-const RUST_PARAMS_QUERY: &str = r#"
+const RUST_PARAMS_QUERY: &str = r"
 (function_item
   name: (identifier) @fn_name
   parameters: (parameters) @fn_params
   return_type: (_)? @fn_return
 ) @fn_item
-"#;
+";
 
 /// Map a Rust type string to its TypeScript equivalent.
 ///
@@ -32,9 +32,8 @@ pub fn rust_type_to_ts(rust_type: &str) -> String {
 
     // Primitives
     match t {
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-        | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-        | "f32" | "f64" => return "number".to_string(),
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
+        | "isize" | "f32" | "f64" => return "number".to_string(),
         "String" | "&str" => return "string".to_string(),
         "bool" => return "boolean".to_string(),
         "()" => return "void".to_string(),
@@ -98,7 +97,7 @@ fn extract_first_generic_arg(s: &str) -> Option<&str> {
 /// Only extracts functions that have `#[tauri::command]` attribute.
 /// Does NOT modify queries/rust.scm.
 #[must_use]
-pub fn extract_command_schemas(content: &str, source_path: PathBuf) -> Vec<CommandSchema> {
+pub fn extract_command_schemas(content: &str, source_path: &Path) -> Vec<CommandSchema> {
     let Ok(schemas) = try_extract_command_schemas(content, source_path) else {
         return Vec::new();
     };
@@ -107,7 +106,7 @@ pub fn extract_command_schemas(content: &str, source_path: PathBuf) -> Vec<Comma
 
 fn try_extract_command_schemas(
     content: &str,
-    source_path: PathBuf,
+    source_path: &Path,
 ) -> Result<Vec<CommandSchema>, Box<dyn std::error::Error>> {
     let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = Parser::new();
@@ -187,7 +186,7 @@ fn try_extract_command_schemas(
             command_name: fn_name,
             params,
             return_type,
-            source_path: source_path.clone(),
+            source_path: source_path.to_path_buf(),
             generator: GeneratorKind::RustSource,
         });
     }
@@ -298,9 +297,5 @@ fn parse_rust_param(s: &str) -> Option<ParamSchema> {
 
     let ts_type = rust_type_to_ts(rust_type);
 
-    Some(ParamSchema {
-        name,
-        ts_type,
-    })
+    Some(ParamSchema { name, ts_type })
 }
-
