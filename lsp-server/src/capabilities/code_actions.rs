@@ -1,8 +1,8 @@
 //! Code Actions capability - generate Rust command templates
 
-use crate::indexer::ProjectIndex;
+use crate::indexer::{GeneratorKind, LocationInfo, ProjectIndex};
 use crate::scanner::find_src_tauri_dir;
-use crate::syntax::EntityType;
+use crate::syntax::{Behavior, EntityType};
 use std::path::{Path, PathBuf};
 use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
@@ -29,12 +29,18 @@ pub fn handle_code_action(
 
     let position = params.range.start;
 
-    // Check if cursor is on an undefined command
-    if let Some((key, _loc)) = project_index.get_key_at_position(&path, position) {
+    // Check if cursor is on a command
+    if let Some((key, loc)) = project_index.get_key_at_position(&path, position) {
         if key.entity != EntityType::Command {
             return None;
         }
 
+        // --- Return type code action ---
+        if let Some(action) = make_return_type_action(&key.name, &loc, project_index, params) {
+            return Some(vec![CodeActionOrCommand::CodeAction(action)]);
+        }
+
+        // --- Generate Rust command stub (existing) ---
         let info = project_index.get_diagnostic_info(&key);
         if info.has_definition {
             return None;
@@ -196,4 +202,81 @@ fn find_insertion_line(content: &str) -> usize {
 fn rank_and_limit(mut candidates: Vec<RustFileCandidate>) -> Vec<RustFileCandidate> {
     candidates.sort_by(|a, b| b.priority.cmp(&a.priority));
     candidates.into_iter().take(5).collect()
+}
+
+/// Build a code action to fix or insert the return type on an `invoke()` call.
+fn make_return_type_action(
+    command_name: &str,
+    loc: &LocationInfo,
+    project_index: &ProjectIndex,
+    params: &CodeActionParams,
+) -> Option<CodeAction> {
+    if !matches!(loc.behavior, Behavior::Call) {
+        return None;
+    }
+
+    if !project_index.has_bindings_files() {
+        return None;
+    }
+
+    let schema = project_index.get_schema(command_name)?;
+
+    // RustSource schemas are allowed when the return type has a known binding
+    if matches!(schema.generator, GeneratorKind::RustSource)
+        && !project_index.type_aliases.contains_key(&schema.return_type)
+    {
+        return None;
+    }
+
+    let expected = &schema.return_type;
+    if expected == "void" {
+        return None;
+    }
+
+    let (title, edit_range, new_text) = match &loc.return_type {
+        None => {
+            // Missing generic: insert <Expected> after function name
+            let insert_pos = loc.call_name_end?;
+            (
+                format!("Add return type '{expected}'"),
+                Range {
+                    start: insert_pos,
+                    end: insert_pos,
+                },
+                format!("<{expected}>"),
+            )
+        }
+        Some(ts_type) => {
+            if ts_type == "void" || ts_type == "any" {
+                return None;
+            }
+            if super::diagnostics::types_match(ts_type, expected, project_index) {
+                return None;
+            }
+            // Wrong generic: replace <Wrong> with <Expected>
+            let type_range = loc.type_arg_range?;
+            (
+                format!("Fix return type to '{expected}'"),
+                type_range,
+                format!("<{expected}>"),
+            )
+        }
+    };
+
+    let doc_uri = params.text_document.uri.clone();
+    // Uri has interior mutability due to caching
+    #[allow(clippy::mutable_key_type)]
+    let mut changes = std::collections::HashMap::new();
+    changes.insert(doc_uri, vec![TextEdit { range: edit_range, new_text }]);
+
+    Some(CodeAction {
+        title,
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(params.context.diagnostics.clone()),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
 }

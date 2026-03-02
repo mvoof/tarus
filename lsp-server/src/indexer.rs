@@ -53,6 +53,9 @@ pub struct Finding {
     pub range: Range,                         // Coordinates
     pub call_arg_count: Option<u32>,          // For SpectaCall: positional arg count
     pub call_param_keys: Option<Vec<String>>, // For Call: object literal keys in second arg
+    pub return_type: Option<String>,          // For Call with generics: invoke<T>() type argument
+    pub call_name_end: Option<Position>,      // End of "invoke" identifier (for inserting <T>)
+    pub type_arg_range: Option<Range>,        // Range of <T> in invoke<T>() (for replacing)
 }
 
 #[derive(Debug)]
@@ -76,6 +79,9 @@ pub struct LocationInfo {
     pub behavior: Behavior,
     pub call_arg_count: Option<u32>,
     pub call_param_keys: Option<Vec<String>>,
+    pub return_type: Option<String>,
+    pub call_name_end: Option<Position>,
+    pub type_arg_range: Option<Range>,
 }
 
 #[derive(Debug)]
@@ -199,6 +205,9 @@ impl ProjectIndex {
                 behavior: finding.behavior,
                 call_arg_count: finding.call_arg_count,
                 call_param_keys: finding.call_param_keys,
+                return_type: finding.return_type,
+                call_name_end: finding.call_name_end,
+                type_arg_range: finding.type_arg_range,
             };
 
             self.map.entry(key.clone()).or_default().push(info);

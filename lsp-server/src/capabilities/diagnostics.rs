@@ -10,8 +10,9 @@
 
 use crate::indexer::{DiagnosticInfo, GeneratorKind, IndexKey, LocationInfo, ProjectIndex};
 use crate::syntax::Behavior;
+use serde_json::json;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
+use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
 
 /// Compute diagnostics for a specific file
 pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec<Diagnostic> {
@@ -104,6 +105,9 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                 if let Some(d) = check_param_keys(loc, &key.name, project_index) {
                     diagnostics.push(d);
                 }
+                if let Some(d) = check_return_type(loc, &key.name, project_index) {
+                    diagnostics.push(d);
+                }
             }
         }
     }
@@ -193,4 +197,109 @@ fn check_param_keys(
     }
 
     None
+}
+
+/// Validate the return type of an `invoke()` call against the `CommandSchema`.
+///
+/// Two cases:
+/// - **Missing generic**: `invoke("cmd")` when command returns non-void → HINT
+/// - **Wrong generic**: `invoke<Wrong>("cmd")` when type doesn't match → WARNING
+///
+/// Only activates for `Call` behavior with a binding-sourced schema (not `RustSource`).
+fn check_return_type(
+    loc: &LocationInfo,
+    command_name: &str,
+    project_index: &ProjectIndex,
+) -> Option<Diagnostic> {
+    if !matches!(loc.behavior, Behavior::Call) {
+        return None;
+    }
+
+    let schema = project_index.get_schema(command_name)?;
+
+    // RustSource schemas are allowed for return type checks only when the return type
+    // has a known binding (type alias from ts-rs/specta/typegen), giving us confidence.
+    if matches!(schema.generator, GeneratorKind::RustSource)
+        && !project_index.type_aliases.contains_key(&schema.return_type)
+    {
+        return None;
+    }
+
+    let expected = &schema.return_type;
+    if expected == "void" {
+        return None;
+    }
+
+    // Build data payload for code actions
+    let make_data = || {
+        let mut data = json!({ "expected": expected });
+        if let Some(pos) = &loc.call_name_end {
+            data["callNameEnd"] = json!({ "line": pos.line, "character": pos.character });
+        }
+        if let Some(r) = &loc.type_arg_range {
+            data["typeArgRange"] = json!({
+                "start": { "line": r.start.line, "character": r.start.character },
+                "end": { "line": r.end.line, "character": r.end.character },
+            });
+        }
+        data
+    };
+
+    match &loc.return_type {
+        None => {
+            // Case A: Missing generic — invoke("cmd") without <T>
+            Some(Diagnostic {
+                range: loc.range,
+                severity: Some(DiagnosticSeverity::HINT),
+                source: Some("tarus".to_string()),
+                code: Some(NumberOrString::String("tarus/return-type-missing".to_string())),
+                message: format!(
+                    "invoke('{command_name}') is missing return type, expected '{expected}'"
+                ),
+                data: Some(make_data()),
+                ..Default::default()
+            })
+        }
+        Some(ts_type) => {
+            // Skip void/any — user opts out
+            if ts_type == "void" || ts_type == "any" {
+                return None;
+            }
+
+            if types_match(ts_type, expected, project_index) {
+                return None;
+            }
+
+            // Case B: Wrong generic
+            Some(Diagnostic {
+                range: loc.range,
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("tarus".to_string()),
+                code: Some(NumberOrString::String(
+                    "tarus/return-type-mismatch".to_string(),
+                )),
+                message: format!(
+                    "invoke<{ts_type}>('{command_name}') return type mismatch: expected '{expected}'"
+                ),
+                data: Some(make_data()),
+                ..Default::default()
+            })
+        }
+    }
+}
+
+/// Check if two type strings match, considering type aliases.
+pub fn types_match(ts_type: &str, expected: &str, project_index: &ProjectIndex) -> bool {
+    if ts_type == expected {
+        return true;
+    }
+
+    // Check if both resolve to the same type alias definition
+    if let Some(expected_def) = project_index.type_aliases.get(expected) {
+        if let Some(ts_def) = project_index.type_aliases.get(ts_type) {
+            return expected_def.value() == ts_def.value();
+        }
+    }
+
+    false
 }

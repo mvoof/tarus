@@ -159,6 +159,13 @@ mod typescript_parser_tests {
             .collect();
 
         assert!(!invokes.is_empty(), "Expected invoke calls with generics");
+
+        // Verify return_type is extracted from generic calls
+        let get_user = invokes.iter().find(|f| f.key == "get_user").expect("get_user finding");
+        assert_eq!(get_user.return_type.as_deref(), Some("User"), "Expected return_type=User for invoke<User>");
+
+        let save_data = invokes.iter().find(|f| f.key == "save_data").expect("save_data finding");
+        assert_eq!(save_data.return_type.as_deref(), Some("void"), "Expected return_type=void for invoke<void>");
     }
 
     #[test]

@@ -24,6 +24,9 @@ fn create_finding(key: &str, entity: EntityType, behavior: Behavior, line: u32) 
         },
         call_arg_count: None,
         call_param_keys: None,
+        return_type: None,
+        call_name_end: None,
+        type_arg_range: None,
     }
 }
 
@@ -226,6 +229,9 @@ fn make_call_finding(command: &str, line: u32, param_keys: Vec<&str>) -> Finding
         },
         call_arg_count: None,
         call_param_keys: Some(param_keys.into_iter().map(String::from).collect()),
+        return_type: None,
+        call_name_end: None,
+        type_arg_range: None,
     }
 }
 
@@ -428,5 +434,346 @@ fn test_rust_source_schema_skipped_for_type_check() {
     assert!(
         type_diags.is_empty(),
         "RustSource schema should not trigger type diagnostics, got: {type_diags:?}"
+    );
+}
+
+// ─── Return type diagnostic tests ────────────────────────────────────────────
+
+fn make_call_with_return_type(command: &str, line: u32, return_type: &str) -> Finding {
+    Finding {
+        key: command.to_string(),
+        entity: EntityType::Command,
+        behavior: Behavior::Call,
+        range: Range {
+            start: Position { line, character: 0 },
+            end: Position {
+                line,
+                character: command.len() as u32,
+            },
+        },
+        call_arg_count: None,
+        call_param_keys: None,
+        return_type: Some(return_type.to_string()),
+        call_name_end: None,
+        type_arg_range: None,
+    }
+}
+
+fn make_schema_with_return(
+    command: &str,
+    return_type: &str,
+    generator: GeneratorKind,
+) -> CommandSchema {
+    CommandSchema {
+        command_name: command.to_string(),
+        params: vec![],
+        return_type: return_type.to_string(),
+        source_path: test_path("bindings.ts"),
+        generator,
+    }
+}
+
+/// Return type mismatch triggers a WARNING.
+#[test]
+fn test_return_type_mismatch_warning() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "get_user",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_call_with_return_type("get_user", 5, "string")],
+    });
+
+    index.add_schema(make_schema_with_return(
+        "get_user",
+        "User",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    let rt_diag = diags.iter().find(|d| d.message.contains("return type mismatch"));
+    assert!(
+        rt_diag.is_some(),
+        "Expected return type mismatch diagnostic, got: {diags:?}"
+    );
+    let msg = &rt_diag.unwrap().message;
+    assert!(msg.contains("string"), "Should mention actual type");
+    assert!(msg.contains("User"), "Should mention expected type");
+}
+
+/// Correct return type → no diagnostic.
+#[test]
+fn test_return_type_match_no_warning() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "get_user",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_call_with_return_type("get_user", 5, "User")],
+    });
+
+    index.add_schema(make_schema_with_return(
+        "get_user",
+        "User",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags.iter().all(|d| !d.message.contains("return type mismatch")),
+        "Matching return type should not produce diagnostic, got: {diags:?}"
+    );
+}
+
+/// void return type on invoke → skip diagnostic.
+#[test]
+fn test_return_type_void_skipped() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "get_user",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_call_with_return_type("get_user", 5, "void")],
+    });
+
+    index.add_schema(make_schema_with_return(
+        "get_user",
+        "User",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags.iter().all(|d| !d.message.contains("return type mismatch")),
+        "void return type should be skipped, got: {diags:?}"
+    );
+}
+
+/// any return type on invoke → skip diagnostic.
+#[test]
+fn test_return_type_any_skipped() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "get_user",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_call_with_return_type("get_user", 5, "any")],
+    });
+
+    index.add_schema(make_schema_with_return(
+        "get_user",
+        "User",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags.iter().all(|d| !d.message.contains("return type mismatch")),
+        "any return type should be skipped, got: {diags:?}"
+    );
+}
+
+/// RustSource schema is skipped when return type has NO binding alias.
+#[test]
+fn test_return_type_rust_source_skipped_without_alias() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "get_user",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_call_with_return_type("get_user", 5, "string")],
+    });
+
+    // Add an unrelated type alias so has_bindings_files() is true
+    index.add_type_alias(
+        "OtherType".to_string(),
+        "{ x: number }".to_string(),
+        test_path("types.ts"),
+    );
+
+    // RustSource schema returns "User" but "User" is NOT in type_aliases
+    index.add_schema(make_schema_with_return(
+        "get_user",
+        "User",
+        GeneratorKind::RustSource,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags.iter().all(|d| !d.message.contains("return type mismatch")),
+        "RustSource without matching alias should not trigger diagnostic, got: {diags:?}"
+    );
+}
+
+/// RustSource schema IS used when return type HAS a binding alias.
+#[test]
+fn test_return_type_rust_source_used_with_alias() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "get_user",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_call_with_return_type("get_user", 5, "string")],
+    });
+
+    // "User" IS in type_aliases (from ts-rs)
+    index.add_type_alias(
+        "User".to_string(),
+        "{ id: number }".to_string(),
+        test_path("types.ts"),
+    );
+
+    index.add_schema(make_schema_with_return(
+        "get_user",
+        "User",
+        GeneratorKind::RustSource,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    let rt_diag = diags
+        .iter()
+        .find(|d| d.message.contains("return type mismatch"));
+    assert!(
+        rt_diag.is_some(),
+        "RustSource with matching alias should trigger diagnostic, got: {diags:?}"
+    );
+}
+
+// ─── Missing generic diagnostic tests ────────────────────────────────────────
+
+/// invoke("cmd") without <T> when command returns non-void → HINT
+#[test]
+fn test_missing_return_type_hint() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "get_user",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    // Call without return_type (no generic)
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![create_finding(
+            "get_user",
+            EntityType::Command,
+            Behavior::Call,
+            5,
+        )],
+    });
+
+    index.add_schema(make_schema_with_return(
+        "get_user",
+        "UserProfile",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    let missing_diag = diags
+        .iter()
+        .find(|d| d.message.contains("missing return type"));
+    assert!(
+        missing_diag.is_some(),
+        "Expected missing return type diagnostic, got: {diags:?}"
+    );
+    let d = missing_diag.unwrap();
+    assert!(d.message.contains("UserProfile"));
+    assert_eq!(
+        d.severity,
+        Some(tower_lsp_server::lsp_types::DiagnosticSeverity::HINT)
+    );
+}
+
+/// invoke("cmd") without <T> when command returns void → no diagnostic
+#[test]
+fn test_missing_return_type_void_no_hint() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "ping",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![create_finding("ping", EntityType::Command, Behavior::Call, 5)],
+    });
+
+    index.add_schema(make_schema_with_return(
+        "ping",
+        "void",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags
+            .iter()
+            .all(|d| !d.message.contains("missing return type")),
+        "void return should not trigger missing return type hint, got: {diags:?}"
     );
 }
