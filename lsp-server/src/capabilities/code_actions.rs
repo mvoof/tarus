@@ -37,7 +37,7 @@ pub fn handle_code_action(
 
         let info = project_index.get_diagnostic_info(&key);
         if info.has_definition {
-           return None;
+            return None;
         }
 
         let root = workspace_root?;
@@ -51,7 +51,8 @@ pub fn handle_code_action(
         let mut actions = Vec::new();
 
         for candidate in ranked {
-            let file_name = candidate.path
+            let file_name = candidate
+                .path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
@@ -178,7 +179,9 @@ fn find_insertion_line(content: &str) -> usize {
         if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
             last_use = i + 1;
         }
-        if (trimmed.starts_with("mod ") || trimmed.starts_with("pub mod ")) && !trimmed.contains('{') {
+        if (trimmed.starts_with("mod ") || trimmed.starts_with("pub mod "))
+            && !trimmed.contains('{')
+        {
             last_mod = i + 1;
         }
     }

@@ -56,13 +56,15 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
             // For Rust files: also extract command schemas (as RustSource)
             // Only store if no higher-priority schema already exists for this command
             if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                let schemas =
-                    rust_type_extractor::extract_command_schemas(content, path.to_path_buf());
+                let schemas = rust_type_extractor::extract_command_schemas(content, path);
                 for schema in schemas {
                     // Only store RustSource if no bindings-derived schema exists yet
                     let existing = project_index.get_schema(&schema.command_name);
                     let is_higher_priority = existing.as_ref().is_some_and(|e| {
-                        matches!(e.generator, GeneratorKind::Specta | GeneratorKind::TsRs | GeneratorKind::Typegen)
+                        matches!(
+                            e.generator,
+                            GeneratorKind::Specta | GeneratorKind::TsRs | GeneratorKind::Typegen
+                        )
                     });
                     if !is_higher_priority {
                         project_index.add_schema(schema);
@@ -94,7 +96,7 @@ fn process_bindings_file(
 
     match kind {
         GeneratorKind::Specta => {
-            let schemas = bindings_reader::parse_specta_bindings(content, path_buf);
+            let schemas = bindings_reader::parse_specta_bindings(content, &path_buf);
             for schema in schemas {
                 project_index.add_schema(schema);
             }

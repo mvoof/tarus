@@ -105,6 +105,7 @@ pub fn handle_completion(
     Some(CompletionResponse::Array(items))
 }
 
+#[must_use]
 pub fn lsp_character_to_byte_index(line: &str, character: usize) -> usize {
     let mut byte_index = 0;
     let mut char_count = 0;

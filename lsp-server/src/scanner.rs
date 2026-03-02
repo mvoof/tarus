@@ -39,7 +39,7 @@ fn should_skip(entry: &DirEntry) -> bool {
             .iter()
             .any(|suffix| name_lc.ends_with(suffix));
 
-    is_excluded_file || is_excluded_suffix
+        is_excluded_file || is_excluded_suffix
     }
 }
 
@@ -62,13 +62,15 @@ pub fn find_tauri_config(root: &Path) -> Option<PathBuf> {
 }
 
 /// Make sure it is a Tauri project by searching for the configuration file
-#[must_use] pub fn is_tauri_project(root: &Path) -> bool {
+#[must_use]
+pub fn is_tauri_project(root: &Path) -> bool {
     find_tauri_config(root).is_some()
 }
 
 /// Find the src-tauri directory (recursively, respecting ignores)
 /// Returns the parent directory of the found tauri configuration file
-#[must_use] pub fn find_src_tauri_dir(root: &Path) -> Option<PathBuf> {
+#[must_use]
+pub fn find_src_tauri_dir(root: &Path) -> Option<PathBuf> {
     find_tauri_config(root).and_then(|p| p.parent().map(std::path::Path::to_path_buf))
 }
 
@@ -93,7 +95,8 @@ pub fn detect_generator_kind(content: &str) -> Option<GeneratorKind> {
 
 /// Basic scan of files in the working directory
 /// Returns a list of all files to be indexed
-#[must_use] pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
+#[must_use]
+pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
     WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| !should_skip(e))

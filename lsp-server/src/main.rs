@@ -17,7 +17,15 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::{MessageType, Uri, InitializeParams, InitializeResult, ServerCapabilities, InitializedParams, ConfigurationParams, ConfigurationItem, GotoDefinitionParams, GotoDefinitionResponse, ReferenceParams, Location, CodeLensParams, CodeLens, HoverParams, Hover, CodeActionParams, CodeActionResponse, DocumentSymbolParams, DocumentSymbolResponse, WorkspaceSymbolParams, OneOf, SymbolInformation, WorkspaceSymbol, CompletionParams, CompletionResponse, DidOpenTextDocumentParams, DidChangeTextDocumentParams, DidSaveTextDocumentParams};
+use tower_lsp_server::lsp_types::{
+    CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, CompletionParams,
+    CompletionResponse, ConfigurationItem, ConfigurationParams, DidChangeTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
+    ReferenceParams, ServerCapabilities, SymbolInformation, Uri, WorkspaceSymbol,
+    WorkspaceSymbolParams,
+};
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
 // Refactored modules
@@ -202,7 +210,11 @@ impl LanguageServer for Backend {
                 self.client
                     .log_message(
                         MessageType::INFO,
-                        &format!("TARUS: Detected {:?} generator → {}", g.kind, g.output_path.display()),
+                        &format!(
+                            "TARUS: Detected {:?} generator → {}",
+                            g.kind,
+                            g.output_path.display()
+                        ),
                     )
                     .await;
             }
@@ -428,7 +440,11 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         self.log_dev_info("➡️ Request: Completion").await;
 
-        let result = capabilities::completion::handle_completion(&params, &self.project_index, &self.document_cache);
+        let result = capabilities::completion::handle_completion(
+            &params,
+            &self.project_index,
+            &self.document_cache,
+        );
 
         if let Some(ref response) = result {
             match response {
