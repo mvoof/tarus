@@ -108,6 +108,9 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                 if let Some(d) = check_return_type(loc, &key.name, project_index) {
                     diagnostics.push(d);
                 }
+                if let Some(d) = check_event_payload_type(loc, &key.name, project_index) {
+                    diagnostics.push(d);
+                }
             }
         }
     }
@@ -252,7 +255,9 @@ fn check_return_type(
                 range: loc.range,
                 severity: Some(DiagnosticSeverity::HINT),
                 source: Some("tarus".to_string()),
-                code: Some(NumberOrString::String("tarus/return-type-missing".to_string())),
+                code: Some(NumberOrString::String(
+                    "tarus/return-type-missing".to_string(),
+                )),
                 message: format!(
                     "invoke('{command_name}') is missing return type, expected '{expected}'"
                 ),
@@ -280,6 +285,101 @@ fn check_return_type(
                 )),
                 message: format!(
                     "invoke<{ts_type}>('{command_name}') return type mismatch: expected '{expected}'"
+                ),
+                data: Some(make_data()),
+                ..Default::default()
+            })
+        }
+    }
+}
+
+/// Validate the payload type of an `emit()` / `listen()` / `once()` call against the `EventSchema`.
+///
+/// Two cases:
+/// - **Missing generic**: `listen("event")` when payload is non-void → HINT
+/// - **Wrong generic**: `listen<Wrong>("event")` when type doesn't match → WARNING
+fn check_event_payload_type(
+    loc: &LocationInfo,
+    event_name: &str,
+    project_index: &ProjectIndex,
+) -> Option<Diagnostic> {
+    if !matches!(loc.behavior, Behavior::Emit | Behavior::Listen) {
+        return None;
+    }
+
+    let schema = project_index.get_event_schema(event_name)?;
+
+    // RustSource schemas are allowed only when the payload type has a known binding
+    if matches!(schema.generator, GeneratorKind::RustSource)
+        && !project_index
+            .type_aliases
+            .contains_key(&schema.payload_type)
+    {
+        return None;
+    }
+
+    let expected = &schema.payload_type;
+    if expected == "void" || expected == "null" {
+        return None;
+    }
+
+    let behavior_label = match loc.behavior {
+        Behavior::Emit => "emit",
+        Behavior::Listen => "listen",
+        _ => return None,
+    };
+
+    // Build data payload for code actions
+    let make_data = || {
+        let mut data = json!({ "expected": expected });
+        if let Some(pos) = &loc.call_name_end {
+            data["callNameEnd"] = json!({ "line": pos.line, "character": pos.character });
+        }
+        if let Some(r) = &loc.type_arg_range {
+            data["typeArgRange"] = json!({
+                "start": { "line": r.start.line, "character": r.start.character },
+                "end": { "line": r.end.line, "character": r.end.character },
+            });
+        }
+        data
+    };
+
+    match &loc.return_type {
+        None => {
+            // Missing generic — emit("event") / listen("event") without <T>
+            Some(Diagnostic {
+                range: loc.range,
+                severity: Some(DiagnosticSeverity::HINT),
+                source: Some("tarus".to_string()),
+                code: Some(NumberOrString::String(
+                    "tarus/event-payload-missing".to_string(),
+                )),
+                message: format!(
+                    "{behavior_label}('{event_name}') is missing payload type, expected '{expected}'"
+                ),
+                data: Some(make_data()),
+                ..Default::default()
+            })
+        }
+        Some(ts_type) => {
+            if ts_type == "void" || ts_type == "any" {
+                return None;
+            }
+
+            if types_match(ts_type, expected, project_index) {
+                return None;
+            }
+
+            // Wrong generic
+            Some(Diagnostic {
+                range: loc.range,
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("tarus".to_string()),
+                code: Some(NumberOrString::String(
+                    "tarus/event-payload-mismatch".to_string(),
+                )),
+                message: format!(
+                    "{behavior_label}<{ts_type}>('{event_name}') payload type mismatch: expected '{expected}'"
                 ),
                 data: Some(make_data()),
                 ..Default::default()

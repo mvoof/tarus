@@ -5,7 +5,7 @@
 //! - ts-rs: `export type Name = { ... };`
 //! - tauri-typegen: `export type Name = { ... };`
 
-use crate::indexer::{CommandSchema, GeneratorKind, ParamSchema};
+use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
 use crate::utils::camel_to_snake;
 use std::collections::HashMap;
 use std::path::Path;
@@ -286,7 +286,6 @@ fn parse_interface_blocks(content: &str) -> HashMap<String, String> {
                                 .trim()
                                 .to_string();
 
-
                             if !field_name.is_empty() && !field_type.is_empty() {
                                 fields.push(format!("{field_name}: {field_type}"));
                             }
@@ -321,4 +320,169 @@ fn parse_type_alias_line(line: &str) -> Option<(String, String)> {
     }
 
     Some((name, def))
+}
+
+// ─── Event schema parsers ────────────────────────────────────────────────────
+
+/// Parse event schemas from a Specta-generated bindings file.
+///
+/// Looks for the `__makeEvents__` block:
+/// ```text
+/// export const events = __makeEvents__<{
+///     DemoEvent: string,
+///     UserUpdated: UserProfile,
+/// }>({
+///     DemoEvent: "demo-event",
+///     UserUpdated: "user-updated",
+/// })
+/// ```
+///
+/// The type parameter maps TS names to payload types.
+/// The value object maps TS names to actual event name strings.
+#[must_use]
+pub fn parse_specta_events(content: &str, source_path: &Path) -> Vec<EventSchema> {
+    let mut schemas = Vec::new();
+
+    // Find __makeEvents__<{ ... }>({ ... })
+    let Some(make_pos) = content.find("__makeEvents__<") else {
+        return schemas;
+    };
+
+    let after_make = &content[make_pos + "__makeEvents__<".len()..];
+
+    // Parse type parameter block: { TypeName: PayloadType, ... }
+    let Some(type_block_start) = after_make.find('{') else {
+        return schemas;
+    };
+    let type_block_content = &after_make[type_block_start + 1..];
+    let Some(type_block_end) = find_matching_brace(type_block_content) else {
+        return schemas;
+    };
+    let type_block = &type_block_content[..type_block_end];
+
+    // Parse type pairs: TypeName: PayloadType
+    let mut type_map: HashMap<String, String> = HashMap::new();
+    for line in type_block.lines() {
+        let trimmed = line.trim().trim_end_matches(',');
+        if let Some(colon_pos) = trimmed.find(':') {
+            let ts_name = trimmed[..colon_pos].trim().to_string();
+            let payload_type = trimmed[colon_pos + 1..].trim().to_string();
+            if !ts_name.is_empty() && !payload_type.is_empty() {
+                type_map.insert(ts_name, payload_type);
+            }
+        }
+    }
+
+    // Find value object block: { TypeName: "event-name", ... }
+    let after_type_block = &type_block_content[type_block_end + 1..];
+    // Skip `>({` between the two blocks
+    let Some(value_block_start) = after_type_block.find('{') else {
+        return schemas;
+    };
+    let value_block_content = &after_type_block[value_block_start + 1..];
+    let Some(value_block_end) = find_matching_brace(value_block_content) else {
+        return schemas;
+    };
+    let value_block = &value_block_content[..value_block_end];
+
+    // Parse value pairs: TypeName: "actual-event-name"
+    for line in value_block.lines() {
+        let trimmed = line.trim().trim_end_matches(',');
+        if let Some(colon_pos) = trimmed.find(':') {
+            let ts_name = trimmed[..colon_pos].trim();
+            let event_str = trimmed[colon_pos + 1..].trim();
+            // Extract string literal value
+            let event_name = event_str.trim_matches('"').trim_matches('\'').to_string();
+            if !event_name.is_empty() {
+                if let Some(payload_type) = type_map.get(ts_name) {
+                    schemas.push(EventSchema {
+                        event_name,
+                        payload_type: payload_type.clone(),
+                        source_path: source_path.to_path_buf(),
+                        generator: GeneratorKind::Specta,
+                    });
+                }
+            }
+        }
+    }
+
+    schemas
+}
+
+/// Parse event schemas from a typegen-generated events file.
+///
+/// Looks for `listen<T>('event-name', ...)` patterns:
+/// ```text
+/// export async function onNotificationSent(
+///   handler: (payload: types.message) => void
+/// ): Promise<UnlistenFn> {
+///   return listen<types.message>('notification-sent', (event) => {
+///     handler(event.payload);
+///   });
+/// }
+/// ```
+#[must_use]
+pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchema> {
+    let mut schemas = Vec::new();
+
+    // Find all listen<T>('event-name' patterns
+    let listen_prefix = "listen<";
+    let mut search_from = 0;
+
+    while let Some(pos) = content[search_from..].find(listen_prefix) {
+        let abs_pos = search_from + pos;
+        let after_listen = &content[abs_pos + listen_prefix.len()..];
+
+        // Extract T from listen<T>
+        if let Some(angle_end) = find_matching_angle(after_listen) {
+            let payload_type = after_listen[..angle_end].trim();
+            let after_angle = &after_listen[angle_end + 1..];
+
+            // Expect >('event-name'
+            if let Some(quote_start) = after_angle.find(['\'', '"']) {
+                let quote_char = after_angle.as_bytes()[quote_start];
+                let after_quote = &after_angle[quote_start + 1..];
+                if let Some(quote_end) = after_quote.find(quote_char as char) {
+                    let event_name = &after_quote[..quote_end];
+
+                    // Strip "types." prefix if present
+                    let clean_type = payload_type
+                        .strip_prefix("types.")
+                        .unwrap_or(payload_type)
+                        .to_string();
+
+                    if !event_name.is_empty() && !clean_type.is_empty() {
+                        schemas.push(EventSchema {
+                            event_name: event_name.to_string(),
+                            payload_type: clean_type,
+                            source_path: source_path.to_path_buf(),
+                            generator: GeneratorKind::Typegen,
+                        });
+                    }
+                }
+            }
+        }
+
+        search_from = abs_pos + listen_prefix.len();
+    }
+
+    schemas
+}
+
+/// Find position of closing `}` matching the first character of `s`.
+fn find_matching_brace(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
 }

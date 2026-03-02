@@ -29,8 +29,17 @@ pub fn handle_code_action(
 
     let position = params.range.start;
 
-    // Check if cursor is on a command
+    // Check if cursor is on a command or event
     if let Some((key, loc)) = project_index.get_key_at_position(&path, position) {
+        // --- Event payload type code action ---
+        if key.entity == EntityType::Event {
+            if let Some(action) = make_event_payload_action(&key.name, &loc, project_index, params)
+            {
+                return Some(vec![CodeActionOrCommand::CodeAction(action)]);
+            }
+            return None;
+        }
+
         if key.entity != EntityType::Command {
             return None;
         }
@@ -204,6 +213,87 @@ fn rank_and_limit(mut candidates: Vec<RustFileCandidate>) -> Vec<RustFileCandida
     candidates.into_iter().take(5).collect()
 }
 
+/// Build a code action to fix or insert the payload type on an `emit()` / `listen()` call.
+fn make_event_payload_action(
+    event_name: &str,
+    loc: &LocationInfo,
+    project_index: &ProjectIndex,
+    params: &CodeActionParams,
+) -> Option<CodeAction> {
+    if !matches!(loc.behavior, Behavior::Emit | Behavior::Listen) {
+        return None;
+    }
+
+    if !project_index.has_bindings_files() {
+        return None;
+    }
+
+    let schema = project_index.get_event_schema(event_name)?;
+
+    if matches!(schema.generator, GeneratorKind::RustSource)
+        && !project_index
+            .type_aliases
+            .contains_key(&schema.payload_type)
+    {
+        return None;
+    }
+
+    let expected = &schema.payload_type;
+    if expected == "void" || expected == "null" {
+        return None;
+    }
+
+    let (title, edit_range, new_text) = match &loc.return_type {
+        None => {
+            let insert_pos = loc.call_name_end?;
+            (
+                format!("Add payload type '{expected}'"),
+                Range {
+                    start: insert_pos,
+                    end: insert_pos,
+                },
+                format!("<{expected}>"),
+            )
+        }
+        Some(ts_type) => {
+            if ts_type == "void" || ts_type == "any" {
+                return None;
+            }
+            if super::diagnostics::types_match(ts_type, expected, project_index) {
+                return None;
+            }
+            let type_range = loc.type_arg_range?;
+            (
+                format!("Fix payload type to '{expected}'"),
+                type_range,
+                format!("<{expected}>"),
+            )
+        }
+    };
+
+    let doc_uri = params.text_document.uri.clone();
+    #[allow(clippy::mutable_key_type)]
+    let mut changes = std::collections::HashMap::new();
+    changes.insert(
+        doc_uri,
+        vec![TextEdit {
+            range: edit_range,
+            new_text,
+        }],
+    );
+
+    Some(CodeAction {
+        title,
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(params.context.diagnostics.clone()),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
 /// Build a code action to fix or insert the return type on an `invoke()` call.
 fn make_return_type_action(
     command_name: &str,
@@ -267,7 +357,13 @@ fn make_return_type_action(
     // Uri has interior mutability due to caching
     #[allow(clippy::mutable_key_type)]
     let mut changes = std::collections::HashMap::new();
-    changes.insert(doc_uri, vec![TextEdit { range: edit_range, new_text }]);
+    changes.insert(
+        doc_uri,
+        vec![TextEdit {
+            range: edit_range,
+            new_text,
+        }],
+    );
 
     Some(CodeAction {
         title,

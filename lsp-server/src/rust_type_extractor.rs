@@ -1,6 +1,6 @@
 //! Extract parameter and return type information from Rust #[`tauri::command`] functions
 
-use crate::indexer::{CommandSchema, GeneratorKind, ParamSchema};
+use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
@@ -285,10 +285,10 @@ fn parse_rust_param(s: &str) -> Option<ParamSchema> {
     let rust_type = s[colon_pos + 1..].trim();
 
     // Skip Tauri-injected parameters (not user data)
-    let skip_types = ["AppHandle", "Window", "WebviewWindow", "Webview"];  
-    if skip_types.contains(&rust_type) || rust_type.starts_with("State<") {  
-        return None;  
-    }  
+    let skip_types = ["AppHandle", "Window", "WebviewWindow", "Webview"];
+    if skip_types.contains(&rust_type) || rust_type.starts_with("State<") {
+        return None;
+    }
 
     // Skip `self` parameter
     if name == "self" || name == "&self" || name == "&mut self" {
@@ -298,4 +298,137 @@ fn parse_rust_param(s: &str) -> Option<ParamSchema> {
     let ts_type = rust_type_to_ts(rust_type);
 
     Some(ParamSchema { name, ts_type })
+}
+
+// ─── Event schema extraction from Rust source ────────────────────────────────
+
+/// Embedded query for extracting `emit("event-name", payload)` calls from Rust source.
+const RUST_EMIT_QUERY: &str = r#"
+(call_expression
+  function: (field_expression
+    field: (field_identifier) @method_name)
+  arguments: (arguments
+    (string_literal (string_content) @event_name)
+    . (_) @payload_arg)
+  (#any-of? @method_name "emit" "emit_filter" "emit_to")
+)
+"#;
+
+/// Extract event schemas from a Rust source file by finding `emit("event", payload)` calls.
+///
+/// For each emit call, attempts to resolve the payload variable's type from the enclosing
+/// function's parameters.
+#[must_use]
+pub fn extract_event_schemas(content: &str, source_path: &Path) -> Vec<EventSchema> {
+    let Ok(schemas) = try_extract_event_schemas(content, source_path) else {
+        return Vec::new();
+    };
+    schemas
+}
+
+fn try_extract_event_schemas(
+    content: &str,
+    source_path: &Path,
+) -> Result<Vec<EventSchema>, Box<dyn std::error::Error>> {
+    let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
+    let mut parser = Parser::new();
+    parser.set_language(&ts_lang)?;
+
+    let tree = parser
+        .parse(content, None)
+        .ok_or("Failed to parse Rust file")?;
+
+    let query = Query::new(&ts_lang, RUST_EMIT_QUERY)?;
+    let mut cursor = QueryCursor::new();
+    let root = tree.root_node();
+
+    let event_name_idx = query.capture_index_for_name("event_name");
+    let payload_arg_idx = query.capture_index_for_name("payload_arg");
+
+    let mut schemas = Vec::new();
+    let mut seen_events = std::collections::HashSet::new();
+    let mut matches = cursor.matches(&query, root, content.as_bytes());
+
+    while let Some(m) = matches.next() {
+        let event_name = event_name_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+            .unwrap_or("");
+
+        if event_name.is_empty() || !seen_events.insert(event_name.to_string()) {
+            continue;
+        }
+
+        let payload_type = payload_arg_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .and_then(|cap| {
+                let node = cap.node;
+                // Try to resolve type from the payload expression
+                resolve_emit_payload_type(node, content, &tree)
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
+        if payload_type != "unknown" {
+            schemas.push(EventSchema {
+                event_name: event_name.to_string(),
+                payload_type,
+                source_path: source_path.to_path_buf(),
+                generator: GeneratorKind::RustSource,
+            });
+        }
+    }
+
+    Ok(schemas)
+}
+
+/// Try to resolve the type of an emit payload argument.
+///
+/// Handles simple cases:
+/// - String literal → "string"
+/// - Numeric literal → "number"
+/// - Boolean literal → "boolean"
+/// - Variable reference → look up in enclosing function params
+fn resolve_emit_payload_type(
+    node: tree_sitter::Node<'_>,
+    content: &str,
+    tree: &tree_sitter::Tree,
+) -> Option<String> {
+    let text = node.utf8_text(content.as_bytes()).ok()?;
+
+    match node.kind() {
+        "string_literal" => Some("string".to_string()),
+        "integer_literal" | "float_literal" => Some("number".to_string()),
+        "boolean_literal" | "true" | "false" => Some("boolean".to_string()),
+        "identifier" => {
+            // Look up variable name in enclosing function parameters
+            let var_name = text;
+            let fn_node = find_enclosing_function(node, tree)?;
+            let params_node = fn_node.child_by_field_name("parameters")?;
+            let params_text = params_node.utf8_text(content.as_bytes()).ok()?;
+
+            // Parse params to find the type of var_name
+            for param in parse_rust_params(params_text) {
+                if param.name == var_name {
+                    return Some(param.ts_type);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Walk up the tree to find the enclosing `function_item`.
+fn find_enclosing_function<'a>(
+    node: tree_sitter::Node<'a>,
+    _tree: &'a tree_sitter::Tree,
+) -> Option<tree_sitter::Node<'a>> {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "function_item" {
+            return Some(n);
+        }
+        current = n.parent();
+    }
+    None
 }
