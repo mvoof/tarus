@@ -1,0 +1,54 @@
+name: Build Server Binaries
+
+on:
+  workflow_call:
+
+jobs:
+  build:
+    name: Build Server (${{ matrix.target.os }})
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      matrix:
+        target:
+          - os: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+            binary-name: lsp-server-linux-x64
+          - os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            binary-name: lsp-server-win-x64.exe
+          - os: macos-latest
+            rust-target: x86_64-apple-darwin
+            binary-name: lsp-server-macos-x64
+          - os: macos-latest
+            rust-target: aarch64-apple-darwin
+            binary-name: lsp-server-macos-arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target.rust-target }}
+
+      - name: Build Rust Binary
+        run: |
+          cd lsp-server
+          cargo build --release --target ${{ matrix.target.rust-target }}
+
+      - name: Rename Binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.target.os }}" = "windows-latest" ]; then
+            mv lsp-server/target/${{ matrix.target.rust-target }}/release/lsp-server.exe ${{ matrix.target.binary-name }}
+          else
+            mv lsp-server/target/${{ matrix.target.rust-target }}/release/lsp-server ${{ matrix.target.binary-name }}
+          fi
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target.binary-name }}
+          path: ${{ matrix.target.binary-name }}
