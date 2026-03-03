@@ -5,15 +5,7 @@ use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
-/// Embedded query for extracting Rust command parameter and return types.
-/// Uses a local query, NOT modifying queries/rust.scm.
-const RUST_PARAMS_QUERY: &str = r"
-(function_item
-  name: (identifier) @fn_name
-  parameters: (parameters) @fn_params
-  return_type: (_)? @fn_return
-) @fn_item
-";
+const RUST_PARAMS_QUERY: &str = include_str!("queries/rust_params.scm");
 
 /// Map a Rust type string to its TypeScript equivalent.
 ///
@@ -179,12 +171,7 @@ fn try_extract_command_schemas_from_node(
         // Extract params
         let params = if let Some(params_idx) = fn_params_idx {
             if let Some(cap) = m.captures.iter().find(|c| c.index == params_idx) {
-                let params_text = cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or("()")
-                    .to_string();
-                parse_rust_params(&params_text)
+                parse_rust_params_from_node(cap.node, content)
             } else {
                 Vec::new()
             }
@@ -259,87 +246,59 @@ pub fn has_tauri_command_attr(fn_node: tree_sitter::Node<'_>, content: &str) -> 
     false
 }
 
-/// Parse a Rust parameter list string like `(app: AppHandle, id: u32)` into `Vec<ParamSchema>`.
-fn parse_rust_params(params_str: &str) -> Vec<ParamSchema> {
-    // Remove surrounding parentheses
-    let inner = params_str
-        .trim()
-        .strip_prefix('(')
-        .and_then(|s| s.strip_suffix(')'))
-        .unwrap_or(params_str);
-
-    if inner.trim().is_empty() {
-        return Vec::new();
-    }
-
+/// Extract parameters from a tree-sitter `parameters` node.
+///
+/// Iterates `parameter` children, extracting name and type.
+/// Skips Tauri-injected parameters: `AppHandle`, `State<_>`, `Window`.
+fn parse_rust_params_from_node(
+    params_node: tree_sitter::Node<'_>,
+    content: &str,
+) -> Vec<ParamSchema> {
     let mut result = Vec::new();
-    let mut depth = 0i32;
-    let mut current = String::new();
+    let mut cursor = params_node.walk();
 
-    for ch in inner.chars() {
-        match ch {
-            '<' => {
-                depth += 1;
-                current.push(ch);
-            }
-            '>' => {
-                depth -= 1;
-                current.push(ch);
-            }
-            ',' if depth == 0 => {
-                if let Some(param) = parse_rust_param(current.trim()) {
-                    result.push(param);
-                }
-                current = String::new();
-            }
-            _ => current.push(ch),
+    for child in params_node.children(&mut cursor) {
+        if child.kind() != "parameter" {
+            continue;
         }
-    }
 
-    if let Some(param) = parse_rust_param(current.trim()) {
-        result.push(param);
+        let name = child
+            .child_by_field_name("pattern")
+            .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+
+        // Skip `self` parameter
+        if name == "self" || name == "&self" || name == "&mut self" {
+            continue;
+        }
+
+        let rust_type = child
+            .child_by_field_name("type")
+            .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+            .unwrap_or("")
+            .trim();
+
+        if name.is_empty() || rust_type.is_empty() {
+            continue;
+        }
+
+        // Skip Tauri-injected parameters (not user data)
+        let skip_types = ["AppHandle", "Window", "WebviewWindow", "Webview"];
+        if skip_types.contains(&rust_type) || rust_type.starts_with("State<") {
+            continue;
+        }
+
+        let ts_type = rust_type_to_ts(rust_type);
+        result.push(ParamSchema { name, ts_type });
     }
 
     result
 }
 
-/// Parse a single Rust parameter like `id: u32` or `app: AppHandle`.
-///
-/// Skips Tauri-injected parameters: `AppHandle`, `State<_>`, `Window`.
-fn parse_rust_param(s: &str) -> Option<ParamSchema> {
-    let colon_pos = s.find(':')?;
-    let name = s[..colon_pos].trim().to_string();
-    let rust_type = s[colon_pos + 1..].trim();
-
-    // Skip Tauri-injected parameters (not user data)
-    let skip_types = ["AppHandle", "Window", "WebviewWindow", "Webview"];
-    if skip_types.contains(&rust_type) || rust_type.starts_with("State<") {
-        return None;
-    }
-
-    // Skip `self` parameter
-    if name == "self" || name == "&self" || name == "&mut self" {
-        return None;
-    }
-
-    let ts_type = rust_type_to_ts(rust_type);
-
-    Some(ParamSchema { name, ts_type })
-}
-
 // ─── Event schema extraction from Rust source ────────────────────────────────
 
-/// Embedded query for extracting `emit("event-name", payload)` calls from Rust source.
-const RUST_EMIT_QUERY: &str = r#"
-(call_expression
-  function: (field_expression
-    field: (field_identifier) @method_name)
-  arguments: (arguments
-    (string_literal (string_content) @event_name)
-    . (_) @payload_arg)
-  (#any-of? @method_name "emit" "emit_filter" "emit_to")
-)
-"#;
+const RUST_EMIT_QUERY: &str = include_str!("queries/rust_emit.scm");
 
 /// Extract event schemas from a Rust source file by finding `emit("event", payload)` calls.
 ///
@@ -458,10 +417,9 @@ fn resolve_emit_payload_type(
             let var_name = text;
             let fn_node = find_enclosing_function(node, tree)?;
             let params_node = fn_node.child_by_field_name("parameters")?;
-            let params_text = params_node.utf8_text(content.as_bytes()).ok()?;
 
             // Parse params to find the type of var_name
-            for param in parse_rust_params(params_text) {
+            for param in parse_rust_params_from_node(params_node, content) {
                 if param.name == var_name {
                     return Some(param.ts_type);
                 }

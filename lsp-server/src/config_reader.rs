@@ -4,7 +4,10 @@
 //! rather than sniffing file headers at scan time.
 
 use crate::indexer::{DiscoveredGenerator, GeneratorKind};
+use crate::ts_tree_utils::parse_rust;
 use std::path::{Component, Path, PathBuf};
+use streaming_iterator::StreamingIterator;
+use tree_sitter::{Language, Query, QueryCursor};
 use walkdir::WalkDir;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -44,6 +47,13 @@ pub fn discover_generators(workspace_root: &Path) -> Vec<DiscoveredGenerator> {
 
 /// Discover the tauri-specta output file by scanning Rust sources for `.export(` calls.
 fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
+    let query_str = include_str!("queries/rust_specta_discovery.scm");
+
+    let rust_lang: Language = tree_sitter_rust::LANGUAGE.into();
+    let query = Query::new(&rust_lang, query_str).ok()?;
+    let method_name_idx = query.capture_index_for_name("method_name")?;
+    let path_arg_idx = query.capture_index_for_name("path_arg")?;
+
     for entry in WalkDir::new(src_tauri_dir)
         .into_iter()
         .filter_map(Result::ok)
@@ -59,30 +69,43 @@ fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
             continue;
         }
 
-        // Look for .export( and extract the path argument (may span multiple lines)
-        if let Some(export_start) = content.find(".export(") {
-            // Find matching closing paren, accounting for nesting
-            let rest = &content[export_start + ".export".len()..];
-            let search_window =
-                if let Some(end) = crate::utils::find_matching_bracket(&rest[1..], '(', ')') {
-                    &rest[..end + 2]
-                } else {
-                    &rest[..rest.len().min(500)]
-                };
+        let Some(tree) = parse_rust(&content) else {
+            continue;
+        };
 
-            if let Some(path_str) = extract_last_quoted_string(search_window) {
-                let ext_ok = Path::new(&path_str)
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("ts") || e.eq_ignore_ascii_case("js"));
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
 
-                if ext_ok {
-                    let resolved = normalize_path(&src_tauri_dir.join(&path_str));
-                    return Some(DiscoveredGenerator {
-                        kind: GeneratorKind::Specta,
-                        output_path: resolved,
-                        is_directory: false,
-                    });
-                }
+        while let Some(m) = matches.next() {
+            let method = m
+                .captures
+                .iter()
+                .find(|c| c.index == method_name_idx)
+                .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+                .unwrap_or("");
+
+            if method != "export" {
+                continue;
+            }
+
+            let path_str = m
+                .captures
+                .iter()
+                .find(|c| c.index == path_arg_idx)
+                .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+                .unwrap_or("");
+
+            let ext_ok = Path::new(path_str)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("ts") || e.eq_ignore_ascii_case("js"));
+
+            if ext_ok {
+                let resolved = normalize_path(&src_tauri_dir.join(path_str));
+                return Some(DiscoveredGenerator {
+                    kind: GeneratorKind::Specta,
+                    output_path: resolved,
+                    is_directory: false,
+                });
             }
         }
     }
@@ -151,11 +174,18 @@ fn discover_ts_rs(workspace_root: &Path, src_tauri_dir: &Path) -> Option<Discove
     // No TS_RS_EXPORT_DIR found; fall back to checking Cargo.toml for a ts-rs dependency
     let cargo_toml_path = src_tauri_dir.join("Cargo.toml");
     let cargo_content = std::fs::read_to_string(cargo_toml_path).ok()?;
+    let cargo_toml: toml::Value = cargo_content.parse().ok()?;
 
-    if cargo_content.contains("\"ts-rs\"")
-        || cargo_content.contains("ts-rs =")
-        || cargo_content.contains("ts-rs=")
-    {
+    let has_ts_rs = ["dependencies", "dev-dependencies", "build-dependencies"]
+        .iter()
+        .any(|section| {
+            cargo_toml
+                .get(section)
+                .and_then(|v| v.as_table())
+                .is_some_and(|t| t.contains_key("ts-rs"))
+        });
+
+    if has_ts_rs {
         let default_path = normalize_path(&src_tauri_dir.join("bindings"));
         return Some(DiscoveredGenerator {
             kind: GeneratorKind::TsRs,
@@ -189,7 +219,10 @@ fn parse_ts_rs_export_dir(
         toml::Value::String(value) => Some(normalize_path(&src_tauri_dir.join(value))),
         toml::Value::Table(t) => {
             let value = t.get("value")?.as_str()?;
-            let is_relative = t.get("relative").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_relative = t
+                .get("relative")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(false);
 
             let base: &Path = if is_relative {
                 config_path
@@ -204,24 +237,6 @@ fn parse_ts_rs_export_dir(
         }
         _ => None,
     }
-}
-
-/// Extract the last double-quoted string from a line (handles multiple quotes per line).
-fn extract_last_quoted_string(line: &str) -> Option<String> {
-    let mut last: Option<String> = None;
-    let mut remaining = line;
-
-    while let Some(open) = remaining.find('"') {
-        remaining = &remaining[open + 1..];
-        if let Some(close) = remaining.find('"') {
-            last = Some(remaining[..close].to_string());
-            remaining = &remaining[close + 1..];
-        } else {
-            break;
-        }
-    }
-
-    last
 }
 
 /// Resolve `..` and `.` path components without requiring the path to exist on disk.

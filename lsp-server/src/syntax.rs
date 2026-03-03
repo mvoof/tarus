@@ -33,6 +33,7 @@ pub enum Behavior {
 
 /// Parse error types
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // "Error" suffix is semantically meaningful here
 pub enum ParseError {
     /// File contains syntax errors
     SyntaxError(String),
