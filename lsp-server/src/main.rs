@@ -1,15 +1,4 @@
 #![warn(clippy::all, clippy::pedantic)]
-#![allow(clippy::missing_panics_doc)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::mutable_key_type)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::manual_let_else)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::struct_excessive_bools)]
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::enum_variant_names)]
-#![allow(clippy::question_mark)]
 
 use dashmap::DashMap;
 use std::collections::HashSet;
@@ -38,6 +27,7 @@ mod rust_type_extractor;
 mod scanner;
 mod syntax;
 mod tree_parser;
+mod ts_tree_utils;
 mod utils;
 
 use capabilities::{build_server_capabilities, diagnostics};
@@ -81,9 +71,8 @@ impl Backend {
     }
 
     async fn publish_diagnostics_for_file(&self, path: &PathBuf) {
-        let uri = match Uri::from_file_path(path) {
-            Some(u) => u,
-            None => return,
+        let Some(uri) = Uri::from_file_path(path) else {
+            return;
         };
 
         let diagnostics = diagnostics::compute_file_diagnostics(path, &self.project_index);
@@ -137,6 +126,7 @@ impl LanguageServer for Backend {
         })
     }
 
+    #[allow(clippy::too_many_lines)] // sequential init steps; splitting hurts readability
     async fn initialized(&self, _: InitializedParams) {
         if !self.is_ready() {
             return;
@@ -176,6 +166,7 @@ impl LanguageServer for Backend {
             // Handle referenceLimit
             if let Some(settings) = iter.next() {
                 if let Some(limit) = settings.as_u64() {
+                    #[allow(clippy::cast_possible_truncation)] // config value; always small
                     self.project_index
                         .reference_limit
                         .store(limit as usize, Ordering::Relaxed);
@@ -190,9 +181,8 @@ impl LanguageServer for Backend {
             }
         }
 
-        let root = match self.workspace_root.get() {
-            Some(r) => r,
-            None => return,
+        let Some(root) = self.workspace_root.get() else {
+            return;
         };
 
         // Discover type generators from project configuration files

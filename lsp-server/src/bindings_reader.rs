@@ -6,9 +6,12 @@
 //! - tauri-typegen: `export type Name = { ... };`
 
 use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
-use crate::utils::{camel_to_snake, find_matching_bracket, find_matching_paren_with_generics};
+use crate::ts_tree_utils::parse_ts;
+use crate::utils::camel_to_snake;
 use std::collections::HashMap;
 use std::path::Path;
+use streaming_iterator::StreamingIterator;
+use tree_sitter::{Language, Query, QueryCursor};
 
 /// Parse a Specta-generated bindings file and return a list of `CommandSchema`.
 ///
@@ -19,150 +22,141 @@ use std::path::Path;
 /// inside an `export const commands = { ... }` block.
 #[must_use]
 pub fn parse_specta_bindings(content: &str, source_path: &Path) -> Vec<CommandSchema> {
+    let Some(tree) = parse_ts(content) else {
+        return Vec::new();
+    };
+
+    let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+
+    let query_str = include_str!("queries/bindings_specta_commands.scm");
+
+    let Ok(query) = Query::new(&ts_lang, query_str) else {
+        return Vec::new();
+    };
+
+    let var_name_idx = query.capture_index_for_name("var_name");
+    let method_name_idx = query.capture_index_for_name("method_name");
+    let params_idx = query.capture_index_for_name("params");
+    let return_type_idx = query.capture_index_for_name("return_type");
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
     let mut schemas = Vec::new();
-    let mut in_commands_block = false;
 
-    for line in content.lines() {
-        let trimmed = line.trim();
+    while let Some(m) = matches.next() {
+        // Only match `commands` variable
+        let var_name = var_name_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+            .unwrap_or("");
 
-        // Detect start of commands object
-        if trimmed.contains("export const commands") && trimmed.contains('{') {
-            in_commands_block = true;
+        if var_name != "commands" {
             continue;
         }
 
-        // Detect end of commands object
-        if in_commands_block && trimmed == "};" {
-            break;
-        }
+        let method_name = method_name_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+            .unwrap_or("");
 
-        if !in_commands_block {
+        if method_name.is_empty() {
             continue;
         }
 
-        // Try to parse a method line
-        if let Some((camel_name, params, return_type)) = parse_method_line(trimmed) {
-            let command_name = camel_to_snake(&camel_name);
-            schemas.push(CommandSchema {
-                command_name,
-                params,
-                return_type,
-                source_path: source_path.to_path_buf(),
-                generator: GeneratorKind::Specta,
-            });
-        }
+        let params = params_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .map(|cap| extract_params_from_node(cap.node, content))
+            .unwrap_or_default();
+
+        let return_type_node = return_type_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .map(|cap| cap.node);
+
+        let return_type = return_type_node.map_or_else(
+            || "void".to_string(),
+            |node| unwrap_return_type_node(node, content),
+        );
+
+        schemas.push(CommandSchema {
+            command_name: camel_to_snake(method_name),
+            params,
+            return_type,
+            source_path: source_path.to_path_buf(),
+            generator: GeneratorKind::Specta,
+        });
     }
 
     schemas
 }
 
-/// Parse a single method line inside a specta commands block.
-///
-/// Input examples:
-/// - `async getUserProfile(id: number): Promise<Result<UserProfile, string>> {`
-/// - `async ping(): Promise<void> {`
-fn parse_method_line(line: &str) -> Option<(String, Vec<ParamSchema>, String)> {
-    // Must start with "async "
-    let line = line.strip_prefix("async ")?;
-
-    // Find the function name (up to the opening paren)
-    let paren_pos = line.find('(')?;
-    let method_name = line[..paren_pos].trim().to_string();
-
-    if method_name.is_empty() {
-        return None;
-    }
-
-    // Find matching closing paren for params
-    let after_open = &line[paren_pos + 1..];
-    let close_paren = find_matching_paren_with_generics(after_open)?;
-    let params_str = &after_open[..close_paren];
-
-    // Parse params
-    let params = parse_param_list(params_str);
-
-    // Find return type: ): Promise<...>
-    let after_close = &after_open[close_paren + 1..];
-    let promise_start = after_close.find("Promise<")?;
-    let after_promise = &after_close[promise_start + "Promise<".len()..];
-
-    // Find the matching '>' for Promise<...>
-    let promise_inner_end = find_matching_bracket(after_promise, '<', '>')?;
-    let promise_inner = &after_promise[..promise_inner_end];
-
-    // Unwrap Result<T, E> to T
-    let return_type = extract_ok_type(promise_inner.trim()).to_string();
-
-    Some((method_name, params, return_type))
-}
-
-/// Parse a parameter list string like `id: number, name: string` into `Vec<ParamSchema>`.
-fn parse_param_list(s: &str) -> Vec<ParamSchema> {
-    if s.trim().is_empty() {
-        return Vec::new();
-    }
-
-    // Split on commas (but not inside angle brackets)
+/// Extract parameters from a `formal_parameters` node.
+fn extract_params_from_node(params_node: tree_sitter::Node<'_>, content: &str) -> Vec<ParamSchema> {
     let mut params = Vec::new();
-    let mut depth = 0i32;
-    let mut current = String::new();
+    let mut cursor = params_node.walk();
 
-    for ch in s.chars() {
-        match ch {
-            '<' => {
-                depth += 1;
-                current.push(ch);
+    for child in params_node.children(&mut cursor) {
+        if child.kind() == "required_parameter" || child.kind() == "optional_parameter" {
+            let name = child
+                .child_by_field_name("pattern")
+                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                .unwrap_or("")
+                .to_string();
+
+            let ts_type = child
+                .child_by_field_name("type")
+                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                .map_or("", |t| t.strip_prefix(": ").unwrap_or(t))
+                .trim()
+                .to_string();
+
+            if !name.is_empty() && !ts_type.is_empty() {
+                params.push(ParamSchema { name, ts_type });
             }
-            '>' => {
-                depth -= 1;
-                current.push(ch);
-            }
-            ',' if depth == 0 => {
-                if let Some(param) = parse_single_param(current.trim()) {
-                    params.push(param);
-                }
-                current = String::new();
-            }
-            _ => current.push(ch),
         }
-    }
-
-    if let Some(param) = parse_single_param(current.trim()) {
-        params.push(param);
     }
 
     params
 }
 
-/// Parse a single `name: type` string.
-fn parse_single_param(s: &str) -> Option<ParamSchema> {
-    let colon_pos = s.find(':')?;
-    let name = s[..colon_pos].trim().to_string();
-    let ts_type = s[colon_pos + 1..].trim().to_string();
+/// Unwrap `Promise<Result<T, E>>` → `T`, `Promise<T>` → `T` using tree-sitter node walking.
+///
+/// Navigates `generic_type` → `name` + `type_arguments` children instead of manual bracket tracking.
+fn unwrap_return_type_node(node: tree_sitter::Node<'_>, content: &str) -> String {
+    let mut current = node;
 
-    if name.is_empty() || ts_type.is_empty() {
-        return None;
-    }
+    loop {
+        if current.kind() != "generic_type" {
+            break;
+        }
 
-    Some(ParamSchema { name, ts_type })
-}
+        let type_name = current
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+            .unwrap_or("");
 
-/// Extract the Ok type `T` from `Result<T, E>`, or return the type unchanged.
-fn extract_ok_type(ty: &str) -> &str {
-    if let Some(inner) = ty.strip_prefix("Result<") {
-        // Find the comma separating T and E (not inside nested angle brackets)
-        let mut depth = 0i32;
-        for (i, ch) in inner.char_indices() {
-            match ch {
-                '<' => depth += 1,
-                '>' if depth > 0 => depth -= 1,
-                '>' => return inner[..i].trim(),
-                ',' if depth == 0 => return inner[..i].trim(),
-                _ => {}
+        match type_name {
+            "Promise" | "Result" => {
+                let Some(type_args) = current.child_by_field_name("type_arguments") else {
+                    break;
+                };
+                let mut cursor = type_args.walk();
+                let first_arg = type_args
+                    .children(&mut cursor)
+                    .find(tree_sitter::Node::is_named);
+                let Some(arg) = first_arg else {
+                    break;
+                };
+                current = arg;
             }
+            _ => break,
         }
     }
-    ty
+
+    current
+        .utf8_text(content.as_bytes())
+        .unwrap_or("void")
+        .trim()
+        .to_string()
 }
 
 /// Parse a ts-rs generated file and return a map of `TypeName -> definition`.
@@ -173,7 +167,7 @@ fn extract_ok_type(ty: &str) -> &str {
 /// ```
 #[must_use]
 pub fn parse_ts_rs_types(content: &str) -> HashMap<String, String> {
-    parse_type_aliases(content)
+    parse_type_aliases_and_interfaces(content, false)
 }
 
 /// Parse a typegen-generated file and return a map of `TypeName -> definition`.
@@ -183,103 +177,117 @@ pub fn parse_ts_rs_types(content: &str) -> HashMap<String, String> {
 /// - `export interface Name { field: type; ... }` (multi-line interface blocks)
 #[must_use]
 pub fn parse_typegen_types(content: &str) -> HashMap<String, String> {
-    let mut aliases = parse_type_aliases(content);
-    aliases.extend(parse_interface_blocks(content));
-    aliases
+    parse_type_aliases_and_interfaces(content, true)
 }
 
-/// Shared parser for `export type Name = ...;` lines.
-fn parse_type_aliases(content: &str) -> HashMap<String, String> {
+/// Unified parser for `export type` and `export interface` declarations using tree-sitter.
+fn parse_type_aliases_and_interfaces(
+    content: &str,
+    include_interfaces: bool,
+) -> HashMap<String, String> {
+    let Some(tree) = parse_ts(content) else {
+        return HashMap::new();
+    };
+
+    let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
     let mut aliases = HashMap::new();
 
-    for line in content.lines() {
-        if let Some((name, def)) = parse_type_alias_line(line.trim()) {
-            aliases.insert(name, def);
+    let type_query_str = include_str!("queries/bindings_type_aliases.scm");
+
+    if let Ok(query) = Query::new(&ts_lang, type_query_str) {
+        let name_idx = query.capture_index_for_name("type_name");
+        let value_idx = query.capture_index_for_name("type_value");
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+
+        while let Some(m) = matches.next() {
+            let name = name_idx
+                .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+                .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+                .unwrap_or("")
+                .to_string();
+
+            let def = value_idx
+                .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+                .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+                .unwrap_or("")
+                .to_string();
+
+            if !name.is_empty() && !def.is_empty() {
+                aliases.insert(name, def);
+            }
         }
     }
 
-    aliases
-}
+    // Query for interface declarations (typegen only)
+    if include_interfaces {
+        let iface_query_str = include_str!("queries/bindings_interfaces.scm");
 
-/// Parse `export interface Name { field: type; ... }` blocks from typegen output.
-///
-/// Collects all public fields (ignoring index signatures like `[key: string]: unknown`)
-/// and returns them as a compact inline object definition string, e.g.:
-/// `"{ id: number; name: string; email: string }"`
-fn parse_interface_blocks(content: &str) -> HashMap<String, String> {
-    let mut aliases = HashMap::new();
-    let lines: Vec<&str> = content.lines().collect();
-    let mut i = 0;
+        if let Ok(query) = Query::new(&ts_lang, iface_query_str) {
+            let name_idx = query.capture_index_for_name("iface_name");
+            let body_idx = query.capture_index_for_name("iface_body");
 
-    while i < lines.len() {
-        let line = lines[i].trim();
+            let mut cursor = QueryCursor::new();
+            let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
 
-        // Match `export interface TypeName {`
-        if let Some(rest) = line.strip_prefix("export interface ") {
-            let brace_pos = rest.find('{');
-            if let Some(bpos) = brace_pos {
-                let name = rest[..bpos].trim().to_string();
-                if !name.is_empty() {
-                    // Collect field lines until the closing `}`
-                    let mut fields = Vec::new();
-                    i += 1;
+            while let Some(m) = matches.next() {
+                let name = name_idx
+                    .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+                    .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+                    .unwrap_or("")
+                    .to_string();
 
-                    while i < lines.len() {
-                        let field_line = lines[i].trim();
+                let body_node = body_idx
+                    .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+                    .map(|cap| cap.node);
 
-                        if field_line == "}" || field_line == "};" {
-                            break;
+                if let Some(body) = body_node {
+                    if !name.is_empty() {
+                        let def = extract_interface_fields(body, content);
+                        if !def.is_empty() {
+                            aliases.insert(name, def);
                         }
-
-                        // Skip index signatures: `[key: string]: unknown;`
-                        if field_line.starts_with('[') {
-                            i += 1;
-                            continue;
-                        }
-
-                        // Parse `fieldName: type;`
-                        if let Some(colon) = field_line.find(':') {
-                            let field_name = field_line[..colon].trim();
-                            let field_type = field_line[colon + 1..]
-                                .trim()
-                                .trim_end_matches(';')
-                                .trim()
-                                .to_string();
-
-                            if !field_name.is_empty() && !field_type.is_empty() {
-                                fields.push(format!("{field_name}: {field_type}"));
-                            }
-                        }
-
-                        i += 1;
-                    }
-
-                    if !fields.is_empty() {
-                        let def = format!("{{ {} }}", fields.join("; "));
-                        aliases.insert(name, def);
                     }
                 }
             }
         }
-
-        i += 1;
     }
 
     aliases
 }
 
-/// Parse a single `export type Name = ...;` line.
-fn parse_type_alias_line(line: &str) -> Option<(String, String)> {
-    let line = line.strip_prefix("export type ")?;
-    let eq_pos = line.find('=')?;
-    let name = line[..eq_pos].trim().to_string();
-    let def = line[eq_pos + 1..].trim_end_matches(';').trim().to_string();
+/// Extract fields from an `interface_body` node into a compact inline object string.
+///
+/// Skips index signatures like `[key: string]: unknown`.
+fn extract_interface_fields(body_node: tree_sitter::Node<'_>, content: &str) -> String {
+    let mut fields = Vec::new();
+    let mut cursor = body_node.walk();
 
-    if name.is_empty() || def.is_empty() {
-        return None;
+    for child in body_node.children(&mut cursor) {
+        if child.kind() == "property_signature" {
+            let name = child
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                .unwrap_or("");
+
+            let type_text = child
+                .child_by_field_name("type")
+                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                .map_or("", |t| t.strip_prefix(": ").unwrap_or(t).trim());
+
+            if !name.is_empty() && !type_text.is_empty() {
+                fields.push(format!("{name}: {type_text}"));
+            }
+        }
+        // index_signature nodes are automatically skipped
     }
 
-    Some((name, def))
+    if fields.is_empty() {
+        String::new()
+    } else {
+        format!("{{ {} }}", fields.join("; "))
+    }
 }
 
 // ─── Event schema parsers ────────────────────────────────────────────────────
@@ -301,72 +309,108 @@ fn parse_type_alias_line(line: &str) -> Option<(String, String)> {
 /// The value object maps TS names to actual event name strings.
 #[must_use]
 pub fn parse_specta_events(content: &str, source_path: &Path) -> Vec<EventSchema> {
+    let Some(tree) = parse_ts(content) else {
+        return Vec::new();
+    };
+
+    let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+
+    let query_str = include_str!("queries/bindings_specta_events.scm");
+
+    let Ok(query) = Query::new(&ts_lang, query_str) else {
+        return Vec::new();
+    };
+
+    let fn_name_idx = query.capture_index_for_name("fn_name");
+    let type_obj_idx = query.capture_index_for_name("type_obj");
+    let value_obj_idx = query.capture_index_for_name("value_obj");
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
     let mut schemas = Vec::new();
 
-    // Find __makeEvents__<{ ... }>({ ... })
-    let Some(make_pos) = content.find("__makeEvents__<") else {
-        return schemas;
-    };
+    while let Some(m) = matches.next() {
+        let fn_name = fn_name_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+            .unwrap_or("");
 
-    let after_make = &content[make_pos + "__makeEvents__<".len()..];
-
-    // Parse type parameter block: { TypeName: PayloadType, ... }
-    let Some(type_block_start) = after_make.find('{') else {
-        return schemas;
-    };
-    let type_block_content = &after_make[type_block_start + 1..];
-    let Some(type_block_end) = find_matching_bracket(type_block_content, '{', '}') else {
-        return schemas;
-    };
-    let type_block = &type_block_content[..type_block_end];
-
-    // Parse type pairs: TypeName: PayloadType
-    let mut type_map: HashMap<String, String> = HashMap::new();
-    for line in type_block.lines() {
-        let trimmed = line.trim().trim_end_matches(',');
-        if let Some(colon_pos) = trimmed.find(':') {
-            let ts_name = trimmed[..colon_pos].trim().to_string();
-            let payload_type = trimmed[colon_pos + 1..].trim().to_string();
-            if !ts_name.is_empty() && !payload_type.is_empty() {
-                type_map.insert(ts_name, payload_type);
-            }
+        if fn_name != "__makeEvents__" {
+            continue;
         }
-    }
 
-    // Find value object block: { TypeName: "event-name", ... }
-    let after_type_block = &type_block_content[type_block_end + 1..];
-    // Skip `>({` between the two blocks
-    let Some(value_block_start) = after_type_block.find('{') else {
-        return schemas;
-    };
-    let value_block_content = &after_type_block[value_block_start + 1..];
-    let Some(value_block_end) = find_matching_bracket(value_block_content, '{', '}') else {
-        return schemas;
-    };
-    let value_block = &value_block_content[..value_block_end];
+        // Extract type map: {TypeName: PayloadType, ...}
+        let type_map = type_obj_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .map(|cap| extract_type_object_entries(cap.node, content))
+            .unwrap_or_default();
 
-    // Parse value pairs: TypeName: "actual-event-name"
-    for line in value_block.lines() {
-        let trimmed = line.trim().trim_end_matches(',');
-        if let Some(colon_pos) = trimmed.find(':') {
-            let ts_name = trimmed[..colon_pos].trim();
-            let event_str = trimmed[colon_pos + 1..].trim();
-            // Extract string literal value
-            let event_name = event_str.trim_matches('"').trim_matches('\'').to_string();
-            if !event_name.is_empty() {
-                if let Some(payload_type) = type_map.get(ts_name) {
-                    schemas.push(EventSchema {
-                        event_name,
-                        payload_type: payload_type.clone(),
-                        source_path: source_path.to_path_buf(),
-                        generator: GeneratorKind::Specta,
-                    });
+        // Extract value map: {TypeName: "event-name", ...}
+        let value_node = value_obj_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .map(|cap| cap.node);
+
+        if let Some(vnode) = value_node {
+            let mut vcursor = vnode.walk();
+            for child in vnode.children(&mut vcursor) {
+                if child.kind() == "pair" {
+                    let key = child
+                        .child_by_field_name("key")
+                        .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                        .unwrap_or("");
+
+                    let value = child
+                        .child_by_field_name("value")
+                        .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                        .map(|s| s.trim_matches('"').trim_matches('\'').to_string())
+                        .unwrap_or_default();
+
+                    if !value.is_empty() {
+                        if let Some(payload_type) = type_map.get(key) {
+                            schemas.push(EventSchema {
+                                event_name: value,
+                                payload_type: payload_type.clone(),
+                                source_path: source_path.to_path_buf(),
+                                generator: GeneratorKind::Specta,
+                            });
+                        }
+                    }
                 }
             }
         }
     }
 
     schemas
+}
+
+/// Extract entries from a type object like `{ Name: Type, ... }` (inside `<{...}>`).
+fn extract_type_object_entries(
+    node: tree_sitter::Node<'_>,
+    content: &str,
+) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        if child.kind() == "property_signature" {
+            let name = child
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                .unwrap_or("");
+
+            let type_text = child
+                .child_by_field_name("type")
+                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                .map(|t| t.strip_prefix(": ").unwrap_or(t).trim().to_string())
+                .unwrap_or_default();
+
+            if !name.is_empty() && !type_text.is_empty() {
+                map.insert(name.to_string(), type_text);
+            }
+        }
+    }
+
+    map
 }
 
 /// Parse event schemas from a typegen-generated events file.
@@ -383,53 +427,66 @@ pub fn parse_specta_events(content: &str, source_path: &Path) -> Vec<EventSchema
 /// ```
 #[must_use]
 pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchema> {
+    let Some(tree) = parse_ts(content) else {
+        return Vec::new();
+    };
+
+    let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+
+    let query_str = include_str!("queries/bindings_typegen_events.scm");
+
+    let Ok(query) = Query::new(&ts_lang, query_str) else {
+        return Vec::new();
+    };
+
+    let fn_name_idx = query.capture_index_for_name("fn_name");
+    let type_arg_idx = query.capture_index_for_name("type_arg");
+    let event_name_idx = query.capture_index_for_name("event_name");
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
     let mut schemas = Vec::new();
 
-    // Find all listen<T>('event-name' patterns
-    let listen_prefix = "listen<";
-    let mut search_from = 0;
+    while let Some(m) = matches.next() {
+        let fn_name = fn_name_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+            .unwrap_or("");
 
-    while let Some(pos) = content[search_from..].find(listen_prefix) {
-        let abs_pos = search_from + pos;
-        let after_listen = &content[abs_pos + listen_prefix.len()..];
-
-        // Extract T from listen<T>
-        if let Some(angle_end) = find_matching_bracket(after_listen, '<', '>') {
-            let payload_type = after_listen[..angle_end].trim();
-            let after_angle = &after_listen[angle_end + 1..];
-
-            // Expect >('event-name'
-            if let Some(quote_start) = after_angle.find(['\'', '"']) {
-                let quote_char = after_angle.as_bytes()[quote_start];
-                let after_quote = &after_angle[quote_start + 1..];
-                if let Some(quote_end) = after_quote.find(quote_char as char) {
-                    let event_name = &after_quote[..quote_end];
-
-                    // Strip "types." prefix if present
-                    let (clean_type, was_prefixed) =
-                        if let Some(stripped) = payload_type.strip_prefix("types.") {
-                            (stripped.to_string(), true)
-                        } else {
-                            (payload_type.to_string(), false)
-                        };
-
-                    // Skip lowercase names from types.X — these are variable names, not types
-                    if !event_name.is_empty()
-                        && !clean_type.is_empty()
-                        && (!was_prefixed || clean_type.starts_with(char::is_uppercase))
-                    {
-                        schemas.push(EventSchema {
-                            event_name: event_name.to_string(),
-                            payload_type: clean_type,
-                            source_path: source_path.to_path_buf(),
-                            generator: GeneratorKind::Typegen,
-                        });
-                    }
-                }
-            }
+        if fn_name != "listen" {
+            continue;
         }
 
-        search_from = abs_pos + listen_prefix.len();
+        let type_arg = type_arg_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+            .unwrap_or("");
+
+        let event_name = event_name_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
+            .unwrap_or("");
+
+        if event_name.is_empty() || type_arg.is_empty() {
+            continue;
+        }
+
+        // Strip "types." prefix if present
+        let (clean_type, was_prefixed) = if let Some(stripped) = type_arg.strip_prefix("types.") {
+            (stripped.to_string(), true)
+        } else {
+            (type_arg.to_string(), false)
+        };
+
+        // Skip lowercase names from types.X — these are variable names, not types
+        if !clean_type.is_empty() && (!was_prefixed || clean_type.starts_with(char::is_uppercase)) {
+            schemas.push(EventSchema {
+                event_name: event_name.to_string(),
+                payload_type: clean_type,
+                source_path: source_path.to_path_buf(),
+                generator: GeneratorKind::Typegen,
+            });
+        }
     }
 
     schemas

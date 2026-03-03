@@ -11,4 +11,5 @@ pub mod rust_type_extractor;
 pub mod scanner;
 pub mod syntax;
 pub mod tree_parser;
+pub mod ts_tree_utils;
 pub mod utils;
