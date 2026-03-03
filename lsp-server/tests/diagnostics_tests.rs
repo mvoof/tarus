@@ -1059,10 +1059,7 @@ fn test_event_payload_rust_file_skipped() {
     let diags = compute_file_diagnostics(&rs_path, &index);
     let payload_diags: Vec<_> = diags
         .iter()
-        .filter(|d| {
-            d.message.contains("payload type")
-                || d.message.contains("event-payload")
-        })
+        .filter(|d| d.message.contains("payload type") || d.message.contains("event-payload"))
         .collect();
     assert!(
         payload_diags.is_empty(),
