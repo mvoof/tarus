@@ -446,12 +446,19 @@ pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchem
                     let event_name = &after_quote[..quote_end];
 
                     // Strip "types." prefix if present
-                    let clean_type = payload_type
-                        .strip_prefix("types.")
-                        .unwrap_or(payload_type)
-                        .to_string();
+                    let (clean_type, was_prefixed) =
+                        if let Some(stripped) = payload_type.strip_prefix("types.") {
+                            (stripped.to_string(), true)
+                        } else {
+                            (payload_type.to_string(), false)
+                        };
 
-                    if !event_name.is_empty() && !clean_type.is_empty() {
+                    // Skip lowercase names from types.X — these are variable names, not types
+                    if !event_name.is_empty()
+                        && !clean_type.is_empty()
+                        && (!was_prefixed
+                            || clean_type.starts_with(char::is_uppercase))
+                    {
                         schemas.push(EventSchema {
                             event_name: event_name.to_string(),
                             payload_type: clean_type,
