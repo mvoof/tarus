@@ -1039,6 +1039,37 @@ fn test_event_void_payload_no_hint() {
     );
 }
 
+/// Rust emit with EventSchema → no diagnostic (Rust has its own type system).
+#[test]
+fn test_event_payload_rust_file_skipped() {
+    let index = ProjectIndex::new();
+    let rs_path = test_path("backend.rs");
+
+    index.add_file(FileIndex {
+        path: rs_path.clone(),
+        findings: vec![make_event_finding("user-updated", Behavior::Emit, 10)],
+    });
+
+    index.add_event_schema(make_event_schema(
+        "user-updated",
+        "UserProfile",
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&rs_path, &index);
+    let payload_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| {
+            d.message.contains("payload type")
+                || d.message.contains("event-payload")
+        })
+        .collect();
+    assert!(
+        payload_diags.is_empty(),
+        "Rust files should not get event payload diagnostics, got: {payload_diags:?}"
+    );
+}
+
 /// Specta event schema parsing test.
 #[test]
 fn test_specta_event_schema_parsing() {
