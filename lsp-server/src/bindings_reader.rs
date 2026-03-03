@@ -6,7 +6,7 @@
 //! - tauri-typegen: `export type Name = { ... };`
 
 use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
-use crate::utils::camel_to_snake;
+use crate::utils::{camel_to_snake, find_matching_bracket, find_matching_paren_with_generics};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -75,7 +75,7 @@ fn parse_method_line(line: &str) -> Option<(String, Vec<ParamSchema>, String)> {
 
     // Find matching closing paren for params
     let after_open = &line[paren_pos + 1..];
-    let close_paren = find_matching_paren(after_open)?;
+    let close_paren = find_matching_paren_with_generics(after_open)?;
     let params_str = &after_open[..close_paren];
 
     // Parse params
@@ -87,53 +87,13 @@ fn parse_method_line(line: &str) -> Option<(String, Vec<ParamSchema>, String)> {
     let after_promise = &after_close[promise_start + "Promise<".len()..];
 
     // Find the matching '>' for Promise<...>
-    let promise_inner_end = find_matching_angle(after_promise)?;
+    let promise_inner_end = find_matching_bracket(after_promise, '<', '>')?;
     let promise_inner = &after_promise[..promise_inner_end];
 
     // Unwrap Result<T, E> to T
     let return_type = extract_ok_type(promise_inner.trim()).to_string();
 
     Some((method_name, params, return_type))
-}
-
-/// Find the position of the closing `)` matching the first character of `s`.
-/// Handles nested angle brackets in generic types.
-fn find_matching_paren(s: &str) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut angle_depth = 0i32;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '<' => angle_depth += 1,
-            '>' if angle_depth > 0 => angle_depth -= 1,
-            '(' => depth += 1,
-            ')' if angle_depth == 0 => {
-                if depth == 0 {
-                    return Some(i);
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Find the position of the closing `>` for a `Type<...>` inner string.
-fn find_matching_angle(s: &str) -> Option<usize> {
-    let mut depth = 0i32;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '<' => depth += 1,
-            '>' => {
-                if depth == 0 {
-                    return Some(i);
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Parse a parameter list string like `id: number, name: string` into `Vec<ParamSchema>`.
@@ -355,7 +315,7 @@ pub fn parse_specta_events(content: &str, source_path: &Path) -> Vec<EventSchema
         return schemas;
     };
     let type_block_content = &after_make[type_block_start + 1..];
-    let Some(type_block_end) = find_matching_brace(type_block_content) else {
+    let Some(type_block_end) = find_matching_bracket(type_block_content, '{', '}') else {
         return schemas;
     };
     let type_block = &type_block_content[..type_block_end];
@@ -380,7 +340,7 @@ pub fn parse_specta_events(content: &str, source_path: &Path) -> Vec<EventSchema
         return schemas;
     };
     let value_block_content = &after_type_block[value_block_start + 1..];
-    let Some(value_block_end) = find_matching_brace(value_block_content) else {
+    let Some(value_block_end) = find_matching_bracket(value_block_content, '{', '}') else {
         return schemas;
     };
     let value_block = &value_block_content[..value_block_end];
@@ -434,7 +394,7 @@ pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchem
         let after_listen = &content[abs_pos + listen_prefix.len()..];
 
         // Extract T from listen<T>
-        if let Some(angle_end) = find_matching_angle(after_listen) {
+        if let Some(angle_end) = find_matching_bracket(after_listen, '<', '>') {
             let payload_type = after_listen[..angle_end].trim();
             let after_angle = &after_listen[angle_end + 1..];
 
@@ -473,22 +433,4 @@ pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchem
     }
 
     schemas
-}
-
-/// Find position of closing `}` matching the first character of `s`.
-fn find_matching_brace(s: &str) -> Option<usize> {
-    let mut depth = 0i32;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                if depth == 0 {
-                    return Some(i);
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-    None
 }

@@ -63,11 +63,12 @@ fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
         if let Some(export_start) = content.find(".export(") {
             // Find matching closing paren, accounting for nesting
             let rest = &content[export_start + ".export".len()..];
-            let search_window = if let Some(end) = find_matching_paren(rest) {
-                &rest[..end + 1]
-            } else {
-                &rest[..rest.len().min(500)]
-            };
+            let search_window =
+                if let Some(end) = crate::utils::find_matching_bracket(&rest[1..], '(', ')') {
+                    &rest[..end + 2]
+                } else {
+                    &rest[..rest.len().min(500)]
+                };
 
             if let Some(path_str) = extract_last_quoted_string(search_window) {
                 let ext_ok = Path::new(&path_str)
@@ -203,24 +204,6 @@ fn parse_ts_rs_export_dir(
         }
         _ => None,
     }
-}
-
-/// Find the index of the closing `)` that matches the opening `(` at position 0.
-fn find_matching_paren(s: &str) -> Option<usize> {
-    let mut depth = 0;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Extract the last double-quoted string from a line (handles multiple quotes per line).

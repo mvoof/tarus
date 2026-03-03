@@ -162,7 +162,7 @@ impl ProjectIndex {
         for key in keys_in_file.value() {
             if let Some(locations) = self.map.get(key) {
                 for loc in locations.value() {
-                    if loc.path == path && Self::is_position_in_range(position, loc.range) {
+                    if loc.path == path && crate::utils::is_position_in_range(position, loc.range) {
                         return Some((key.clone(), loc.clone()));
                     }
                 }
@@ -170,30 +170,6 @@ impl ProjectIndex {
         }
 
         None
-    }
-
-    /// Helper for checking if the cursor is inside a range
-    fn is_position_in_range(pos: Position, range: Range) -> bool {
-        // LSP Range inclusive start, exclusive end
-        if pos.line < range.start.line || pos.line > range.end.line {
-            return false;
-        }
-
-        // If one line
-        if range.start.line == range.end.line {
-            return pos.character >= range.start.character && pos.character < range.end.character;
-        }
-
-        // If multi-line range
-        if pos.line == range.start.line {
-            return pos.character >= range.start.character;
-        }
-
-        if pos.line == range.end.line {
-            return pos.character < range.end.character;
-        }
-
-        true
     }
 
     /// Appends (or overwrites) the parsing results of a single file
@@ -232,12 +208,14 @@ impl ProjectIndex {
             }
         }
 
-        self.file_map.insert(path_ref, keys_in_this_file);
+        self.file_map.insert(path_ref, keys_in_this_file.clone());
 
         // Invalidate caches
         *self.command_names_cache.write().unwrap() = None;
         *self.event_names_cache.write().unwrap() = None;
-        self.diagnostic_info_cache.clear();
+        for key in &keys_in_this_file {
+            self.diagnostic_info_cache.remove(key);
+        }
     }
 
     /// Deletes all entries associated with a specific file.
@@ -258,12 +236,13 @@ impl ProjectIndex {
                 if self.map.get(&key).is_some_and(|locs| locs.is_empty()) {
                     self.map.remove(&key);
                 }
+
+                self.diagnostic_info_cache.remove(&key);
             }
 
             // Invalidate caches
             *self.command_names_cache.write().unwrap() = None;
             *self.event_names_cache.write().unwrap() = None;
-            self.diagnostic_info_cache.clear();
         }
 
         // Also remove parse errors for this file

@@ -96,7 +96,10 @@ fn extract_first_generic_arg(s: &str) -> Option<&str> {
 ///
 /// Only extracts functions that have `#[tauri::command]` attribute.
 /// Does NOT modify queries/rust.scm.
+///
+/// Prefer `extract_command_schemas_from_tree` when a parsed tree is already available.
 #[must_use]
+#[allow(dead_code)]
 pub fn extract_command_schemas(content: &str, source_path: &Path) -> Vec<CommandSchema> {
     let Ok(schemas) = try_extract_command_schemas(content, source_path) else {
         return Vec::new();
@@ -104,6 +107,22 @@ pub fn extract_command_schemas(content: &str, source_path: &Path) -> Vec<Command
     schemas
 }
 
+/// Extract command schemas from a pre-parsed tree root node.
+///
+/// Use this when you already have a parsed tree (e.g. from `parse_rust_full`).
+#[must_use]
+pub fn extract_command_schemas_from_tree(
+    root: tree_sitter::Node<'_>,
+    content: &str,
+    source_path: &Path,
+) -> Vec<CommandSchema> {
+    let Ok(schemas) = try_extract_command_schemas_from_node(root, content, source_path) else {
+        return Vec::new();
+    };
+    schemas
+}
+
+#[allow(dead_code)]
 fn try_extract_command_schemas(
     content: &str,
     source_path: &Path,
@@ -116,9 +135,17 @@ fn try_extract_command_schemas(
         .parse(content, None)
         .ok_or("Failed to parse Rust file")?;
 
+    try_extract_command_schemas_from_node(tree.root_node(), content, source_path)
+}
+
+fn try_extract_command_schemas_from_node(
+    root: tree_sitter::Node<'_>,
+    content: &str,
+    source_path: &Path,
+) -> Result<Vec<CommandSchema>, Box<dyn std::error::Error>> {
+    let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
     let query = Query::new(&ts_lang, RUST_PARAMS_QUERY)?;
     let mut cursor = QueryCursor::new();
-    let root = tree.root_node();
 
     let fn_name_idx = query.capture_index_for_name("fn_name");
     let fn_params_idx = query.capture_index_for_name("fn_params");
@@ -319,6 +346,7 @@ const RUST_EMIT_QUERY: &str = r#"
 /// For each emit call, attempts to resolve the payload variable's type from the enclosing
 /// function's parameters.
 #[must_use]
+#[allow(dead_code)]
 pub fn extract_event_schemas(content: &str, source_path: &Path) -> Vec<EventSchema> {
     let Ok(schemas) = try_extract_event_schemas(content, source_path) else {
         return Vec::new();
@@ -326,6 +354,23 @@ pub fn extract_event_schemas(content: &str, source_path: &Path) -> Vec<EventSche
     schemas
 }
 
+/// Extract event schemas from a pre-parsed tree root node.
+///
+/// Use this when you already have a parsed tree (e.g. from `parse_rust_full`).
+#[must_use]
+pub fn extract_event_schemas_from_tree(
+    root: tree_sitter::Node<'_>,
+    content: &str,
+    tree: &tree_sitter::Tree,
+    source_path: &Path,
+) -> Vec<EventSchema> {
+    let Ok(schemas) = try_extract_event_schemas_from_node(root, content, tree, source_path) else {
+        return Vec::new();
+    };
+    schemas
+}
+
+#[allow(dead_code)]
 fn try_extract_event_schemas(
     content: &str,
     source_path: &Path,
@@ -338,9 +383,18 @@ fn try_extract_event_schemas(
         .parse(content, None)
         .ok_or("Failed to parse Rust file")?;
 
+    try_extract_event_schemas_from_node(tree.root_node(), content, &tree, source_path)
+}
+
+fn try_extract_event_schemas_from_node(
+    root: tree_sitter::Node<'_>,
+    content: &str,
+    tree: &tree_sitter::Tree,
+    source_path: &Path,
+) -> Result<Vec<EventSchema>, Box<dyn std::error::Error>> {
+    let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
     let query = Query::new(&ts_lang, RUST_EMIT_QUERY)?;
     let mut cursor = QueryCursor::new();
-    let root = tree.root_node();
 
     let event_name_idx = query.capture_index_for_name("event_name");
     let payload_arg_idx = query.capture_index_for_name("payload_arg");
@@ -364,7 +418,7 @@ fn try_extract_event_schemas(
             .and_then(|cap| {
                 let node = cap.node;
                 // Try to resolve type from the payload expression
-                resolve_emit_payload_type(node, content, &tree)
+                resolve_emit_payload_type(node, content, tree)
             })
             .unwrap_or_else(|| "unknown".to_string());
 
