@@ -456,8 +456,7 @@ pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchem
                     // Skip lowercase names from types.X — these are variable names, not types
                     if !event_name.is_empty()
                         && !clean_type.is_empty()
-                        && (!was_prefixed
-                            || clean_type.starts_with(char::is_uppercase))
+                        && (!was_prefixed || clean_type.starts_with(char::is_uppercase))
                     {
                         schemas.push(EventSchema {
                             event_name: event_name.to_string(),

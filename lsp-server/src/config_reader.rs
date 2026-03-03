@@ -241,7 +241,6 @@ fn extract_last_quoted_string(line: &str) -> Option<String> {
     last
 }
 
-
 /// Resolve `..` and `.` path components without requiring the path to exist on disk.
 fn normalize_path(path: &Path) -> PathBuf {
     let mut components: Vec<Component<'_>> = Vec::new();
