@@ -3,7 +3,7 @@
 //! This module provides a single entry point for parsing all supported file types
 //! using Tree-sitter queries defined in external .scm files.
 
-use crate::indexer::{FileIndex, Finding};
+use crate::indexer::{CommandSchema, EventSchema, FileIndex, Finding};
 use crate::rust_type_extractor;
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use std::collections::HashMap;
@@ -89,14 +89,7 @@ fn extract_script_blocks(content: &str) -> Vec<(String, usize)> {
     blocks
 }
 
-/// Convert tree-sitter Point to LSP Position
-#[allow(clippy::cast_possible_truncation)]
-fn point_to_position(point: tree_sitter::Point) -> Position {
-    Position {
-        line: point.row as u32,
-        character: point.column as u32,
-    }
-}
+use crate::utils::point_to_position;
 
 /// Adjust position by line offset (for Vue/Svelte script extraction)
 #[allow(clippy::cast_possible_truncation)]
@@ -648,4 +641,140 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
         path: path.to_path_buf(),
         findings,
     })
+}
+
+/// Combined result of parsing a Rust file: findings + schemas from a single parse pass.
+pub struct RustFileIndex {
+    pub file_index: FileIndex,
+    pub command_schemas: Vec<CommandSchema>,
+    pub event_schemas: Vec<EventSchema>,
+}
+
+/// Parse a Rust file in a single pass: one `Parser::new()` + `parser.parse()`,
+/// then run the findings query, command schema query, and event schema query
+/// sequentially on the same tree.
+///
+/// # Errors
+///
+/// Returns error if tree-sitter fails to parse the file or query execution fails
+pub fn parse_rust_full(content: &str, path: &Path) -> ParseResult<RustFileIndex> {
+    let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&ts_lang)
+        .map_err(|e| ParseError::LanguageError(format!("Failed to set Rust language: {e}")))?;
+
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
+
+    let root = tree.root_node();
+
+    // 1. Extract findings (commands + events) using the main query
+    let findings = extract_rust_findings(root, content, &ts_lang)?;
+
+    // 2. Extract command schemas
+    let command_schemas =
+        rust_type_extractor::extract_command_schemas_from_tree(root, content, path);
+
+    // 3. Extract event schemas
+    let event_schemas =
+        rust_type_extractor::extract_event_schemas_from_tree(root, content, &tree, path);
+
+    Ok(RustFileIndex {
+        file_index: FileIndex {
+            path: path.to_path_buf(),
+            findings,
+        },
+        command_schemas,
+        event_schemas,
+    })
+}
+
+/// Extract findings from a pre-parsed Rust tree root node.
+fn extract_rust_findings(
+    root: tree_sitter::Node<'_>,
+    content: &str,
+    ts_lang: &Language,
+) -> ParseResult<Vec<Finding>> {
+    let mut findings = Vec::new();
+
+    let query = Query::new(ts_lang, RUST_QUERY)
+        .map_err(|e| ParseError::QueryError(format!("Failed to create Rust query: {e}")))?;
+
+    let mut cursor = QueryCursor::new();
+
+    let fn_name_idx = query.capture_index_for_name("fn_name");
+    let fn_item_idx = query.capture_index_for_name("fn_item");
+    let method_name_idx = query.capture_index_for_name("method_name");
+    let event_name_idx = query.capture_index_for_name("event_name");
+
+    let rust_event_patterns = get_rust_event_patterns();
+
+    let mut matches = cursor.matches(&query, root, content.as_bytes());
+    while let Some(m) = matches.next() {
+        if let (Some(name_idx), Some(item_idx)) = (fn_name_idx, fn_item_idx) {
+            let name_cap = m.captures.iter().find(|c| c.index == name_idx);
+            let item_cap = m.captures.iter().find(|c| c.index == item_idx);
+
+            if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
+                if rust_type_extractor::has_tauri_command_attr(item_cap.node, content) {
+                    let name = name_cap
+                        .node
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or_default();
+                    findings.push(Finding {
+                        key: name.to_string(),
+                        entity: EntityType::Command,
+                        behavior: Behavior::Definition,
+                        range: Range {
+                            start: point_to_position(name_cap.node.start_position()),
+                            end: point_to_position(name_cap.node.end_position()),
+                        },
+                        call_arg_count: None,
+                        call_param_keys: None,
+                        return_type: None,
+                        call_name_end: None,
+                        type_arg_range: None,
+                    });
+                }
+                continue;
+            }
+        }
+
+        if let (Some(method_idx), Some(event_idx)) = (method_name_idx, event_name_idx) {
+            let method_capture = m.captures.iter().find(|c| c.index == method_idx);
+            let event_capture = m.captures.iter().find(|c| c.index == event_idx);
+
+            if let (Some(method_cap), Some(event_cap)) = (method_capture, event_capture) {
+                let method_name = method_cap
+                    .node
+                    .utf8_text(content.as_bytes())
+                    .unwrap_or_default();
+                let event_name = event_cap
+                    .node
+                    .utf8_text(content.as_bytes())
+                    .unwrap_or_default();
+
+                if let Some((entity, behavior)) = rust_event_patterns.get(method_name) {
+                    findings.push(Finding {
+                        key: event_name.to_string(),
+                        entity: *entity,
+                        behavior: *behavior,
+                        range: Range {
+                            start: point_to_position(event_cap.node.start_position()),
+                            end: point_to_position(event_cap.node.end_position()),
+                        },
+                        call_arg_count: None,
+                        call_param_keys: None,
+                        return_type: None,
+                        call_name_end: None,
+                        type_arg_range: None,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(findings)
 }

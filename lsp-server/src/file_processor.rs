@@ -2,7 +2,6 @@
 
 use crate::bindings_reader;
 use crate::indexer::{GeneratorKind, ProjectIndex};
-use crate::rust_type_extractor;
 use crate::scanner::detect_generator_kind;
 use crate::tree_parser;
 use std::path::{Path, PathBuf};
@@ -49,15 +48,18 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
         return true;
     }
 
-    match tree_parser::parse(path, content) {
-        Ok(file_index) => {
-            project_index.add_file(file_index);
+    let is_rust = path.extension().and_then(|s| s.to_str()) == Some("rs");
 
-            // For Rust files: also extract command and event schemas (as RustSource)
-            // Only store if no higher-priority schema already exists
-            if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                let schemas = rust_type_extractor::extract_command_schemas(content, path);
-                for schema in schemas {
+    if is_rust {
+        match tree_parser::parse_rust_full(content, path) {
+            Ok(rust_index) => {
+                let path_buf = path.to_path_buf();
+                project_index.remove_schemas_for_file(&path_buf);
+                project_index.remove_event_schemas_for_file(&path_buf);
+
+                project_index.add_file(rust_index.file_index);
+
+                for schema in rust_index.command_schemas {
                     let existing = project_index.get_schema(&schema.command_name);
                     let is_higher_priority = existing.as_ref().is_some_and(|e| {
                         matches!(
@@ -70,8 +72,7 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
                     }
                 }
 
-                let event_schemas = rust_type_extractor::extract_event_schemas(content, path);
-                for schema in event_schemas {
+                for schema in rust_index.event_schemas {
                     let existing = project_index.get_event_schema(&schema.event_name);
                     let is_higher_priority = existing.as_ref().is_some_and(|e| {
                         matches!(
@@ -83,13 +84,24 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
                         project_index.add_event_schema(schema);
                     }
                 }
-            }
 
-            true
+                true
+            }
+            Err(e) => {
+                project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
+                false
+            }
         }
-        Err(e) => {
-            project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
-            false
+    } else {
+        match tree_parser::parse(path, content) {
+            Ok(file_index) => {
+                project_index.add_file(file_index);
+                true
+            }
+            Err(e) => {
+                project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
+                false
+            }
         }
     }
 }

@@ -4,7 +4,8 @@ mod common_paths;
 
 use common_paths::test_path;
 use lsp_server::indexer::{
-    CommandSchema, FileIndex, Finding, GeneratorKind, IndexKey, ParamSchema, ProjectIndex,
+    CommandSchema, EventSchema, FileIndex, Finding, GeneratorKind, IndexKey, ParamSchema,
+    ProjectIndex,
 };
 use lsp_server::syntax::{Behavior, EntityType};
 use tower_lsp_server::lsp_types::{Position, Range};
@@ -378,5 +379,82 @@ fn test_type_aliases() {
     assert!(
         index.type_aliases.get("UserProfile").is_none(),
         "Alias should be removed"
+    );
+}
+
+#[test]
+fn test_stale_rust_command_schema_cleared_on_reparse() {
+    let index = ProjectIndex::new();
+    let path = test_path("lib.rs");
+
+    // Simulate first parse: file has a command "old_cmd"
+    let file_index = FileIndex {
+        path: path.clone(),
+        findings: vec![create_test_finding(
+            "old_cmd",
+            EntityType::Command,
+            Behavior::Definition,
+        )],
+    };
+    index.add_file(file_index);
+    index.add_schema(CommandSchema {
+        command_name: "old_cmd".to_string(),
+        params: vec![],
+        return_type: "void".to_string(),
+        source_path: path.clone(),
+        generator: GeneratorKind::RustSource,
+    });
+
+    assert!(index.get_schema("old_cmd").is_some());
+
+    // Simulate reparse: command was removed from file
+    index.remove_schemas_for_file(&path);
+    let file_index = FileIndex {
+        path: path.clone(),
+        findings: vec![],
+    };
+    index.add_file(file_index);
+
+    assert!(
+        index.get_schema("old_cmd").is_none(),
+        "Stale command schema should be cleared on reparse"
+    );
+}
+
+#[test]
+fn test_stale_rust_event_schema_cleared_on_reparse() {
+    let index = ProjectIndex::new();
+    let path = test_path("lib.rs");
+
+    // Simulate first parse: file has an event "old_event"
+    let file_index = FileIndex {
+        path: path.clone(),
+        findings: vec![create_test_finding(
+            "old_event",
+            EntityType::Event,
+            Behavior::Emit,
+        )],
+    };
+    index.add_file(file_index);
+    index.add_event_schema(EventSchema {
+        event_name: "old_event".to_string(),
+        payload_type: "string".to_string(),
+        source_path: path.clone(),
+        generator: GeneratorKind::RustSource,
+    });
+
+    assert!(index.get_event_schema("old_event").is_some());
+
+    // Simulate reparse: event was removed from file
+    index.remove_event_schemas_for_file(&path);
+    let file_index = FileIndex {
+        path: path.clone(),
+        findings: vec![],
+    };
+    index.add_file(file_index);
+
+    assert!(
+        index.get_event_schema("old_event").is_none(),
+        "Stale event schema should be cleared on reparse"
     );
 }
