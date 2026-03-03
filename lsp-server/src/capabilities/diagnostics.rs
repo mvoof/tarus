@@ -307,6 +307,11 @@ fn check_event_payload_type(
         return None;
     }
 
+    // Rust files don't use generic type parameters on emit/listen/once — skip
+    if loc.path.extension().is_some_and(|ext| ext == "rs") {
+        return None;
+    }
+
     let schema = project_index.get_event_schema(event_name)?;
 
     // RustSource schemas are allowed only when the payload type has a known binding

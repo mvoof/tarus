@@ -227,7 +227,9 @@ impl ProjectIndex {
 
             self.map.entry(key.clone()).or_default().push(info);
 
-            keys_in_this_file.push(key);
+            if !keys_in_this_file.contains(&key) {
+                keys_in_this_file.push(key);
+            }
         }
 
         self.file_map.insert(path_ref, keys_in_this_file);
