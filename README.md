@@ -130,6 +130,35 @@ await invoke<Session>("get_session", { id: 1 });
 emit<void>("event_name");
 ```
 
+### Type Generation Support
+
+TARUS integrates with popular Tauri type generation libraries to provide cross-language type diagnostics. When generated binding files are detected in your workspace, the extension validates parameter keys, return types, and event payload types at edit time.
+
+**Supported generators:**
+
+| Library | How TARUS discovers it | What TARUS extracts |
+| :--- | :--- | :--- |
+| [tauri-specta](https://github.com/specta-rs/tauri-specta) | Scans Rust source for `.export("path")` calls | Command schemas (params + return types), event schemas |
+| [ts-rs](https://github.com/Aleph-Alpha/ts-rs) | Reads `TS_RS_EXPORT_DIR` from `.cargo/config.toml`, falls back to `Cargo.toml` dependency check → default `bindings/` | Type aliases (`export type Name = ...`) |
+| [tauri-typegen](https://github.com/thwbh/tauri-typegen) | Reads `plugins.typegen.outputPath` from `tauri.conf.json` | Type aliases, event schemas |
+
+**How it works:**
+
+1. On startup, TARUS reads project configuration files to locate generated binding outputs
+2. Type definitions and command schemas are extracted automatically from the discovered files
+3. Diagnostics appear in real time as you type:
+   - Missing or extra parameter keys in `invoke()` calls
+   - Missing or mismatched return type generics on `invoke<T>()`
+   - Missing or mismatched payload types on `emit<T>()` / `listen<T>()`
+4. Quick fixes (`Ctrl+.`) can insert or correct the generic type parameter
+
+No configuration needed — TARUS reads your existing project config files automatically.
+
+#### Known Limitations
+
+- **Event payload diagnostics require an `EventSchema`** — events must appear in a binding generator output (specta/ts-rs/typegen) or be emitted with a payload argument in Rust source. Events that are only listened to in Rust (never emitted with a payload from Rust) won't have payload type information.
+- **Rust files are not checked for event payload types** — Rust's own type system handles `emit()`/`listen()` argument types; TARUS only validates the `<T>` generic parameter syntax used in frontend (TS/JS) files.
+
 ### Extension Settings
 
 This extension contributes the following settings:
