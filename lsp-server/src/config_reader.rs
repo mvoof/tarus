@@ -180,35 +180,17 @@ fn parse_ts_rs_export_dir(
     config_path: &Path,
     src_tauri_dir: &Path,
 ) -> Option<PathBuf> {
-    let mut in_env_section = false;
+    let table: toml::Value = content.parse().ok()?;
+    let env = table.get("env")?;
+    let entry = env.get("TS_RS_EXPORT_DIR")?;
 
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        // Track section headers
-        if trimmed.starts_with('[') {
-            in_env_section = trimmed == "[env]";
-            continue;
-        }
-
-        if !in_env_section {
-            continue;
-        }
-
-        if !trimmed.starts_with("TS_RS_EXPORT_DIR") {
-            continue;
-        }
-
-        // Get everything after the `=`
-        let after_eq = trimmed.split_once('=')?.1.trim();
-
-        if after_eq.starts_with('{') {
-            // Inline-table form: { value = "some/path", relative = true }
-            let value = extract_toml_table_string(after_eq, "value")?;
-            let is_relative = extract_toml_table_bool(after_eq, "relative").unwrap_or(false);
+    match entry {
+        toml::Value::String(value) => Some(normalize_path(&src_tauri_dir.join(value))),
+        toml::Value::Table(t) => {
+            let value = t.get("value")?.as_str()?;
+            let is_relative = t.get("relative").and_then(|v| v.as_bool()).unwrap_or(false);
 
             let base: &Path = if is_relative {
-                // Base = parent of the `.cargo/` directory
                 config_path
                     .parent()
                     .and_then(|p| p.parent())
@@ -217,15 +199,10 @@ fn parse_ts_rs_export_dir(
                 src_tauri_dir
             };
 
-            return Some(normalize_path(&base.join(value)));
+            Some(normalize_path(&base.join(value)))
         }
-
-        // Plain-string form: "some/path"
-        let value = after_eq.trim_matches('"');
-        return Some(normalize_path(&src_tauri_dir.join(value)));
+        _ => None,
     }
-
-    None
 }
 
 /// Find the index of the closing `)` that matches the opening `(` at position 0.
@@ -264,27 +241,6 @@ fn extract_last_quoted_string(line: &str) -> Option<String> {
     last
 }
 
-/// Extract a string value for `key` from a TOML inline-table string, e.g. `{ value = "foo" }`.
-fn extract_toml_table_string<'a>(table_str: &'a str, key: &str) -> Option<&'a str> {
-    let pattern = format!("{key} = \"");
-    let start = table_str.find(pattern.as_str())? + pattern.len();
-    let end = table_str[start..].find('"')? + start;
-    Some(&table_str[start..end])
-}
-
-/// Extract a boolean value for `key` from a TOML inline-table string, e.g. `{ relative = true }`.
-fn extract_toml_table_bool(table_str: &str, key: &str) -> Option<bool> {
-    let pattern = format!("{key} = ");
-    let start = table_str.find(pattern.as_str())? + pattern.len();
-    let rest = &table_str[start..];
-    if rest.starts_with("true") {
-        Some(true)
-    } else if rest.starts_with("false") {
-        Some(false)
-    } else {
-        None
-    }
-}
 
 /// Resolve `..` and `.` path components without requiring the path to exist on disk.
 fn normalize_path(path: &Path) -> PathBuf {
