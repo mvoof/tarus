@@ -105,6 +105,9 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                 if let Some(d) = check_param_keys(loc, &key.name, project_index) {
                     diagnostics.push(d);
                 }
+                if let Some(d) = check_arg_count(loc, &key.name, project_index) {
+                    diagnostics.push(d);
+                }
                 if let Some(d) = check_return_type(loc, &key.name, project_index) {
                     diagnostics.push(d);
                 }
@@ -200,6 +203,56 @@ fn check_param_keys(
     }
 
     None
+}
+
+/// Validate the argument count of a `commands.methodName(...)` (`SpectaCall`) against the
+/// expected parameter count in the `CommandSchema`.
+///
+/// Only activates for `SpectaCall` behavior with a binding-sourced schema.
+///
+/// Reports:
+/// - `WARNING` for too few arguments
+/// - `WARNING` for too many arguments
+fn check_arg_count(
+    loc: &LocationInfo,
+    command_name: &str,
+    project_index: &ProjectIndex,
+) -> Option<Diagnostic> {
+    if !matches!(loc.behavior, Behavior::SpectaCall) {
+        return None;
+    }
+
+    let actual_count = loc.call_arg_count?;
+
+    let schema = project_index.get_schema(command_name)?;
+    if matches!(schema.generator, GeneratorKind::RustSource) {
+        return None;
+    }
+
+    let expected_count = schema.params.len();
+
+    if actual_count as usize == expected_count {
+        return None;
+    }
+
+    let message = format!(
+        "commands.{}() expected {} argument{} but got {}",
+        command_name,
+        expected_count,
+        if expected_count == 1 { "" } else { "s" },
+        actual_count
+    );
+
+    Some(Diagnostic {
+        range: loc.range,
+        severity: Some(DiagnosticSeverity::WARNING),
+        source: Some("tarus".to_string()),
+        code: Some(NumberOrString::String(
+            "tarus/arg-count-mismatch".to_string(),
+        )),
+        message,
+        ..Default::default()
+    })
 }
 
 /// Validate the return type of an `invoke()` call against the `CommandSchema`.

@@ -437,6 +437,205 @@ fn test_rust_source_schema_skipped_for_type_check() {
     );
 }
 
+// ─── SpectaCall argument count diagnostic tests ──────────────────────────────
+
+fn make_specta_call_finding(command: &str, line: u32, arg_count: u32) -> Finding {
+    Finding {
+        key: command.to_string(),
+        entity: EntityType::Command,
+        behavior: Behavior::SpectaCall,
+        range: Range {
+            start: Position { line, character: 0 },
+            end: Position {
+                line,
+                character: command.len() as u32,
+            },
+        },
+        call_arg_count: Some(arg_count),
+        call_param_keys: None,
+        return_type: None,
+        call_name_end: None,
+        type_arg_range: None,
+    }
+}
+
+/// Too many arguments → WARNING.
+#[test]
+fn test_specta_call_too_many_args_warning() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "create_user",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        // 3 args but schema expects 2
+        findings: vec![make_specta_call_finding("create_user", 5, 3)],
+    });
+
+    index.add_schema(make_schema(
+        "create_user",
+        &[("name", "string"), ("age", "number")],
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    let arg_diag = diags
+        .iter()
+        .find(|d| d.message.contains("expected 2 arguments but got 3"));
+    assert!(
+        arg_diag.is_some(),
+        "Expected arg count mismatch diagnostic, got: {diags:?}"
+    );
+}
+
+/// Too few arguments → WARNING.
+#[test]
+fn test_specta_call_too_few_args_warning() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "create_user",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        // 1 arg but schema expects 2
+        findings: vec![make_specta_call_finding("create_user", 5, 1)],
+    });
+
+    index.add_schema(make_schema(
+        "create_user",
+        &[("name", "string"), ("age", "number")],
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    let arg_diag = diags
+        .iter()
+        .find(|d| d.message.contains("expected 2 arguments but got 1"));
+    assert!(
+        arg_diag.is_some(),
+        "Expected arg count mismatch diagnostic, got: {diags:?}"
+    );
+}
+
+/// Correct argument count → no diagnostic.
+#[test]
+fn test_specta_call_correct_args_no_warning() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "get_user",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_specta_call_finding("get_user", 5, 1)],
+    });
+
+    index.add_schema(make_schema(
+        "get_user",
+        &[("id", "number")],
+        GeneratorKind::Specta,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags.iter().all(|d| !d.message.contains("argument")),
+        "Correct arg count should produce no diagnostic, got: {diags:?}"
+    );
+}
+
+/// Zero args for zero-param command → no diagnostic.
+#[test]
+fn test_specta_call_zero_args_no_warning() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "ping",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        findings: vec![make_specta_call_finding("ping", 5, 0)],
+    });
+
+    index.add_schema(make_schema("ping", &[], GeneratorKind::Specta));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags.iter().all(|d| !d.message.contains("argument")),
+        "Zero args for zero-param command should produce no diagnostic, got: {diags:?}"
+    );
+}
+
+/// RustSource schema is skipped for arg count check.
+#[test]
+fn test_specta_call_rust_source_skipped() {
+    let index = ProjectIndex::new();
+    let path = test_path("app.ts");
+
+    index.add_file(FileIndex {
+        path: test_path("lib.rs"),
+        findings: vec![create_finding(
+            "greet",
+            EntityType::Command,
+            Behavior::Definition,
+            0,
+        )],
+    });
+    index.add_file(FileIndex {
+        path: path.clone(),
+        // Wrong count but RustSource schema → should be ignored
+        findings: vec![make_specta_call_finding("greet", 5, 5)],
+    });
+
+    // Need bindings so has_bindings_files() is true
+    index.add_type_alias(
+        "SomeType".to_string(),
+        "{ x: number }".to_string(),
+        test_path("types.ts"),
+    );
+
+    index.add_schema(make_schema(
+        "greet",
+        &[("name", "string")],
+        GeneratorKind::RustSource,
+    ));
+
+    let diags = compute_file_diagnostics(&path, &index);
+    assert!(
+        diags.iter().all(|d| !d.message.contains("argument")),
+        "RustSource schema should not trigger arg count diagnostic, got: {diags:?}"
+    );
+}
+
 // ─── Return type diagnostic tests ────────────────────────────────────────────
 
 fn make_call_with_return_type(command: &str, line: u32, return_type: &str) -> Finding {
