@@ -5,6 +5,7 @@ on:
     tags:
       - "v*"
       - "!v*-preview"
+      - "!v*-pre-release"
 
 jobs:
   build:
