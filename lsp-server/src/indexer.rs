@@ -743,13 +743,20 @@ impl ProjectIndex {
 
         // Cache miss - compute
         let locations = self.map.get(key).map(|v| v.clone()).unwrap_or_default();
+        // Events with an EventSchema from a binding generator are known to exist
+        // on the Rust side (e.g. specta typed events use `StructName(...).emit_to()`
+        // which isn't captured as a string-based emit Finding).
+        let has_event_schema = key.entity == EntityType::Event
+            && self.event_schemas.get(&key.name).is_some();
         let info = DiagnosticInfo {
             has_definition: locations.iter().any(|l| l.behavior == Behavior::Definition),
             has_calls: locations
                 .iter()
                 .any(|l| matches!(l.behavior, Behavior::Call | Behavior::SpectaCall)),
-            has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit),
-            has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen),
+            has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit)
+                || has_event_schema,
+            has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen)
+                || has_event_schema,
         };
 
         // Store in cache

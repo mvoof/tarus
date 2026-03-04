@@ -183,6 +183,62 @@ mod typescript_parser_tests {
     }
 
     #[test]
+    fn test_parse_ts_specta_events_global() {
+        let content = load_fixture("typescript/specta_events.ts");
+        let path = test_path("specta_events.ts");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let file_index = result.unwrap();
+
+        let events: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Event)
+            .collect();
+
+        // globalEvent: 3 global (listen, emit, once) + 1 window listen + 1 window emit = 5
+        let global_listens: Vec<_> = events
+            .iter()
+            .filter(|f| f.key == "global-event" && f.behavior == Behavior::Listen)
+            .collect();
+        assert_eq!(
+            global_listens.len(),
+            2,
+            "Expected 2 listen for global-event (listen + once)"
+        );
+
+        let global_emits: Vec<_> = events
+            .iter()
+            .filter(|f| f.key == "global-event" && f.behavior == Behavior::Emit)
+            .collect();
+        assert_eq!(global_emits.len(), 1, "Expected 1 emit for global-event");
+
+        // myCustomEvent → my-custom-event
+        let custom_events: Vec<_> = events
+            .iter()
+            .filter(|f| f.key == "my-custom-event")
+            .collect();
+        assert_eq!(
+            custom_events.len(),
+            2,
+            "Expected 2 findings for my-custom-event"
+        );
+
+        // userProfileUpdated → user-profile-updated
+        let profile_events: Vec<_> = events
+            .iter()
+            .filter(|f| f.key == "user-profile-updated")
+            .collect();
+        assert_eq!(
+            profile_events.len(),
+            1,
+            "Expected 1 finding for user-profile-updated"
+        );
+    }
+
+    #[test]
     fn test_parse_ts_emit_listen() {
         let content = load_fixture("typescript/emit.ts");
         let path = test_path("emit.ts");
@@ -232,6 +288,37 @@ mod javascript_parser_tests {
             .collect();
 
         assert!(!invokes.is_empty(), "Expected invoke calls in JavaScript");
+    }
+
+    #[test]
+    fn test_parse_js_specta_events() {
+        let content = load_fixture("javascript/specta_events.js");
+        let path = test_path("specta_events.js");
+
+        let result = tree_parser::parse(&path, &content);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let file_index = result.unwrap();
+
+        let events: Vec<_> = file_index
+            .findings
+            .iter()
+            .filter(|f| f.entity == EntityType::Event)
+            .collect();
+
+        assert_eq!(events.len(), 3, "Expected 3 specta event findings in JS");
+
+        let global_listens: Vec<_> = events
+            .iter()
+            .filter(|f| f.key == "global-event" && f.behavior == Behavior::Listen)
+            .collect();
+        assert_eq!(global_listens.len(), 1);
+
+        let global_emits: Vec<_> = events
+            .iter()
+            .filter(|f| f.key == "global-event" && f.behavior == Behavior::Emit)
+            .collect();
+        assert_eq!(global_emits.len(), 1);
     }
 
     #[test]

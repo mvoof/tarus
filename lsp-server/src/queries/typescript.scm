@@ -118,3 +118,27 @@
     property: (property_identifier) @specta_method_name)
   (#eq? @_specta_obj "commands")
 ) @specta_call
+
+; === SPECTA EVENTS (events.eventName.listen/emit/once(...)) ===
+
+; Global: events.globalEvent.listen(handler)
+(call_expression
+  function: (member_expression
+    object: (member_expression
+      object: (identifier) @_specta_events_obj
+      property: (property_identifier) @specta_event_name)
+    property: (property_identifier) @specta_event_method)
+  (#eq? @_specta_events_obj "events")
+) @specta_event_call
+
+; Window-targeted: events.globalEvent(appWindow).listen(handler)
+(call_expression
+  function: (member_expression
+    object: (call_expression
+      function: (member_expression
+        object: (identifier) @_specta_events_obj
+        property: (property_identifier) @specta_event_name)
+      arguments: (arguments))
+    property: (property_identifier) @specta_event_method)
+  (#eq? @_specta_events_obj "events")
+) @specta_event_call

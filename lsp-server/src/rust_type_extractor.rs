@@ -208,6 +208,38 @@ fn try_extract_command_schemas_from_node(
     Ok(schemas)
 }
 
+/// Check if a struct has a derive attribute containing `Event` (covers both
+/// `tauri_specta::Event` and its common alias `SpectaEvent`).
+#[must_use]
+pub fn has_specta_event_derive(struct_node: tree_sitter::Node<'_>, content: &str) -> bool {
+    let Some(parent) = struct_node.parent() else {
+        return false;
+    };
+
+    let mut cursor = parent.walk();
+    let children: Vec<_> = parent.children(&mut cursor).collect();
+
+    let Some(struct_idx) = children.iter().position(|n| n.id() == struct_node.id()) else {
+        return false;
+    };
+
+    for sibling in children[..struct_idx].iter().rev() {
+        let kind = sibling.kind();
+        if kind == "attribute_item" {
+            let text = sibling.utf8_text(content.as_bytes()).unwrap_or("");
+            if text.contains("derive") && text.contains("Event") {
+                return true;
+            }
+        } else if kind == "line_comment" || kind == "block_comment" {
+            // Skip comments between attributes
+        } else {
+            break;
+        }
+    }
+
+    false
+}
+
 /// Check if a function node has a `#[tauri::command]` or `#[command]` attribute
 /// among its immediately-preceding siblings, skipping other attribute items and comments.
 #[must_use]

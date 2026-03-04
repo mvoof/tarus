@@ -68,6 +68,35 @@ pub fn is_position_in_range(pos: Position, range: Range) -> bool {
     true
 }
 
+/// Convert a camelCase or `PascalCase` identifier to `kebab-case`
+///
+/// Examples:
+/// - `globalEvent` → `global-event`
+/// - `myCustomEvent` → `my-custom-event`
+/// - `ping` → `ping`
+#[must_use]
+pub fn camel_to_kebab(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 4);
+    let chars: Vec<char> = s.chars().collect();
+
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch.is_ascii_uppercase() {
+            let prev_is_lower = i > 0 && chars[i - 1].is_ascii_lowercase();
+            let next_is_lower = chars.get(i + 1).is_some_and(char::is_ascii_lowercase);
+            let prev_is_upper = i > 0 && chars[i - 1].is_ascii_uppercase();
+
+            if prev_is_lower || (next_is_lower && prev_is_upper) {
+                result.push('-');
+            }
+            result.push(ch.to_ascii_lowercase());
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
 /// Convert LSP character offset (UTF-16 code units) to byte index in a string
 #[must_use]
 pub fn lsp_character_to_byte_index(line: &str, character: usize) -> usize {
