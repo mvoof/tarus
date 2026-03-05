@@ -7,8 +7,7 @@ use common_fixtures::load_fixture;
 use common_paths::test_path;
 use lsp_server::bindings_reader::{parse_specta_bindings, parse_ts_rs_types, parse_typegen_types};
 use lsp_server::file_processor::process_file_content;
-use lsp_server::indexer::{GeneratorKind, ProjectIndex};
-use lsp_server::scanner::detect_generator_kind;
+use lsp_server::indexer::{DiscoveredGenerator, GeneratorKind, ProjectIndex};
 use lsp_server::utils::camel_to_snake;
 
 // ============================================================
@@ -201,50 +200,17 @@ export interface SimpleModel {
 }
 
 // ============================================================
-// Generator detection
-// ============================================================
-
-#[test]
-fn test_detect_ts_rs_kind() {
-    let content = load_fixture("bindings/ts_rs_types.ts");
-    let kind = detect_generator_kind(&content);
-    assert_eq!(kind, Some(GeneratorKind::TsRs));
-}
-
-#[test]
-fn test_detect_specta_kind() {
-    let content = load_fixture("bindings/specta_bindings.ts");
-    let kind = detect_generator_kind(&content);
-    assert_eq!(kind, Some(GeneratorKind::Specta));
-}
-
-#[test]
-fn test_detect_typegen_kind() {
-    let content = load_fixture("bindings/typegen_bindings.ts");
-    let kind = detect_generator_kind(&content);
-    assert_eq!(kind, Some(GeneratorKind::Typegen));
-}
-
-#[test]
-fn test_detect_none_for_regular() {
-    let content = r#"
-import { invoke } from '@tauri-apps/api';
-const result = await invoke('get_user');
-"#;
-    let kind = detect_generator_kind(content);
-    assert!(
-        kind.is_none(),
-        "Regular TS file should not be detected as a generator"
-    );
-}
-
-// ============================================================
 // Phase 4: File processor routing
 // ============================================================
 
 #[test]
 fn test_process_specta_file_populates_schema() {
     let index = ProjectIndex::new();
+    index.set_generator_bindings(vec![DiscoveredGenerator {
+        kind: GeneratorKind::Specta,
+        output_path: test_path("specta_bindings.ts"),
+        is_directory: false,
+    }]);
     let content = load_fixture("bindings/specta_bindings.ts");
     let path = test_path("specta_bindings.ts");
 
@@ -262,6 +228,11 @@ fn test_process_specta_file_populates_schema() {
 #[test]
 fn test_process_ts_rs_file_populates_type_aliases() {
     let index = ProjectIndex::new();
+    index.set_generator_bindings(vec![DiscoveredGenerator {
+        kind: GeneratorKind::TsRs,
+        output_path: test_path("ts_rs_types.ts"),
+        is_directory: false,
+    }]);
     let content = load_fixture("bindings/ts_rs_types.ts");
     let path = test_path("ts_rs_types.ts");
 
@@ -296,6 +267,11 @@ fn test_rust_file_populates_rust_source_schema() {
 #[test]
 fn test_bindings_schema_overrides_rust_source() {
     let index = ProjectIndex::new();
+    index.set_generator_bindings(vec![DiscoveredGenerator {
+        kind: GeneratorKind::Specta,
+        output_path: test_path("specta.ts"),
+        is_directory: false,
+    }]);
 
     // First, process the Rust file (produces RustSource schema)
     let rust_content = load_fixture("rust/typed_commands.rs");

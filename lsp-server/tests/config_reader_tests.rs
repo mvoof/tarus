@@ -383,6 +383,70 @@ fn test_typegen_not_found_without_plugin_section() {
     );
 }
 
+// ─── Standalone specta-typescript ─────────────────────────────────────────
+
+#[test]
+fn test_specta_typescript_export_to() {
+    let root = tmp("specta_ts_standalone");
+    let src_tauri = setup_workspace(&root);
+    let src = src_tauri.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("main.rs"),
+        r#"
+use specta_typescript::Typescript;
+fn main() {
+    Typescript::default()
+        .export_to("../src/bindings.ts", &types)
+        .expect("Failed to export");
+}
+"#,
+    )
+    .unwrap();
+
+    let gens = discover_generators(&root);
+    let _ = fs::remove_dir_all(&root);
+
+    let st = gens
+        .iter()
+        .find(|g| g.kind == GeneratorKind::TsRs && !g.is_directory);
+    assert!(st.is_some(), "should find specta-typescript as TsRs (file)");
+    let g = st.unwrap();
+    assert!(
+        g.output_path.ends_with("src/bindings.ts"),
+        "path was: {}",
+        g.output_path.display()
+    );
+}
+
+#[test]
+fn test_specta_typescript_not_found_without_import() {
+    let root = tmp("specta_ts_no_import");
+    let src_tauri = setup_workspace(&root);
+    let src = src_tauri.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("main.rs"),
+        r#"
+fn main() {
+    something.export_to("../src/bindings.ts", &types).unwrap();
+}
+"#,
+    )
+    .unwrap();
+
+    let gens = discover_generators(&root);
+    let _ = fs::remove_dir_all(&root);
+
+    // Should not match because content doesn't contain "specta_typescript"
+    assert!(
+        !gens
+            .iter()
+            .any(|g| g.kind == GeneratorKind::TsRs && !g.is_directory),
+        "should not find specta-typescript without specta_typescript in content"
+    );
+}
+
 // ─── Combined ────────────────────────────────────────────────────────────
 
 #[test]

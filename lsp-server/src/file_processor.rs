@@ -2,7 +2,6 @@
 
 use crate::bindings_reader;
 use crate::indexer::{GeneratorKind, ProjectIndex};
-use crate::scanner::detect_generator_kind;
 use crate::tree_parser;
 use std::path::{Path, PathBuf};
 
@@ -32,16 +31,8 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
         return false;
     }
 
-    // Check if this is a generated bindings file before running the normal parser.
-    // Prefer config-based routing; fall back to content-based detection only when no
-    // generator configs have been discovered (e.g. during tests or on first open).
-    let generator_kind = project_index.get_generator_for_file(path).or_else(|| {
-        if project_index.generator_bindings.read().unwrap().is_empty() {
-            detect_generator_kind(content)
-        } else {
-            None
-        }
-    });
+    // Check if this is a generated bindings file via config-based discovery.
+    let generator_kind = project_index.get_generator_for_file(path);
 
     if let Some(kind) = generator_kind {
         process_bindings_file(path, content, kind, project_index);
