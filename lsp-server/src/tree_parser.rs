@@ -163,10 +163,7 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
         // Process specta typed event emit: GlobalEvent(payload).emit_to(&app)
         if let Some(emit_idx) = specta_emit_struct_idx {
             if let Some(cap) = m.captures.iter().find(|c| c.index == emit_idx) {
-                let struct_name = cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
+                let struct_name = cap.node.utf8_text(content.as_bytes()).unwrap_or_default();
                 if struct_name.starts_with(|c: char| c.is_ascii_uppercase()) {
                     let kebab_name = crate::utils::camel_to_kebab(struct_name);
                     findings.push(Finding {
@@ -182,6 +179,7 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                         return_type: None,
                         call_name_end: None,
                         type_arg_range: None,
+                        codegen_origin: None,
                     });
                 }
                 continue;
@@ -213,6 +211,7 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                         return_type: None,
                         call_name_end: None,
                         type_arg_range: None,
+                        codegen_origin: None,
                     });
                 }
                 continue;
@@ -243,6 +242,7 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                         return_type: None,
                         call_name_end: None,
                         type_arg_range: None,
+                        codegen_origin: None,
                     });
                 }
                 continue;
@@ -278,6 +278,7 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                         return_type: None,
                         call_name_end: None,
                         type_arg_range: None,
+                        codegen_origin: None,
                     });
                 }
             }
@@ -474,6 +475,7 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         return_type,
                         call_name_end,
                         type_arg_range,
+                        codegen_origin: None,
                     });
                 }
             }
@@ -519,6 +521,7 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         return_type: None,
                         call_name_end: None,
                         type_arg_range: None,
+                        codegen_origin: None,
                     });
                 }
             }
@@ -551,6 +554,7 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                     return_type: None,
                     call_name_end: None,
                     type_arg_range: None,
+                    codegen_origin: None,
                 });
             }
         }
@@ -596,6 +600,7 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         return_type: None,
                         call_name_end: None,
                         type_arg_range: None,
+                        codegen_origin: Some(crate::indexer::GeneratorKind::Specta),
                     });
                 }
             }
@@ -832,10 +837,7 @@ fn extract_rust_findings(
         // Process specta typed event emit: GlobalEvent(payload).emit_to(&app)
         if let Some(emit_idx) = specta_emit_struct_idx {
             if let Some(cap) = m.captures.iter().find(|c| c.index == emit_idx) {
-                let struct_name = cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
+                let struct_name = cap.node.utf8_text(content.as_bytes()).unwrap_or_default();
                 if struct_name.starts_with(|c: char| c.is_ascii_uppercase()) {
                     let kebab_name = crate::utils::camel_to_kebab(struct_name);
                     findings.push(Finding {
@@ -851,6 +853,7 @@ fn extract_rust_findings(
                         return_type: None,
                         call_name_end: None,
                         type_arg_range: None,
+                        codegen_origin: None,
                     });
                 }
                 continue;
@@ -882,6 +885,7 @@ fn extract_rust_findings(
                         return_type: None,
                         call_name_end: None,
                         type_arg_range: None,
+                        codegen_origin: None,
                     });
                 }
                 continue;
@@ -911,6 +915,7 @@ fn extract_rust_findings(
                         return_type: None,
                         call_name_end: None,
                         type_arg_range: None,
+                        codegen_origin: None,
                     });
                 }
                 continue;
@@ -945,6 +950,7 @@ fn extract_rust_findings(
                         return_type: None,
                         call_name_end: None,
                         type_arg_range: None,
+                        codegen_origin: None,
                     });
                 }
             }

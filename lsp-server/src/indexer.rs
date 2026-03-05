@@ -56,15 +56,16 @@ pub struct CommandSchema {
 /// A single occurrence in a file (parser result)
 #[derive(Debug, Clone)]
 pub struct Finding {
-    pub key: String,                          // Name ("save_file")
-    pub entity: EntityType,                   // Command or Event
-    pub behavior: Behavior,                   // Call, Emit, Listen
-    pub range: Range,                         // Coordinates
-    pub call_arg_count: Option<u32>,          // For SpectaCall: positional arg count
-    pub call_param_keys: Option<Vec<String>>, // For Call: object literal keys in second arg
-    pub return_type: Option<String>,          // For Call with generics: invoke<T>() type argument
-    pub call_name_end: Option<Position>,      // End of "invoke" identifier (for inserting <T>)
-    pub type_arg_range: Option<Range>,        // Range of <T> in invoke<T>() (for replacing)
+    pub key: String,                           // Name ("save_file")
+    pub entity: EntityType,                    // Command or Event
+    pub behavior: Behavior,                    // Call, Emit, Listen
+    pub range: Range,                          // Coordinates
+    pub call_arg_count: Option<u32>,           // For SpectaCall: positional arg count
+    pub call_param_keys: Option<Vec<String>>,  // For Call: object literal keys in second arg
+    pub return_type: Option<String>,           // For Call with generics: invoke<T>() type argument
+    pub call_name_end: Option<Position>,       // End of "invoke" identifier (for inserting <T>)
+    pub type_arg_range: Option<Range>,         // Range of <T> in invoke<T>() (for replacing)
+    pub codegen_origin: Option<GeneratorKind>, // Set when call site is from typed codegen (e.g. specta events API)
 }
 
 #[derive(Debug)]
@@ -91,6 +92,7 @@ pub struct LocationInfo {
     pub return_type: Option<String>,
     pub call_name_end: Option<Position>,
     pub type_arg_range: Option<Range>,
+    pub codegen_origin: Option<GeneratorKind>,
 }
 
 #[derive(Debug)]
@@ -199,6 +201,7 @@ impl ProjectIndex {
                 return_type: finding.return_type,
                 call_name_end: finding.call_name_end,
                 type_arg_range: finding.type_arg_range,
+                codegen_origin: finding.codegen_origin,
             };
 
             self.map.entry(key.clone()).or_default().push(info);
@@ -746,8 +749,8 @@ impl ProjectIndex {
         // Events with an EventSchema from a binding generator are known to exist
         // on the Rust side (e.g. specta typed events use `StructName(...).emit_to()`
         // which isn't captured as a string-based emit Finding).
-        let has_event_schema = key.entity == EntityType::Event
-            && self.event_schemas.get(&key.name).is_some();
+        let has_event_schema =
+            key.entity == EntityType::Event && self.event_schemas.get(&key.name).is_some();
         let info = DiagnosticInfo {
             has_definition: locations.iter().any(|l| l.behavior == Behavior::Definition),
             has_calls: locations

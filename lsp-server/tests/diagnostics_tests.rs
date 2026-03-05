@@ -27,6 +27,7 @@ fn create_finding(key: &str, entity: EntityType, behavior: Behavior, line: u32) 
         return_type: None,
         call_name_end: None,
         type_arg_range: None,
+        codegen_origin: None,
     }
 }
 
@@ -232,6 +233,7 @@ fn make_call_finding(command: &str, line: u32, param_keys: Vec<&str>) -> Finding
         return_type: None,
         call_name_end: None,
         type_arg_range: None,
+        codegen_origin: None,
     }
 }
 
@@ -456,6 +458,7 @@ fn make_specta_call_finding(command: &str, line: u32, arg_count: u32) -> Finding
         return_type: None,
         call_name_end: None,
         type_arg_range: None,
+        codegen_origin: None,
     }
 }
 
@@ -655,6 +658,7 @@ fn make_call_with_return_type(command: &str, line: u32, return_type: &str) -> Fi
         return_type: Some(return_type.to_string()),
         call_name_end: None,
         type_arg_range: None,
+        codegen_origin: None,
     }
 }
 
@@ -1011,6 +1015,7 @@ fn make_event_finding(event: &str, behavior: Behavior, line: u32) -> Finding {
         return_type: None,
         call_name_end: None,
         type_arg_range: None,
+        codegen_origin: None,
     }
 }
 
@@ -1036,6 +1041,7 @@ fn make_event_finding_with_type(
         return_type: Some(return_type.to_string()),
         call_name_end: None,
         type_arg_range: None,
+        codegen_origin: None,
     }
 }
 

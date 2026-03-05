@@ -365,6 +365,11 @@ fn check_event_payload_type(
         return None;
     }
 
+    // Typed codegen APIs (e.g. specta events.X.listen) already provide type safety — skip
+    if loc.codegen_origin.is_some() {
+        return None;
+    }
+
     let schema = project_index.get_event_schema(event_name)?;
 
     // RustSource schemas are allowed only when the payload type has a known binding
