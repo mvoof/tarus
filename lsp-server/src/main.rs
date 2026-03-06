@@ -1,15 +1,4 @@
 #![warn(clippy::all, clippy::pedantic)]
-#![allow(clippy::missing_panics_doc)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::mutable_key_type)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::manual_let_else)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::struct_excessive_bools)]
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::enum_variant_names)]
-#![allow(clippy::question_mark)]
 
 use dashmap::DashMap;
 use std::collections::HashSet;
@@ -17,16 +6,29 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::{MessageType, Uri, InitializeParams, InitializeResult, ServerCapabilities, InitializedParams, ConfigurationParams, ConfigurationItem, GotoDefinitionParams, GotoDefinitionResponse, ReferenceParams, Location, CodeLensParams, CodeLens, HoverParams, Hover, CodeActionParams, CodeActionResponse, DocumentSymbolParams, DocumentSymbolResponse, WorkspaceSymbolParams, OneOf, SymbolInformation, WorkspaceSymbol, CompletionParams, CompletionResponse, DidOpenTextDocumentParams, DidChangeTextDocumentParams, DidSaveTextDocumentParams};
+use tower_lsp_server::lsp_types::{
+    CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, CompletionParams,
+    CompletionResponse, ConfigurationItem, ConfigurationParams, DidChangeTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
+    ReferenceParams, ServerCapabilities, SymbolInformation, Uri, WorkspaceSymbol,
+    WorkspaceSymbolParams,
+};
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
 // Refactored modules
+mod bindings_reader;
 mod capabilities;
+mod config_reader;
 mod file_processor;
 mod indexer;
+mod rust_type_extractor;
 mod scanner;
 mod syntax;
 mod tree_parser;
+mod ts_tree_utils;
+mod utils;
 
 use capabilities::{build_server_capabilities, diagnostics};
 use indexer::{IndexKey, ProjectIndex};
@@ -69,9 +71,8 @@ impl Backend {
     }
 
     async fn publish_diagnostics_for_file(&self, path: &PathBuf) {
-        let uri = match Uri::from_file_path(path) {
-            Some(u) => u,
-            None => return,
+        let Some(uri) = Uri::from_file_path(path) else {
+            return;
         };
 
         let diagnostics = diagnostics::compute_file_diagnostics(path, &self.project_index);
@@ -125,6 +126,7 @@ impl LanguageServer for Backend {
         })
     }
 
+    #[allow(clippy::too_many_lines)] // sequential init steps; splitting hurts readability
     async fn initialized(&self, _: InitializedParams) {
         if !self.is_ready() {
             return;
@@ -164,6 +166,7 @@ impl LanguageServer for Backend {
             // Handle referenceLimit
             if let Some(settings) = iter.next() {
                 if let Some(limit) = settings.as_u64() {
+                    #[allow(clippy::cast_possible_truncation)] // config value; always small
                     self.project_index
                         .reference_limit
                         .store(limit as usize, Ordering::Relaxed);
@@ -178,10 +181,36 @@ impl LanguageServer for Backend {
             }
         }
 
-        let root = match self.workspace_root.get() {
-            Some(r) => r,
-            None => return,
+        let Some(root) = self.workspace_root.get() else {
+            return;
         };
+
+        // Discover type generators from project configuration files
+        let generators = config_reader::discover_generators(root);
+
+        if generators.is_empty() {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    "TARUS: No type generator configurations found. Using content-based detection as fallback.",
+                )
+                .await;
+        } else {
+            for g in &generators {
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        &format!(
+                            "TARUS: Detected {:?} generator → {}",
+                            g.kind,
+                            g.output_path.display()
+                        ),
+                    )
+                    .await;
+            }
+        }
+
+        self.project_index.set_generator_bindings(generators);
 
         let root_clone = root.clone();
         let project_index_clone = self.project_index.clone();
@@ -401,7 +430,11 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         self.log_dev_info("➡️ Request: Completion").await;
 
-        let result = capabilities::completion::handle_completion(&params, &self.project_index, &self.document_cache);
+        let result = capabilities::completion::handle_completion(
+            &params,
+            &self.project_index,
+            &self.document_cache,
+        );
 
         if let Some(ref response) = result {
             match response {

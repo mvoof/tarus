@@ -2,19 +2,70 @@ use crate::syntax::{Behavior, EntityType};
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
 use tower_lsp_server::lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Uri};
 use tower_lsp_server::UriExt;
 
+/// Which tool generated the binding file (or the source itself)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeneratorKind {
+    TsRs,
+    Specta,
+    Typegen,
+    RustSource,
+}
+
+/// A type generator discovered from project configuration files
+#[derive(Debug, Clone)]
+pub struct DiscoveredGenerator {
+    pub kind: GeneratorKind,
+    /// Absolute, normalized output path (file or directory)
+    pub output_path: PathBuf,
+    /// `true` for directory-match generators (ts-rs, typegen); `false` for exact-file generators (specta)
+    pub is_directory: bool,
+}
+
+/// A single parameter in a command schema
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamSchema {
+    pub name: String,
+    pub ts_type: String,
+}
+
+/// Type signature of a Tauri event payload, extracted from bindings or Rust source
+#[derive(Debug, Clone)]
+pub struct EventSchema {
+    pub event_name: String,
+    pub payload_type: String,
+    pub source_path: PathBuf,
+    pub generator: GeneratorKind,
+}
+
+/// Type signature of a Tauri command, extracted from bindings or Rust source
+#[derive(Debug, Clone)]
+pub struct CommandSchema {
+    pub command_name: String,
+    pub params: Vec<ParamSchema>,
+    pub return_type: String,
+    pub source_path: PathBuf,
+    pub generator: GeneratorKind,
+}
+
 /// A single occurrence in a file (parser result)
 #[derive(Debug, Clone)]
 pub struct Finding {
-    pub key: String,        // Name ("save_file")
-    pub entity: EntityType, // Command or Event
-    pub behavior: Behavior, // Call, Emit, Listen
-    pub range: Range,       // Coordinates
+    pub key: String,                           // Name ("save_file")
+    pub entity: EntityType,                    // Command or Event
+    pub behavior: Behavior,                    // Call, Emit, Listen
+    pub range: Range,                          // Coordinates
+    pub call_arg_count: Option<u32>,           // For SpectaCall: positional arg count
+    pub call_param_keys: Option<Vec<String>>,  // For Call: object literal keys in second arg
+    pub return_type: Option<String>,           // For Call with generics: invoke<T>() type argument
+    pub call_name_end: Option<Position>,       // End of "invoke" identifier (for inserting <T>)
+    pub type_arg_range: Option<Range>,         // Range of <T> in invoke<T>() (for replacing)
+    pub codegen_origin: Option<GeneratorKind>, // Set when call site is from typed codegen (e.g. specta events API)
 }
 
 #[derive(Debug)]
@@ -36,6 +87,12 @@ pub struct LocationInfo {
     pub path: PathBuf,
     pub range: Range,
     pub behavior: Behavior,
+    pub call_arg_count: Option<u32>,
+    pub call_param_keys: Option<Vec<String>>,
+    pub return_type: Option<String>,
+    pub call_name_end: Option<Position>,
+    pub type_arg_range: Option<Range>,
+    pub codegen_origin: Option<GeneratorKind>,
 }
 
 #[derive(Debug)]
@@ -53,6 +110,20 @@ pub struct ProjectIndex {
     pub parse_errors: DashMap<PathBuf, String>,
     // Configuration: Max number of individual file links to show in CodeLens before summarizing
     pub reference_limit: AtomicUsize,
+    // Schema storage: command_name -> CommandSchema
+    pub command_schemas: DashMap<String, CommandSchema>,
+    // Reverse index: source_path -> list of command names (for stale removal)
+    pub generated_file_paths: DashMap<PathBuf, Vec<String>>,
+    // Type alias storage: alias_name -> type definition string
+    pub type_aliases: DashMap<String, String>,
+    // Reverse index: source_path -> list of alias names (for stale removal)
+    pub generated_alias_paths: DashMap<PathBuf, Vec<String>>,
+    // Event schema storage: event_name -> EventSchema
+    pub event_schemas: DashMap<String, EventSchema>,
+    // Reverse index: source_path -> list of event names (for stale removal)
+    pub generated_event_paths: DashMap<PathBuf, Vec<String>>,
+    // Generators discovered from project configuration files
+    pub generator_bindings: RwLock<Vec<DiscoveredGenerator>>,
 }
 
 impl Default for ProjectIndex {
@@ -65,6 +136,13 @@ impl Default for ProjectIndex {
             diagnostic_info_cache: DashMap::new(),
             parse_errors: DashMap::new(),
             reference_limit: AtomicUsize::new(3),
+            command_schemas: DashMap::new(),
+            generated_file_paths: DashMap::new(),
+            type_aliases: DashMap::new(),
+            generated_alias_paths: DashMap::new(),
+            event_schemas: DashMap::new(),
+            generated_event_paths: DashMap::new(),
+            generator_bindings: RwLock::new(Vec::new()),
         }
     }
 }
@@ -78,15 +156,15 @@ impl ProjectIndex {
     /// Search for a key by cursor position (Reverse Lookup)
     pub fn get_key_at_position(
         &self,
-        path: &PathBuf,
+        path: &Path,
         position: Position,
     ) -> Option<(IndexKey, LocationInfo)> {
-        let keys_in_file = self.file_map.get(path)?;
+        let keys_in_file = self.file_map.get(&path.to_path_buf())?;
 
         for key in keys_in_file.value() {
             if let Some(locations) = self.map.get(key) {
                 for loc in locations.value() {
-                    if loc.path == *path && Self::is_position_in_range(position, loc.range) {
+                    if loc.path == path && crate::utils::is_position_in_range(position, loc.range) {
                         return Some((key.clone(), loc.clone()));
                     }
                 }
@@ -94,30 +172,6 @@ impl ProjectIndex {
         }
 
         None
-    }
-
-    /// Helper for checking if the cursor is inside a range
-    fn is_position_in_range(pos: Position, range: Range) -> bool {
-        // LSP Range inclusive start, exclusive end
-        if pos.line < range.start.line || pos.line > range.end.line {
-            return false;
-        }
-
-        // If one line
-        if range.start.line == range.end.line {
-            return pos.character >= range.start.character && pos.character < range.end.character;
-        }
-
-        // If multi-line range
-        if pos.line == range.start.line {
-            return pos.character >= range.start.character;
-        }
-
-        if pos.line == range.end.line {
-            return pos.character < range.end.character;
-        }
-
-        true
     }
 
     /// Appends (or overwrites) the parsing results of a single file
@@ -129,7 +183,7 @@ impl ProjectIndex {
         // Clear old data about this file so that there are no duplicates
         self.remove_file(&file_index.path);
 
-        let mut keys_in_this_file = Vec::new();
+        let mut keys_in_this_file = std::collections::HashSet::new();
         let path_ref = file_index.path;
 
         for finding in file_index.findings {
@@ -142,19 +196,28 @@ impl ProjectIndex {
                 path: path_ref.clone(),
                 range: finding.range,
                 behavior: finding.behavior,
+                call_arg_count: finding.call_arg_count,
+                call_param_keys: finding.call_param_keys,
+                return_type: finding.return_type,
+                call_name_end: finding.call_name_end,
+                type_arg_range: finding.type_arg_range,
+                codegen_origin: finding.codegen_origin,
             };
 
             self.map.entry(key.clone()).or_default().push(info);
 
-            keys_in_this_file.push(key);
+            keys_in_this_file.insert(key);
         }
 
-        self.file_map.insert(path_ref, keys_in_this_file);
+        let keys_vec: Vec<_> = keys_in_this_file.iter().cloned().collect();
+        self.file_map.insert(path_ref, keys_vec);
 
         // Invalidate caches
         *self.command_names_cache.write().unwrap() = None;
         *self.event_names_cache.write().unwrap() = None;
-        self.diagnostic_info_cache.clear();
+        for key in &keys_in_this_file {
+            self.diagnostic_info_cache.remove(key);
+        }
     }
 
     /// Deletes all entries associated with a specific file.
@@ -162,12 +225,12 @@ impl ProjectIndex {
     /// # Panics
     ///
     /// Panics if the cache lock is poisoned (only occurs if another thread panicked while holding the lock)
-    pub fn remove_file(&self, path: &PathBuf) {
+    pub fn remove_file(&self, path: &Path) {
         // If the file has already been indexed...
-        if let Some((_, keys)) = self.file_map.remove(path) {
+        if let Some((_, keys)) = self.file_map.remove(&path.to_path_buf()) {
             for key in keys {
                 self.map.entry(key.clone()).and_modify(|locs| {
-                    locs.retain(|loc| loc.path != *path);
+                    locs.retain(|loc| loc.path != path);
                 });
 
                 // If the list becomes empty, you can remove the key from the map,
@@ -175,16 +238,17 @@ impl ProjectIndex {
                 if self.map.get(&key).is_some_and(|locs| locs.is_empty()) {
                     self.map.remove(&key);
                 }
+
+                self.diagnostic_info_cache.remove(&key);
             }
 
             // Invalidate caches
             *self.command_names_cache.write().unwrap() = None;
             *self.event_names_cache.write().unwrap() = None;
-            self.diagnostic_info_cache.clear();
         }
 
         // Also remove parse errors for this file
-        self.parse_errors.remove(path);
+        self.parse_errors.remove(&path.to_path_buf());
     }
 
     /// Store a parse error for a file
@@ -193,8 +257,128 @@ impl ProjectIndex {
     }
 
     /// Get parse error for a file (if any)
-    pub fn get_parse_error(&self, path: &PathBuf) -> Option<String> {
-        self.parse_errors.get(path).map(|e| e.value().clone())
+    pub fn get_parse_error(&self, path: &Path) -> Option<String> {
+        self.parse_errors
+            .get(&path.to_path_buf())
+            .map(|e| e.value().clone())
+    }
+
+    /// Store a command schema (replaces any existing schema for the same command name)
+    pub fn add_schema(&self, schema: CommandSchema) {
+        let path = schema.source_path.clone();
+        let name = schema.command_name.clone();
+        self.command_schemas.insert(name.clone(), schema);
+        self.generated_file_paths
+            .entry(path)
+            .or_default()
+            .push(name);
+    }
+
+    /// Remove all schemas associated with a specific file
+    pub fn remove_schemas_for_file(&self, path: &Path) {
+        if let Some((_, names)) = self.generated_file_paths.remove(&path.to_path_buf()) {
+            for name in names {
+                self.command_schemas.remove(&name);
+            }
+        }
+    }
+
+    /// Retrieve a command schema by command name
+    pub fn get_schema(&self, name: &str) -> Option<CommandSchema> {
+        self.command_schemas.get(name).map(|v| v.clone())
+    }
+
+    /// Returns true if at least one binding file (Specta / ts-rs / typegen) has been indexed.
+    ///
+    /// Used to gate type-level diagnostics: type checking is only meaningful when
+    /// a generated bindings file is present in the workspace.
+    pub fn has_bindings_files(&self) -> bool {
+        self.command_schemas.iter().any(|e| {
+            matches!(
+                e.value().generator,
+                GeneratorKind::Specta | GeneratorKind::TsRs | GeneratorKind::Typegen
+            )
+        }) || !self.type_aliases.is_empty()
+            || self.event_schemas.iter().any(|e| {
+                matches!(
+                    e.value().generator,
+                    GeneratorKind::Specta | GeneratorKind::TsRs | GeneratorKind::Typegen
+                )
+            })
+    }
+
+    /// Replace the list of config-discovered generators.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned (only if another thread panicked while holding it).
+    pub fn set_generator_bindings(&self, bindings: Vec<DiscoveredGenerator>) {
+        *self.generator_bindings.write().unwrap() = bindings;
+    }
+
+    /// Return the `GeneratorKind` for a given file path based on config-discovered generators.
+    ///
+    /// For directory-match generators the path must be inside the output directory.
+    /// For exact-file generators the path must equal the output file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned (only if another thread panicked while holding it).
+    pub fn get_generator_for_file(&self, path: &Path) -> Option<GeneratorKind> {
+        let bindings = self.generator_bindings.read().unwrap();
+        for b in bindings.iter() {
+            if b.is_directory {
+                if path.starts_with(&b.output_path) {
+                    return Some(b.kind);
+                }
+            } else if path == b.output_path {
+                return Some(b.kind);
+            }
+        }
+        None
+    }
+
+    /// Store a type alias (name -> definition string)
+    pub fn add_type_alias(&self, name: String, def: String, path: PathBuf) {
+        self.type_aliases.insert(name.clone(), def);
+        self.generated_alias_paths
+            .entry(path)
+            .or_default()
+            .push(name);
+    }
+
+    /// Remove all type aliases associated with a specific file
+    pub fn remove_type_aliases_for_file(&self, path: &Path) {
+        if let Some((_, names)) = self.generated_alias_paths.remove(&path.to_path_buf()) {
+            for name in names {
+                self.type_aliases.remove(&name);
+            }
+        }
+    }
+
+    /// Store an event schema (replaces any existing schema for the same event name)
+    pub fn add_event_schema(&self, schema: EventSchema) {
+        let path = schema.source_path.clone();
+        let name = schema.event_name.clone();
+        self.event_schemas.insert(name.clone(), schema);
+        self.generated_event_paths
+            .entry(path)
+            .or_default()
+            .push(name);
+    }
+
+    /// Remove all event schemas associated with a specific file
+    pub fn remove_event_schemas_for_file(&self, path: &Path) {
+        if let Some((_, names)) = self.generated_event_paths.remove(&path.to_path_buf()) {
+            for name in names {
+                self.event_schemas.remove(&name);
+            }
+        }
+    }
+
+    /// Retrieve an event schema by event name
+    pub fn get_event_schema(&self, name: &str) -> Option<EventSchema> {
+        self.event_schemas.get(name).map(|v| v.clone())
     }
 
     /// Retrieves all locations associated with a specific entity
@@ -208,11 +392,11 @@ impl ProjectIndex {
     }
 
     /// Preparing data for `CodeLens`
-    pub fn get_lens_data(&self, path: &PathBuf) -> Vec<(Range, String, Vec<LocationInfo>)> {
+    pub fn get_lens_data(&self, path: &Path) -> Vec<(Range, String, Vec<LocationInfo>)> {
         let mut result = Vec::new();
 
         // Collect keys
-        let Some(keys) = self.file_map.get(path) else {
+        let Some(keys) = self.file_map.get(&path.to_path_buf()) else {
             return result;
         };
 
@@ -230,13 +414,13 @@ impl ProjectIndex {
 
             // Find where exactly in the CURRENT file this key is located
             let current_file_locations: Vec<&LocationInfo> =
-                all_locations.iter().filter(|l| l.path == *path).collect();
+                all_locations.iter().filter(|l| l.path == path).collect();
 
             // Define "Targets" - where the lens should point
             // These are all the locations MINUS the current file (so as not to reference itself)
             let targets: Vec<LocationInfo> = all_locations
                 .iter()
-                .filter(|l| l.path != *path) // Exclude the current file
+                .filter(|l| l.path != path) // Exclude the current file
                 .cloned()
                 .collect();
 
@@ -259,116 +443,85 @@ impl ProjectIndex {
                     }
                 }
 
+                let limit = self.reference_limit.load(Ordering::Relaxed);
+
                 if is_current_rust {
                     // Rust Logic: Show frontend files separately
-
-                    // Group by file path
-                    let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-                    for t in frontend_targets.iter() {
-                        files_map.entry(t.path.clone()).or_default().push(t.clone());
-                    }
-
-                    let limit = self.reference_limit.load(Ordering::Relaxed);
-
-                    if files_map.len() <= limit {
-                        // If <= limit files, show distinct link for EACH file
-                        let mut sorted_files: Vec<_> = files_map.into_iter().collect();
-                        // Sort for consistency
-                        sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        for (fpath, locs) in sorted_files {
-                            let fname = fpath
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-
-                            result.push((my_loc.range, format!("Go to {}", fname), locs));
-                        }
-                    } else {
-                        // If > limit files, show summary
-                        result.push((
-                            my_loc.range,
-                            format!("{} references", frontend_targets.len()),
-                            frontend_targets.clone(),
-                        ));
-                    }
+                    Self::push_file_lenses(
+                        &mut result,
+                        my_loc.range,
+                        frontend_targets,
+                        limit,
+                        "references",
+                    );
                 } else {
                     // Frontend Logic: "Go to Rust" + "Go to others"
-
-                    let limit = self.reference_limit.load(Ordering::Relaxed);
-
                     // 1. Link to Rust (if exists)
-
-                    if !rust_targets.is_empty() {
-                        // Group by file path
-                        let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-                        for t in rust_targets.iter() {
-                            files_map.entry(t.path.clone()).or_default().push(t.clone());
-                        }
-
-                        if files_map.len() <= limit {
-                            // If <= limit files, show distinct link for EACH file
-                            let mut sorted_files: Vec<_> = files_map.into_iter().collect();
-                            sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-                            for (fpath, locs) in sorted_files {
-                                let fname = fpath
-                                    .file_name()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-
-                                result.push((my_loc.range, format!("Go to {}", fname), locs));
-                            }
-                        } else {
-                            // If > limit files, show summary
-                            result.push((
-                                my_loc.range,
-                                format!("{} rust refs", rust_targets.len()),
-                                rust_targets,
-                            ));
-                        }
-                    }
-
+                    Self::push_file_lenses(
+                        &mut result,
+                        my_loc.range,
+                        rust_targets,
+                        limit,
+                        "rust refs",
+                    );
                     // 2. Links to other frontend files
-                    // Group by file path
-                    let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
-
-                    for t in frontend_targets.iter() {
-                        files_map.entry(t.path.clone()).or_default().push(t.clone());
-                    }
-
-                    if files_map.len() <= limit {
-                        // If <= limit files, show distinct link for EACH file
-                        let mut sorted_files: Vec<_> = files_map.into_iter().collect();
-                        sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        for (fpath, locs) in sorted_files {
-                            let fname = fpath
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-
-                            result.push((my_loc.range, format!("Go to {}", fname), locs));
-                        }
-                    } else {
-                        // If > limit files, show summary
-                        result.push((
-                            my_loc.range,
-                            format!("{} references", frontend_targets.len()),
-                            frontend_targets,
-                        ));
-                    }
+                    Self::push_file_lenses(
+                        &mut result,
+                        my_loc.range,
+                        frontend_targets,
+                        limit,
+                        "references",
+                    );
                 }
             }
         }
         result
     }
 
+    fn push_file_lenses(
+        result: &mut Vec<(Range, String, Vec<LocationInfo>)>,
+        range: Range,
+        targets: Vec<LocationInfo>,
+        limit: usize,
+        summary_label: &str,
+    ) {
+        if targets.is_empty() {
+            return;
+        }
+
+        // Group by file path
+        let mut files_map: HashMap<PathBuf, Vec<LocationInfo>> = HashMap::new();
+        for t in &targets {
+            files_map.entry(t.path.clone()).or_default().push(t.clone());
+        }
+
+        if files_map.len() <= limit {
+            // If <= limit files, show distinct link for EACH file
+            let mut sorted_files: Vec<_> = files_map.into_iter().collect();
+            // Sort for consistency
+            sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+            for (fpath, locs) in sorted_files {
+                let fname = fpath
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                result.push((range, format!("Go to {fname}"), locs));
+            }
+        } else {
+            // If > limit files, show summary
+            result.push((
+                range,
+                format!("{} {}", targets.len(), summary_label),
+                targets,
+            ));
+        }
+    }
+
     /// Generates a report only for a specific file (delta update)
-    pub fn file_report(&self, path: &PathBuf) -> String {
+    pub fn file_report(&self, path: &Path) -> String {
         let filename = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -378,7 +531,7 @@ impl ProjectIndex {
 
         let _ = writeln!(report_message, "\n📝 === UPDATE REPORT: {filename} ===");
 
-        let Some(keys) = self.file_map.get(path) else {
+        let Some(keys) = self.file_map.get(&path.to_path_buf()) else {
             return format!("📝 File update: {filename:?} (No Tarus keys found)");
         };
 
@@ -391,7 +544,7 @@ impl ProjectIndex {
         for key in &keys_clone {
             if let Some(locs) = self.map.get(key) {
                 let file_locs: Vec<LocationInfo> =
-                    locs.iter().filter(|l| l.path == *path).cloned().collect();
+                    locs.iter().filter(|l| l.path == path).cloned().collect();
 
                 if !file_locs.is_empty() {
                     delta_map.insert(key.clone(), file_locs);
@@ -408,7 +561,7 @@ impl ProjectIndex {
         report_message.push_str("\n📄 === 2. REVERSE FILE MAP (Delta Subset) ===\n");
 
         let mut delta_file_map: HashMap<PathBuf, Vec<IndexKey>> = HashMap::new();
-        delta_file_map.insert(path.clone(), keys_clone);
+        delta_file_map.insert(path.to_path_buf(), keys_clone);
 
         let _ = writeln!(report_message, "{delta_file_map:#?}");
 
@@ -443,10 +596,10 @@ impl ProjectIndex {
     }
 
     /// Get document symbols for outline view
-    pub fn get_document_symbols(&self, path: &PathBuf) -> Vec<SymbolInformation> {
+    pub fn get_document_symbols(&self, path: &Path) -> Vec<SymbolInformation> {
         let mut symbols = Vec::new();
 
-        let Some(keys) = self.file_map.get(path) else {
+        let Some(keys) = self.file_map.get(&path.to_path_buf()) else {
             return symbols;
         };
 
@@ -456,7 +609,7 @@ impl ProjectIndex {
 
         for key in keys.value() {
             if let Some(locations) = self.map.get(key) {
-                for loc in locations.iter().filter(|l| l.path == *path) {
+                for loc in locations.iter().filter(|l| l.path == path) {
                     let kind = match key.entity {
                         EntityType::Command => SymbolKind::FUNCTION,
                         EntityType::Event => SymbolKind::EVENT,
@@ -466,6 +619,7 @@ impl ProjectIndex {
                     let behavior_label = match loc.behavior {
                         Behavior::Definition => "command",
                         Behavior::Call => "invoke",
+                        Behavior::SpectaCall => "commands",
                         Behavior::Emit => "emit",
                         Behavior::Listen => "listen",
                     };
@@ -516,6 +670,7 @@ impl ProjectIndex {
                 let behavior_label = match loc.behavior {
                     Behavior::Definition => "command",
                     Behavior::Call => "invoke",
+                    Behavior::SpectaCall => "commands",
                     Behavior::Emit => "emit",
                     Behavior::Listen => "listen",
                 };
@@ -590,11 +745,20 @@ impl ProjectIndex {
 
         // Cache miss - compute
         let locations = self.map.get(key).map(|v| v.clone()).unwrap_or_default();
+        // Events with an EventSchema from a binding generator are known to exist
+        // on the Rust side (e.g. specta typed events use `StructName(...).emit_to()`
+        // which isn't captured as a string-based emit Finding).
+        let has_event_schema =
+            key.entity == EntityType::Event && self.event_schemas.get(&key.name).is_some();
         let info = DiagnosticInfo {
             has_definition: locations.iter().any(|l| l.behavior == Behavior::Definition),
-            has_calls: locations.iter().any(|l| l.behavior == Behavior::Call),
-            has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit),
-            has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen),
+            has_calls: locations
+                .iter()
+                .any(|l| matches!(l.behavior, Behavior::Call | Behavior::SpectaCall)),
+            has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit)
+                || has_event_schema,
+            has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen)
+                || has_event_schema,
         };
 
         // Store in cache
