@@ -1,5 +1,11 @@
 ## Change Log
 
+### [0.6.1]
+
+- **Specta Event Support:** Navigation, CodeLens, hover, references, and diagnostics for tauri-specta's typed event API (`events.X.listen/emit/once`).
+- **Standalone specta-typescript:** Added discovery for `specta-typescript` crate (`Typescript::default().export_to(...)`) alongside existing `tauri-specta` support.
+- **Removed header-based detection:** Binding files are now discovered exclusively via project config parsing — more reliable, no false positives.
+
 ### [0.6.0]
 
 - **Cross-Type Diagnostics:** Real-time type checking for commands and events using generated binding files from [tauri-specta](https://github.com/specta-rs/tauri-specta), [ts-rs](https://github.com/Aleph-Alpha/ts-rs), and [tauri-typegen](https://github.com/thwbh/tauri-typegen).
