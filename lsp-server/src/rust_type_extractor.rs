@@ -428,11 +428,12 @@ fn try_extract_event_schemas_from_node(
 
 /// Try to resolve the type of an emit payload argument.
 ///
-/// Handles simple cases:
+/// Handles:
 /// - String literal → "string"
 /// - Numeric literal → "number"
 /// - Boolean literal → "boolean"
-/// - Variable reference → look up in enclosing function params
+/// - Struct expression → extract struct name
+/// - Variable reference → look up in function params, then local `let` bindings
 fn resolve_emit_payload_type(
     node: tree_sitter::Node<'_>,
     content: &str,
@@ -444,19 +445,29 @@ fn resolve_emit_payload_type(
         "string_literal" => Some("string".to_string()),
         "integer_literal" | "float_literal" => Some("number".to_string()),
         "boolean_literal" | "true" | "false" => Some("boolean".to_string()),
+        "struct_expression" => {
+            // Direct struct literal: app.emit("event", Payload { ... })
+            // First named child is the type name (type_identifier or scoped_type_identifier)
+            let name_node = node.child_by_field_name("name")?;
+            let struct_name = name_node.utf8_text(content.as_bytes()).ok()?;
+            Some(rust_type_to_ts(struct_name))
+        }
         "identifier" => {
             // Look up variable name in enclosing function parameters
             let var_name = text;
             let fn_node = find_enclosing_function(node, tree)?;
-            let params_node = fn_node.child_by_field_name("parameters")?;
 
-            // Parse params to find the type of var_name
-            for param in parse_rust_params_from_node(params_node, content) {
-                if param.name == var_name {
-                    return Some(param.ts_type);
+            // First try function parameters
+            if let Some(params_node) = fn_node.child_by_field_name("parameters") {
+                for param in parse_rust_params_from_node(params_node, content) {
+                    if param.name == var_name {
+                        return Some(param.ts_type);
+                    }
                 }
             }
-            None
+
+            // Fallback: look for local `let` binding in enclosing function body
+            resolve_local_variable_type(fn_node, var_name, content)
         }
         _ => None,
     }
@@ -474,5 +485,58 @@ fn find_enclosing_function<'a>(
         }
         current = n.parent();
     }
+    None
+}
+
+/// Resolve the type of a local variable by scanning `let` declarations in the function body.
+///
+/// Handles:
+/// - `let var: Type = ...;` → extract type annotation
+/// - `let var = StructName { ... };` → extract struct name from `struct_expression`
+fn resolve_local_variable_type(
+    fn_node: tree_sitter::Node<'_>,
+    var_name: &str,
+    content: &str,
+) -> Option<String> {
+    let body = fn_node.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+
+    for child in body.children(&mut cursor) {
+        if child.kind() != "let_declaration" {
+            continue;
+        }
+
+        // Check if the pattern matches our variable name
+        let Some(pattern) = child.child_by_field_name("pattern") else {
+            continue;
+        };
+        let Ok(pat_text) = pattern.utf8_text(content.as_bytes()) else {
+            continue;
+        };
+        if pat_text != var_name {
+            continue;
+        }
+
+        // Try type annotation first: `let payload: Payload = ...`
+        if let Some(type_node) = child.child_by_field_name("type") {
+            if let Ok(type_text) = type_node.utf8_text(content.as_bytes()) {
+                return Some(rust_type_to_ts(type_text));
+            }
+        }
+
+        // Try value: `let payload = Payload { ... }`
+        if let Some(value_node) = child.child_by_field_name("value") {
+            if value_node.kind() == "struct_expression" {
+                if let Some(name_node) = value_node.child_by_field_name("name") {
+                    if let Ok(struct_name) = name_node.utf8_text(content.as_bytes()) {
+                        return Some(rust_type_to_ts(struct_name));
+                    }
+                }
+            }
+        }
+
+        return None;
+    }
+
     None
 }

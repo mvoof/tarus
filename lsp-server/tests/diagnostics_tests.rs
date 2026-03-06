@@ -1334,3 +1334,68 @@ export async function onAppReady(
     assert!(ready.is_some(), "Should find app-ready");
     assert_eq!(ready.unwrap().payload_type, "string");
 }
+
+/// Test that extract_event_schemas resolves local variable types from `let` bindings.
+#[test]
+fn test_event_schema_local_variable_payload() {
+    let rust_code = r#"
+use tauri::AppHandle;
+
+struct Payload {
+    text: String,
+    count: u32,
+}
+
+fn setup(app: AppHandle) {
+    let payload = Payload { text: "hello".into(), count: 42 };
+    app.emit("my-event", payload).unwrap();
+}
+"#;
+
+    let schemas =
+        lsp_server::rust_type_extractor::extract_event_schemas(rust_code, &test_path("lib.rs"));
+    assert_eq!(schemas.len(), 1, "Should find 1 event schema");
+    assert_eq!(schemas[0].event_name, "my-event");
+    assert_eq!(schemas[0].payload_type, "Payload");
+}
+
+/// Test that extract_event_schemas resolves struct expressions passed directly.
+#[test]
+fn test_event_schema_direct_struct_payload() {
+    let rust_code = r#"
+use tauri::AppHandle;
+
+struct Info {
+    msg: String,
+}
+
+fn setup(app: AppHandle) {
+    app.emit("info-event", Info { msg: "hi".into() }).unwrap();
+}
+"#;
+
+    let schemas =
+        lsp_server::rust_type_extractor::extract_event_schemas(rust_code, &test_path("lib.rs"));
+    assert_eq!(schemas.len(), 1, "Should find 1 event schema");
+    assert_eq!(schemas[0].event_name, "info-event");
+    assert_eq!(schemas[0].payload_type, "Info");
+}
+
+/// Test that local variable with type annotation is resolved.
+#[test]
+fn test_event_schema_local_variable_with_type_annotation() {
+    let rust_code = r#"
+use tauri::AppHandle;
+
+fn setup(app: AppHandle) {
+    let data: MyData = get_data();
+    app.emit("data-event", data).unwrap();
+}
+"#;
+
+    let schemas =
+        lsp_server::rust_type_extractor::extract_event_schemas(rust_code, &test_path("lib.rs"));
+    assert_eq!(schemas.len(), 1, "Should find 1 event schema");
+    assert_eq!(schemas[0].event_name, "data-event");
+    assert_eq!(schemas[0].payload_type, "MyData");
+}
