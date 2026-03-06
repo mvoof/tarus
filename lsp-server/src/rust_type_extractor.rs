@@ -64,24 +64,28 @@ pub fn rust_type_to_ts(rust_type: &str) -> String {
     t.to_string()
 }
 
-/// Extract the first generic argument from a string like `T, E>` or `T>`.
-fn extract_first_generic_arg(s: &str) -> Option<&str> {
-    let mut depth = 0i32;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '<' => depth += 1,
-            '>' if depth > 0 => depth -= 1,
-            '>' => {
-                // End of the outer generic
-                return Some(s[..i].trim());
-            }
-            ',' if depth == 0 => {
-                return Some(s[..i].trim());
-            }
-            _ => {}
-        }
-    }
-    None
+/// Extract the first generic type argument from a full generic type string
+/// (e.g. `Result<fn() -> bool, String>` → `fn() -> bool`).
+///
+/// Uses tree-sitter to correctly parse complex types including function pointers,
+/// nested generics, and other Rust type syntax.
+fn extract_first_generic_arg_from_type(full_type: &str) -> Option<String> {
+    let wrapper = format!("type _X = {full_type};");
+    let tree = crate::ts_tree_utils::parse_rust(&wrapper)?;
+    let root = tree.root_node();
+
+    // Navigate: source_file > type_item > type node > type_arguments > first child type
+    let type_item = root.named_child(0)?;
+    // The type value is the last named child of type_item (after `type`, name, `=`)
+    let type_node = type_item.child_by_field_name("type")?;
+
+    // For generic types, type_node is `generic_type` with `type_arguments`
+    let type_args = type_node.child_by_field_name("type_arguments")?;
+
+    // First named child of type_arguments (skipping `<` and `,` tokens)
+    let first_arg = type_args.named_child(0)?;
+    let arg_text = &wrapper[first_arg.byte_range()];
+    Some(arg_text.to_string())
 }
 
 /// Extract command schemas from a Rust source file.
