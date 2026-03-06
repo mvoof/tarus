@@ -183,7 +183,7 @@ impl ProjectIndex {
         // Clear old data about this file so that there are no duplicates
         self.remove_file(&file_index.path);
 
-        let mut keys_in_this_file = Vec::new();
+        let mut keys_in_this_file = std::collections::HashSet::new();
         let path_ref = file_index.path;
 
         for finding in file_index.findings {
@@ -206,12 +206,11 @@ impl ProjectIndex {
 
             self.map.entry(key.clone()).or_default().push(info);
 
-            if !keys_in_this_file.contains(&key) {
-                keys_in_this_file.push(key);
-            }
+            keys_in_this_file.insert(key);
         }
 
-        self.file_map.insert(path_ref, keys_in_this_file.clone());
+        let keys_vec: Vec<_> = keys_in_this_file.iter().cloned().collect();
+        self.file_map.insert(path_ref, keys_vec);
 
         // Invalidate caches
         *self.command_names_cache.write().unwrap() = None;

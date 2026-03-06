@@ -33,30 +33,23 @@ pub fn rust_type_to_ts(rust_type: &str) -> String {
     }
 
     // Result<T, E> → T
-    if let Some(inner) = t.strip_prefix("Result<") {
-        if let Some(ok_type) = extract_first_generic_arg(inner) {
-            return rust_type_to_ts(ok_type);
+    if t.starts_with("Result<") {
+        if let Some(ok_type) = extract_first_generic_arg_from_type(t) {
+            return rust_type_to_ts(&ok_type);
         }
     }
 
     // Option<T> → T | null
-    if let Some(inner) = t.strip_prefix("Option<") {
-        if let Some(inner_str) = inner.strip_suffix('>') {
-            return format!("{} | null", rust_type_to_ts(inner_str));
-        }
-        // Handle nested generics
-        if let Some(inner_type) = extract_first_generic_arg(inner) {
-            return format!("{} | null", rust_type_to_ts(inner_type));
+    if t.starts_with("Option<") {
+        if let Some(inner_type) = extract_first_generic_arg_from_type(t) {
+            return format!("{} | null", rust_type_to_ts(&inner_type));
         }
     }
 
     // Vec<T> → T[]
-    if let Some(inner) = t.strip_prefix("Vec<") {
-        if let Some(inner_str) = inner.strip_suffix('>') {
-            return format!("{}[]", rust_type_to_ts(inner_str));
-        }
-        if let Some(inner_type) = extract_first_generic_arg(inner) {
-            return format!("{}[]", rust_type_to_ts(inner_type));
+    if t.starts_with("Vec<") {
+        if let Some(inner_type) = extract_first_generic_arg_from_type(t) {
+            return format!("{}[]", rust_type_to_ts(&inner_type));
         }
     }
 
