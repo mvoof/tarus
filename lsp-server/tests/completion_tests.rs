@@ -1,4 +1,4 @@
-use lsp_server::capabilities::completion::lsp_character_to_byte_index;
+use lsp_server::utils::lsp_character_to_byte_index;
 
 #[test]
 fn test_lsp_character_to_byte_index_basic() {

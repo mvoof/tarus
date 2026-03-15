@@ -1,5 +1,21 @@
 ## Change Log
 
+### [0.6.1]
+
+- **Specta Event Support:** Navigation, CodeLens, hover, references, and diagnostics for tauri-specta's typed event API (`events.X.listen/emit/once`).
+- **Standalone specta-typescript:** Added discovery for `specta-typescript` crate (`Typescript::default().export_to(...)`) alongside existing `tauri-specta` support.
+- **Removed header-based detection:** Binding files are now discovered exclusively via project config parsing — more reliable, no false positives.
+
+### [0.6.0]
+
+- **Cross-Type Diagnostics:** Real-time type checking for commands and events using generated binding files from [tauri-specta](https://github.com/specta-rs/tauri-specta), [ts-rs](https://github.com/Aleph-Alpha/ts-rs), and [tauri-typegen](https://github.com/thwbh/tauri-typegen).
+  - **Param-key validation:** Warns when `invoke()` call passes missing or extra parameter keys compared to the command schema.
+  - **Return type diagnostics:** Hints when `invoke()` is missing a generic type parameter, warns when it mismatches the expected return type.
+  - **Event payload diagnostics:** Hints when `emit()`/`listen()` is missing a payload type, warns on payload type mismatches.
+- **Code Actions for Types:** Quick fixes to add or correct generic type parameters on `invoke()`, `emit()`, and `listen()` calls.
+- **Binding File Auto-Detection:** Automatically discovers generated type files by reading project configuration files (`.cargo/config.toml`, `tauri.conf.json`, Rust source) — no extra configuration required.
+- **Refactoring:** Improved support for `#[tauri::command]` functions defined outside `#[cfg_attr]` instrument blocks.
+
 ### [0.5.0]
 
 - **Improved CodeLens Navigation:** Replaced generic "Go to Rust" labels with specific filenames (e.g., `Go to lib.rs`). Multiple references now appear as distinct, clickable links.

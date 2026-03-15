@@ -1,5 +1,8 @@
 # Contributing
 
+> [!NOTE]
+> Please prefer English language for all communication.
+
 **Contributions are welcome!**
 
 Please follow the steps below to keep the history clean and make reviews easier:
