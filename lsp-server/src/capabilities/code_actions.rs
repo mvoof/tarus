@@ -52,7 +52,7 @@ pub fn handle_code_action(
 
         // --- Generate Rust command stub (existing) ---
         let info = project_index.get_diagnostic_info(&key);
-        if info.has_definition {
+        if info.has_definition() {
             return None;
         }
 

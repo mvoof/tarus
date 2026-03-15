@@ -52,16 +52,33 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
         for loc in &local_locations {
             // --- Layer 1: Structural diagnostics (always active) ---
             let msg = match loc.behavior {
-                // Show on Definition if command never called
-                Behavior::Definition if !info.has_calls => Some((
-                    DiagnosticSeverity::WARNING,
-                    format!(
-                        "Command '{}' is defined but never invoked in frontend",
-                        key.name
-                    ),
-                )),
+                // Show on Definition if command/event never used
+                Behavior::Definition => {
+                    let (entity_label, usage_label, is_unused) = match key.entity {
+                        crate::syntax::EntityType::Command => {
+                            ("Command", "invoked in frontend", !info.has_calls())
+                        }
+                        crate::syntax::EntityType::Event => (
+                            "Event",
+                            "emitted or listened for",
+                            !info.has_emitters() && !info.has_listeners(),
+                        ),
+                    };
+
+                    if is_unused {
+                        Some((
+                            DiagnosticSeverity::WARNING,
+                            format!(
+                                "{entity_label} '{}' is defined but never {usage_label}",
+                                key.name
+                            ),
+                        ))
+                    } else {
+                        None
+                    }
+                }
                 // Show on FIRST Call/SpectaCall only if command not defined
-                Behavior::Call | Behavior::SpectaCall if !info.has_definition => {
+                Behavior::Call | Behavior::SpectaCall if !info.has_definition() => {
                     if first_call == Some(loc.range) {
                         Some((
                             DiagnosticSeverity::WARNING,
@@ -72,12 +89,12 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                     }
                 }
                 // Show on Listen if event never emitted
-                Behavior::Listen if !info.has_emitters => Some((
+                Behavior::Listen if !info.has_emitters() => Some((
                     DiagnosticSeverity::WARNING,
                     format!("Event '{}' is listened for but never emitted", key.name),
                 )),
                 // Show on FIRST Emit only if event never listened
-                Behavior::Emit if !info.has_listeners => {
+                Behavior::Emit if !info.has_listeners() => {
                     if first_emit == Some(loc.range) {
                         Some((
                             DiagnosticSeverity::WARNING,

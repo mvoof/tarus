@@ -191,13 +191,13 @@ fn push_diagnostic_tips(
     };
     let info = project_index.get_diagnostic_info(&key);
 
-    if entity == EntityType::Command && !info.has_definition {
+    if entity == EntityType::Command && !info.has_definition() {
         md_text.push_str("⚠️ *No backend implementation found*\n");
-    } else if entity == EntityType::Command && !info.has_calls {
+    } else if entity == EntityType::Command && !info.has_calls() {
         md_text.push_str("💡 *Defined but never called in frontend*\n");
-    } else if entity == EntityType::Event && !info.has_emitters {
+    } else if entity == EntityType::Event && !info.has_emitters() {
         md_text.push_str("💡 *Event listened for but never emitted*\n");
-    } else if entity == EntityType::Event && !info.has_listeners {
+    } else if entity == EntityType::Event && !info.has_listeners() {
         md_text.push_str("💡 *Event emitted but no listeners found*\n");
     }
 }

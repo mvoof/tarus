@@ -753,20 +753,28 @@ impl ProjectIndex {
 
         // Cache miss - compute
         let locations = self.map.get(key).map(|v| v.clone()).unwrap_or_default();
-        // Events with an EventSchema from a binding generator are known to exist
-        // on the Rust side (e.g. specta typed events use `StructName(...).emit_to()`
-        // which isn't captured as a string-based emit Finding).
-        let has_event_schema =
-            key.entity == EntityType::Event && self.event_schemas.get(&key.name).is_some();
-        let info = DiagnosticInfo {
-            has_definition: locations.iter().any(|l| l.behavior == Behavior::Definition),
-            has_calls: locations
-                .iter()
-                .any(|l| matches!(l.behavior, Behavior::Call | Behavior::SpectaCall)),
-            has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit)
-                || has_event_schema,
-            has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen)
-                || has_event_schema,
+        let has_definition = locations.iter().any(|l| l.behavior == Behavior::Definition);
+
+        let info = match key.entity {
+            EntityType::Command => DiagnosticInfo::Command {
+                has_definition,
+                has_calls: locations
+                    .iter()
+                    .any(|l| matches!(l.behavior, Behavior::Call | Behavior::SpectaCall)),
+            },
+            EntityType::Event => {
+                // Events with an EventSchema from a binding generator are known to exist
+                // on the Rust side (e.g. specta typed events use `StructName(...).emit_to()`
+                // which isn't captured as a string-based emit Finding).
+                let has_event_schema = self.event_schemas.get(&key.name).is_some();
+                DiagnosticInfo::Event {
+                    has_definition,
+                    has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit)
+                        || has_event_schema,
+                    has_listeners: locations.iter().any(|l| l.behavior == Behavior::Listen)
+                        || has_event_schema,
+                }
+            }
         };
 
         // Store in cache
@@ -778,10 +786,48 @@ impl ProjectIndex {
 
 /// Diagnostic information for a command/event
 #[derive(Clone, Debug)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct DiagnosticInfo {
-    pub has_definition: bool,
-    pub has_calls: bool,
-    pub has_emitters: bool,
-    pub has_listeners: bool,
+pub enum DiagnosticInfo {
+    Command {
+        has_definition: bool,
+        has_calls: bool,
+    },
+    Event {
+        has_definition: bool,
+        has_emitters: bool,
+        has_listeners: bool,
+    },
+}
+
+impl DiagnosticInfo {
+    #[must_use]
+    pub fn has_definition(&self) -> bool {
+        match self {
+            DiagnosticInfo::Command { has_definition, .. }
+            | DiagnosticInfo::Event { has_definition, .. } => *has_definition,
+        }
+    }
+
+    #[must_use]
+    pub fn has_calls(&self) -> bool {
+        match self {
+            DiagnosticInfo::Command { has_calls, .. } => *has_calls,
+            DiagnosticInfo::Event { .. } => false,
+        }
+    }
+
+    #[must_use]
+    pub fn has_emitters(&self) -> bool {
+        match self {
+            DiagnosticInfo::Event { has_emitters, .. } => *has_emitters,
+            DiagnosticInfo::Command { .. } => false,
+        }
+    }
+
+    #[must_use]
+    pub fn has_listeners(&self) -> bool {
+        match self {
+            DiagnosticInfo::Event { has_listeners, .. } => *has_listeners,
+            DiagnosticInfo::Command { .. } => false,
+        }
+    }
 }

@@ -58,8 +58,8 @@ fn test_undefined_command_warning() {
     };
 
     let info = index.get_diagnostic_info(&key);
-    assert!(!info.has_definition, "Command should not have definition");
-    assert!(info.has_calls, "Command should have calls");
+    assert!(!info.has_definition(), "Command should not have definition");
+    assert!(info.has_calls(), "Command should have calls");
 }
 
 #[test]
@@ -86,8 +86,8 @@ fn test_unused_command_warning() {
     };
 
     let info = index.get_diagnostic_info(&key);
-    assert!(info.has_definition, "Command should have definition");
-    assert!(!info.has_calls, "Command should not have calls");
+    assert!(info.has_definition(), "Command should have definition");
+    assert!(!info.has_calls(), "Command should not have calls");
 }
 
 #[test]
@@ -113,8 +113,8 @@ fn test_event_no_emitter() {
     };
 
     let info = index.get_diagnostic_info(&key);
-    assert!(info.has_listeners, "Event should have listeners");
-    assert!(!info.has_emitters, "Event should not have emitters");
+    assert!(info.has_listeners(), "Event should have listeners");
+    assert!(!info.has_emitters(), "Event should not have emitters");
 }
 
 #[test]
@@ -140,8 +140,8 @@ fn test_event_no_listener() {
     };
 
     let info = index.get_diagnostic_info(&key);
-    assert!(info.has_emitters, "Event should have emitters");
-    assert!(!info.has_listeners, "Event should not have listeners");
+    assert!(info.has_emitters(), "Event should have emitters");
+    assert!(!info.has_listeners(), "Event should not have listeners");
 }
 
 #[test]
@@ -175,8 +175,8 @@ fn test_complete_command_no_warnings() {
     };
 
     let info = index.get_diagnostic_info(&key);
-    assert!(info.has_definition, "Should have definition");
-    assert!(info.has_calls, "Should have calls");
+    assert!(info.has_definition(), "Should have definition");
+    assert!(info.has_calls(), "Should have calls");
 }
 
 #[test]
@@ -210,8 +210,8 @@ fn test_complete_event_no_warnings() {
     };
 
     let info = index.get_diagnostic_info(&key);
-    assert!(info.has_emitters, "Should have emitters");
-    assert!(info.has_listeners, "Should have listeners");
+    assert!(info.has_emitters(), "Should have emitters");
+    assert!(info.has_listeners(), "Should have listeners");
 }
 
 // ─── Type diagnostic tests (Phase 5) ────────────────────────────────────────
