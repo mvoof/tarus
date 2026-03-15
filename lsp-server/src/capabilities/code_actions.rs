@@ -6,7 +6,8 @@ use crate::syntax::{Behavior, EntityType};
 use std::path::{Path, PathBuf};
 use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    Position, Range, TextEdit, Uri, WorkspaceEdit,
+    DocumentChanges, OneOf, OptionalVersionedTextDocumentIdentifier, Position, Range,
+    TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
 };
 use tower_lsp_server::UriExt;
 
@@ -81,30 +82,26 @@ pub fn handle_code_action(
                 continue;
             };
 
-            // Uri has interior mutability due to caching, but we don't modify after insertion
-            #[allow(clippy::mutable_key_type)]
-            let mut changes = std::collections::HashMap::new();
-            // LSP line numbers won't exceed u32::MAX in practice
-            #[allow(clippy::cast_possible_truncation)]
-            changes.insert(
-                target_uri,
-                vec![TextEdit {
-                    range: Range {
-                        start: Position {
-                            line: candidate.insertion_line as u32,
-                            character: 0,
-                        },
-                        end: Position {
-                            line: candidate.insertion_line as u32,
-                            character: 0,
-                        },
-                    },
-                    new_text: command_template,
-                }],
-            );
-
             let workspace_edit = WorkspaceEdit {
-                changes: Some(changes),
+                document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                    text_document: OptionalVersionedTextDocumentIdentifier {
+                        uri: target_uri,
+                        version: None,
+                    },
+                    edits: vec![OneOf::Left(TextEdit {
+                        range: Range {
+                            start: Position {
+                                line: u32::try_from(candidate.insertion_line).unwrap_or(u32::MAX),
+                                character: 0,
+                            },
+                            end: Position {
+                                line: u32::try_from(candidate.insertion_line).unwrap_or(u32::MAX),
+                                character: 0,
+                            },
+                        },
+                        new_text: command_template,
+                    })],
+                }])),
                 ..Default::default()
             };
 
@@ -272,24 +269,25 @@ fn make_event_payload_action(
     };
 
     let doc_uri = params.text_document.uri.clone();
-    #[allow(clippy::mutable_key_type)]
-    let mut changes = std::collections::HashMap::new();
-    changes.insert(
-        doc_uri,
-        vec![TextEdit {
-            range: edit_range,
-            new_text,
-        }],
-    );
+    let workspace_edit = WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: doc_uri,
+                version: None,
+            },
+            edits: vec![OneOf::Left(TextEdit {
+                range: edit_range,
+                new_text,
+            })],
+        }])),
+        ..Default::default()
+    };
 
     Some(CodeAction {
         title,
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(params.context.diagnostics.clone()),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(workspace_edit),
         ..Default::default()
     })
 }
@@ -354,25 +352,25 @@ fn make_return_type_action(
     };
 
     let doc_uri = params.text_document.uri.clone();
-    // Uri has interior mutability due to caching
-    #[allow(clippy::mutable_key_type)]
-    let mut changes = std::collections::HashMap::new();
-    changes.insert(
-        doc_uri,
-        vec![TextEdit {
-            range: edit_range,
-            new_text,
-        }],
-    );
+    let workspace_edit = WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: doc_uri,
+                version: None,
+            },
+            edits: vec![OneOf::Left(TextEdit {
+                range: edit_range,
+                new_text,
+            })],
+        }])),
+        ..Default::default()
+    };
 
     Some(CodeAction {
         title,
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(params.context.diagnostics.clone()),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(workspace_edit),
         ..Default::default()
     })
 }

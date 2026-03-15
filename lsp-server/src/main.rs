@@ -166,10 +166,9 @@ impl LanguageServer for Backend {
             // Handle referenceLimit
             if let Some(settings) = iter.next() {
                 if let Some(limit) = settings.as_u64() {
-                    #[allow(clippy::cast_possible_truncation)] // config value; always small
                     self.project_index
                         .reference_limit
-                        .store(limit as usize, Ordering::Relaxed);
+                        .store(usize::try_from(limit).unwrap_or(3), Ordering::Relaxed);
 
                     self.client
                         .log_message(

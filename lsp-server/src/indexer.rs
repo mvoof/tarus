@@ -95,15 +95,19 @@ pub struct LocationInfo {
     pub codegen_origin: Option<GeneratorKind>,
 }
 
+/// A name paired with optional location information
+pub type NameLocation = (String, Option<LocationInfo>);
+
+/// Cache for command and event names
+type NameCache = Option<Vec<NameLocation>>;
+
 #[derive(Debug)]
 pub struct ProjectIndex {
     pub map: DashMap<IndexKey, Vec<LocationInfo>>,
     pub file_map: DashMap<PathBuf, Vec<IndexKey>>,
     // Caches for get_all_names() results
-    #[allow(clippy::type_complexity)]
-    command_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
-    #[allow(clippy::type_complexity)]
-    event_names_cache: RwLock<Option<Vec<(String, Option<LocationInfo>)>>>,
+    command_names_cache: RwLock<NameCache>,
+    event_names_cache: RwLock<NameCache>,
     // Cache for diagnostic info (avoids re-iterating locations)
     diagnostic_info_cache: DashMap<IndexKey, DiagnosticInfo>,
     // Parse errors by file path
@@ -624,6 +628,8 @@ impl ProjectIndex {
                         Behavior::Listen => "listen",
                     };
 
+                    // `deprecated` field is deprecated in favor of `tags`, but it's still a required
+                    // field in the `SymbolInformation` struct in this version of `lsp-types`.
                     #[allow(deprecated)]
                     symbols.push(SymbolInformation {
                         name: format!("{} ({})", key.name, behavior_label),
@@ -675,6 +681,8 @@ impl ProjectIndex {
                     Behavior::Listen => "listen",
                 };
 
+                // `deprecated` field is deprecated in favor of `tags`, but it's still a required
+                // field in the `SymbolInformation` struct in this version of `lsp-types`.
                 #[allow(deprecated)]
                 symbols.push(SymbolInformation {
                     name: format!("{} ({})", key.name, behavior_label),
@@ -682,7 +690,7 @@ impl ProjectIndex {
                     tags: None,
                     deprecated: None,
                     location: Location {
-                        uri,
+                        uri: uri.clone(),
                         range: loc.range,
                     },
                     container_name: Some(format!("{:?}", key.entity)),

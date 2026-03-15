@@ -688,8 +688,8 @@ fn count_specta_call_args(
                 .children(&mut arg_cursor)
                 .filter(|n| n.kind() != "," && n.kind() != "(" && n.kind() != ")")
                 .count();
-            #[allow(clippy::cast_possible_truncation)]
-            return count as u32;
+
+            return u32::try_from(count).unwrap_or(0);
         }
     }
 
