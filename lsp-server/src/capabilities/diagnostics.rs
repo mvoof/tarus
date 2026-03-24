@@ -12,7 +12,81 @@ use crate::indexer::{DiagnosticInfo, GeneratorKind, IndexKey, LocationInfo, Proj
 use crate::syntax::Behavior;
 use serde_json::json;
 use std::path::PathBuf;
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
+use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
+
+/// Create a diagnostic with `tarus` source and optional code/data.
+fn tarus_diagnostic(
+    range: Range,
+    severity: DiagnosticSeverity,
+    message: String,
+    code: Option<&str>,
+    data: Option<serde_json::Value>,
+) -> Diagnostic {
+    Diagnostic {
+        range,
+        severity: Some(severity),
+        source: Some("tarus".to_string()),
+        code: code.map(|c| NumberOrString::String(c.to_string())),
+        message,
+        data,
+        ..Default::default()
+    }
+}
+
+/// Build JSON data payload for type-annotation code actions (shared by return-type and event-payload).
+fn make_type_action_data(loc: &LocationInfo, expected: &str) -> serde_json::Value {
+    let mut data = json!({ "expected": expected });
+    if let Some(pos) = &loc.call_name_end {
+        data["callNameEnd"] = json!({ "line": pos.line, "character": pos.character });
+    }
+    if let Some(r) = &loc.type_arg_range {
+        data["typeArgRange"] = json!({
+            "start": { "line": r.start.line, "character": r.start.character },
+            "end": { "line": r.end.line, "character": r.end.character },
+        });
+    }
+    data
+}
+
+/// Generic type-annotation check: handles the `None`/`Some(ts_type)` match on `loc.return_type`.
+///
+/// Returns a HINT when the generic is missing, or a WARNING when the type doesn't match.
+fn check_type_annotation(
+    loc: &LocationInfo,
+    expected: &str,
+    missing_code: &str,
+    mismatch_code: &str,
+    missing_msg: String,
+    mismatch_msg: impl FnOnce(&str) -> String,
+    project_index: &ProjectIndex,
+) -> Option<Diagnostic> {
+    let data = make_type_action_data(loc, expected);
+
+    match &loc.return_type {
+        None => Some(tarus_diagnostic(
+            loc.range,
+            DiagnosticSeverity::HINT,
+            missing_msg,
+            Some(missing_code),
+            Some(data),
+        )),
+        Some(ts_type) => {
+            if ts_type == "void" || ts_type == "any" {
+                return None;
+            }
+            if types_match(ts_type, expected, project_index) {
+                return None;
+            }
+            Some(tarus_diagnostic(
+                loc.range,
+                DiagnosticSeverity::WARNING,
+                mismatch_msg(ts_type),
+                Some(mismatch_code),
+                Some(data),
+            ))
+        }
+    }
+}
 
 /// Compute diagnostics for a specific file
 pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec<Diagnostic> {
@@ -108,13 +182,7 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
             };
 
             if let Some((severity, message)) = msg {
-                diagnostics.push(Diagnostic {
-                    range: loc.range,
-                    severity: Some(severity),
-                    source: Some("tarus".to_string()),
-                    message,
-                    ..Default::default()
-                });
+                diagnostics.push(tarus_diagnostic(loc.range, severity, message, None, None));
             }
 
             // --- Layer 2: Type diagnostics (only when binding files are present) ---
@@ -181,18 +249,18 @@ fn check_param_keys(
         .collect();
 
     if !missing.is_empty() {
-        return Some(Diagnostic {
-            range: loc.range,
-            severity: Some(DiagnosticSeverity::WARNING),
-            source: Some("tarus".to_string()),
-            message: format!(
+        return Some(tarus_diagnostic(
+            loc.range,
+            DiagnosticSeverity::WARNING,
+            format!(
                 "invoke('{}') is missing required argument{}: {}",
                 command_name,
                 if missing.len() == 1 { "" } else { "s" },
                 missing.join(", ")
             ),
-            ..Default::default()
-        });
+            None,
+            None,
+        ));
     }
 
     // Unexpected extra params (present in call, absent from schema)
@@ -205,18 +273,18 @@ fn check_param_keys(
     if !extra.is_empty() {
         let mut sorted_extra = extra;
         sorted_extra.sort_unstable();
-        return Some(Diagnostic {
-            range: loc.range,
-            severity: Some(DiagnosticSeverity::WARNING),
-            source: Some("tarus".to_string()),
-            message: format!(
+        return Some(tarus_diagnostic(
+            loc.range,
+            DiagnosticSeverity::WARNING,
+            format!(
                 "invoke('{}') has unexpected argument{}: {}",
                 command_name,
                 if sorted_extra.len() == 1 { "" } else { "s" },
                 sorted_extra.join(", ")
             ),
-            ..Default::default()
-        });
+            None,
+            None,
+        ));
     }
 
     None
@@ -260,16 +328,13 @@ fn check_arg_count(
         actual_count
     );
 
-    Some(Diagnostic {
-        range: loc.range,
-        severity: Some(DiagnosticSeverity::WARNING),
-        source: Some("tarus".to_string()),
-        code: Some(NumberOrString::String(
-            "tarus/arg-count-mismatch".to_string(),
-        )),
+    Some(tarus_diagnostic(
+        loc.range,
+        DiagnosticSeverity::WARNING,
         message,
-        ..Default::default()
-    })
+        Some("tarus/arg-count-mismatch"),
+        None,
+    ))
 }
 
 /// Validate the return type of an `invoke()` call against the `CommandSchema`.
@@ -303,64 +368,19 @@ fn check_return_type(
         return None;
     }
 
-    // Build data payload for code actions
-    let make_data = || {
-        let mut data = json!({ "expected": expected });
-        if let Some(pos) = &loc.call_name_end {
-            data["callNameEnd"] = json!({ "line": pos.line, "character": pos.character });
-        }
-        if let Some(r) = &loc.type_arg_range {
-            data["typeArgRange"] = json!({
-                "start": { "line": r.start.line, "character": r.start.character },
-                "end": { "line": r.end.line, "character": r.end.character },
-            });
-        }
-        data
-    };
-
-    match &loc.return_type {
-        None => {
-            // Case A: Missing generic — invoke("cmd") without <T>
-            Some(Diagnostic {
-                range: loc.range,
-                severity: Some(DiagnosticSeverity::HINT),
-                source: Some("tarus".to_string()),
-                code: Some(NumberOrString::String(
-                    "tarus/return-type-missing".to_string(),
-                )),
-                message: format!(
-                    "invoke('{command_name}') is missing return type, expected '{expected}'"
-                ),
-                data: Some(make_data()),
-                ..Default::default()
-            })
-        }
-        Some(ts_type) => {
-            // Skip void/any — user opts out
-            if ts_type == "void" || ts_type == "any" {
-                return None;
-            }
-
-            if types_match(ts_type, expected, project_index) {
-                return None;
-            }
-
-            // Case B: Wrong generic
-            Some(Diagnostic {
-                range: loc.range,
-                severity: Some(DiagnosticSeverity::WARNING),
-                source: Some("tarus".to_string()),
-                code: Some(NumberOrString::String(
-                    "tarus/return-type-mismatch".to_string(),
-                )),
-                message: format!(
-                    "invoke<{ts_type}>('{command_name}') return type mismatch: expected '{expected}'"
-                ),
-                data: Some(make_data()),
-                ..Default::default()
-            })
-        }
-    }
+    check_type_annotation(
+        loc,
+        expected,
+        "tarus/return-type-missing",
+        "tarus/return-type-mismatch",
+        format!("invoke('{command_name}') is missing return type, expected '{expected}'"),
+        |ts_type| {
+            format!(
+                "invoke<{ts_type}>('{command_name}') return type mismatch: expected '{expected}'"
+            )
+        },
+        project_index,
+    )
 }
 
 /// Validate the payload type of an `emit()` / `listen()` / `once()` call against the `EventSchema`.
@@ -409,63 +429,19 @@ fn check_event_payload_type(
         _ => return None,
     };
 
-    // Build data payload for code actions
-    let make_data = || {
-        let mut data = json!({ "expected": expected });
-        if let Some(pos) = &loc.call_name_end {
-            data["callNameEnd"] = json!({ "line": pos.line, "character": pos.character });
-        }
-        if let Some(r) = &loc.type_arg_range {
-            data["typeArgRange"] = json!({
-                "start": { "line": r.start.line, "character": r.start.character },
-                "end": { "line": r.end.line, "character": r.end.character },
-            });
-        }
-        data
-    };
-
-    match &loc.return_type {
-        None => {
-            // Missing generic — emit("event") / listen("event") without <T>
-            Some(Diagnostic {
-                range: loc.range,
-                severity: Some(DiagnosticSeverity::HINT),
-                source: Some("tarus".to_string()),
-                code: Some(NumberOrString::String(
-                    "tarus/event-payload-missing".to_string(),
-                )),
-                message: format!(
-                    "{behavior_label}('{event_name}') is missing payload type, expected '{expected}'"
-                ),
-                data: Some(make_data()),
-                ..Default::default()
-            })
-        }
-        Some(ts_type) => {
-            if ts_type == "void" || ts_type == "any" {
-                return None;
-            }
-
-            if types_match(ts_type, expected, project_index) {
-                return None;
-            }
-
-            // Wrong generic
-            Some(Diagnostic {
-                range: loc.range,
-                severity: Some(DiagnosticSeverity::WARNING),
-                source: Some("tarus".to_string()),
-                code: Some(NumberOrString::String(
-                    "tarus/event-payload-mismatch".to_string(),
-                )),
-                message: format!(
-                    "{behavior_label}<{ts_type}>('{event_name}') payload type mismatch: expected '{expected}'"
-                ),
-                data: Some(make_data()),
-                ..Default::default()
-            })
-        }
-    }
+    check_type_annotation(
+        loc,
+        expected,
+        "tarus/event-payload-missing",
+        "tarus/event-payload-mismatch",
+        format!("{behavior_label}('{event_name}') is missing payload type, expected '{expected}'"),
+        |ts_type| {
+            format!(
+                "{behavior_label}<{ts_type}>('{event_name}') payload type mismatch: expected '{expected}'"
+            )
+        },
+        project_index,
+    )
 }
 
 /// Check if two type strings match, considering type aliases.

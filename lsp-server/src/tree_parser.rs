@@ -6,6 +6,7 @@
 use crate::indexer::{CommandSchema, EventSchema, FileIndex, Finding};
 use crate::rust_type_extractor;
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
+use crate::utils::find_capture;
 use std::collections::HashMap;
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
@@ -162,25 +163,19 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
     while let Some(m) = matches.next() {
         // Process specta typed event emit: GlobalEvent(payload).emit_to(&app)
         if let Some(emit_idx) = specta_emit_struct_idx {
-            if let Some(cap) = m.captures.iter().find(|c| c.index == emit_idx) {
+            if let Some(cap) = find_capture(m, Some(emit_idx)) {
                 let struct_name = cap.node.utf8_text(content.as_bytes()).unwrap_or_default();
                 if struct_name.starts_with(|c: char| c.is_ascii_uppercase()) {
                     let kebab_name = crate::utils::camel_to_kebab(struct_name);
-                    findings.push(Finding {
-                        key: kebab_name,
-                        entity: EntityType::Event,
-                        behavior: Behavior::Emit,
-                        range: Range {
+                    findings.push(Finding::new(
+                        kebab_name,
+                        EntityType::Event,
+                        Behavior::Emit,
+                        Range {
                             start: point_to_position(cap.node.start_position()),
                             end: point_to_position(cap.node.end_position()),
                         },
-                        call_arg_count: None,
-                        call_param_keys: None,
-                        return_type: None,
-                        call_name_end: None,
-                        type_arg_range: None,
-                        codegen_origin: None,
-                    });
+                    ));
                 }
                 continue;
             }
@@ -188,8 +183,8 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
 
         // Process struct_item — check if it has #[derive(...Event...)]
         if let (Some(sname_idx), Some(sitem_idx)) = (struct_name_idx, struct_item_idx) {
-            let name_cap = m.captures.iter().find(|c| c.index == sname_idx);
-            let item_cap = m.captures.iter().find(|c| c.index == sitem_idx);
+            let name_cap = find_capture(m, Some(sname_idx));
+            let item_cap = find_capture(m, Some(sitem_idx));
 
             if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
                 if rust_type_extractor::has_specta_event_derive(item_cap.node, content) {
@@ -198,21 +193,15 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                         .utf8_text(content.as_bytes())
                         .unwrap_or_default();
                     let kebab_name = crate::utils::camel_to_kebab(struct_name);
-                    findings.push(Finding {
-                        key: kebab_name,
-                        entity: EntityType::Event,
-                        behavior: Behavior::Definition,
-                        range: Range {
+                    findings.push(Finding::new(
+                        kebab_name,
+                        EntityType::Event,
+                        Behavior::Definition,
+                        Range {
                             start: point_to_position(name_cap.node.start_position()),
                             end: point_to_position(name_cap.node.end_position()),
                         },
-                        call_arg_count: None,
-                        call_param_keys: None,
-                        return_type: None,
-                        call_name_end: None,
-                        type_arg_range: None,
-                        codegen_origin: None,
-                    });
+                    ));
                 }
                 continue;
             }
@@ -220,8 +209,8 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
 
         // Process function_item — check if it's a #[tauri::command] via sibling walk
         if let (Some(name_idx), Some(item_idx)) = (fn_name_idx, fn_item_idx) {
-            let name_cap = m.captures.iter().find(|c| c.index == name_idx);
-            let item_cap = m.captures.iter().find(|c| c.index == item_idx);
+            let name_cap = find_capture(m, Some(name_idx));
+            let item_cap = find_capture(m, Some(item_idx));
 
             if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
                 if rust_type_extractor::has_tauri_command_attr(item_cap.node, content) {
@@ -229,21 +218,15 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                         .node
                         .utf8_text(content.as_bytes())
                         .unwrap_or_default();
-                    findings.push(Finding {
-                        key: name.to_string(),
-                        entity: EntityType::Command,
-                        behavior: Behavior::Definition,
-                        range: Range {
+                    findings.push(Finding::new(
+                        name.to_string(),
+                        EntityType::Command,
+                        Behavior::Definition,
+                        Range {
                             start: point_to_position(name_cap.node.start_position()),
                             end: point_to_position(name_cap.node.end_position()),
                         },
-                        call_arg_count: None,
-                        call_param_keys: None,
-                        return_type: None,
-                        call_name_end: None,
-                        type_arg_range: None,
-                        codegen_origin: None,
-                    });
+                    ));
                 }
                 continue;
             }
@@ -251,8 +234,8 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
 
         // Process event method calls
         if let (Some(method_idx), Some(event_idx)) = (method_name_idx, event_name_idx) {
-            let method_capture = m.captures.iter().find(|c| c.index == method_idx);
-            let event_capture = m.captures.iter().find(|c| c.index == event_idx);
+            let method_capture = find_capture(m, Some(method_idx));
+            let event_capture = find_capture(m, Some(event_idx));
 
             if let (Some(method_cap), Some(event_cap)) = (method_capture, event_capture) {
                 let method_name = method_cap
@@ -265,21 +248,15 @@ fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
                     .unwrap_or_default();
 
                 if let Some((entity, behavior)) = rust_event_patterns.get(method_name) {
-                    findings.push(Finding {
-                        key: event_name.to_string(),
-                        entity: *entity,
-                        behavior: *behavior,
-                        range: Range {
+                    findings.push(Finding::new(
+                        event_name.to_string(),
+                        *entity,
+                        *behavior,
+                        Range {
                             start: point_to_position(event_cap.node.start_position()),
                             end: point_to_position(event_cap.node.end_position()),
                         },
-                        call_arg_count: None,
-                        call_param_keys: None,
-                        return_type: None,
-                        call_name_end: None,
-                        type_arg_range: None,
-                        codegen_origin: None,
-                    });
+                    ));
                 }
             }
         }
@@ -396,8 +373,8 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
     let mut matches = cursor.matches(&query, root, content.as_bytes());
     while let Some(m) = matches.next() {
         if let (Some(imp_idx), Some(alias_idx)) = (imported_name_idx, local_alias_idx) {
-            let imported = m.captures.iter().find(|c| c.index == imp_idx);
-            let local = m.captures.iter().find(|c| c.index == alias_idx);
+            let imported = find_capture(m, Some(imp_idx));
+            let local = find_capture(m, Some(alias_idx));
 
             if let (Some(imp_cap), Some(local_cap)) = (imported, local) {
                 let imported_name = imp_cap
@@ -420,8 +397,8 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
     while let Some(m) = matches.next() {
         // Try first argument pattern (func_name + arg_value)
         if let (Some(func_idx), Some(arg_idx)) = (func_name_idx, arg_value_idx) {
-            let func_capture = m.captures.iter().find(|c| c.index == func_idx);
-            let arg_capture = m.captures.iter().find(|c| c.index == arg_idx);
+            let func_capture = find_capture(m, Some(func_idx));
+            let arg_capture = find_capture(m, Some(arg_idx));
 
             if let (Some(func_cap), Some(arg_cap)) = (func_capture, arg_capture) {
                 let func_name = func_cap
@@ -466,16 +443,15 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         type_arg_info.map(|i| adjust_range(i.type_arg_range, line_offset));
 
                     findings.push(Finding {
-                        key: arg_value.to_string(),
-                        entity: pattern.entity,
-                        behavior: pattern.behavior,
-                        range: adjust_range(range, line_offset),
-                        call_arg_count: None,
-                        call_param_keys: None,
                         return_type,
                         call_name_end,
                         type_arg_range,
-                        codegen_origin: None,
+                        ..Finding::new(
+                            arg_value.to_string(),
+                            pattern.entity,
+                            pattern.behavior,
+                            adjust_range(range, line_offset),
+                        )
                     });
                 }
             }
@@ -483,8 +459,8 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
 
         // Try second argument pattern (func_name_second + arg_value_second)
         if let (Some(func_idx), Some(arg_idx)) = (func_name_second_idx, arg_value_second_idx) {
-            let func_capture = m.captures.iter().find(|c| c.index == func_idx);
-            let arg_capture = m.captures.iter().find(|c| c.index == arg_idx);
+            let func_capture = find_capture(m, Some(func_idx));
+            let arg_capture = find_capture(m, Some(arg_idx));
 
             if let (Some(func_cap), Some(arg_cap)) = (func_capture, arg_capture) {
                 let func_name = func_cap
@@ -511,25 +487,19 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                         end: point_to_position(arg_cap.node.end_position()),
                     };
 
-                    findings.push(Finding {
-                        key: arg_value.to_string(),
-                        entity: pattern.entity,
-                        behavior: pattern.behavior,
-                        range: adjust_range(range, line_offset),
-                        call_arg_count: None,
-                        call_param_keys: None,
-                        return_type: None,
-                        call_name_end: None,
-                        type_arg_range: None,
-                        codegen_origin: None,
-                    });
+                    findings.push(Finding::new(
+                        arg_value.to_string(),
+                        pattern.entity,
+                        pattern.behavior,
+                        adjust_range(range, line_offset),
+                    ));
                 }
             }
         }
 
         // Try SpectaCall pattern (commands.methodName(...))
         if let Some(specta_idx) = specta_method_name_idx {
-            if let Some(specta_cap) = m.captures.iter().find(|c| c.index == specta_idx) {
+            if let Some(specta_cap) = find_capture(m, Some(specta_idx)) {
                 let camel_name = specta_cap
                     .node
                     .utf8_text(content.as_bytes())
@@ -545,16 +515,13 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                 let arg_count = count_specta_call_args(m, specta_call_idx, content);
 
                 findings.push(Finding {
-                    key: snake_name,
-                    entity: EntityType::Command,
-                    behavior: Behavior::SpectaCall,
-                    range: adjust_range(method_range, line_offset),
                     call_arg_count: Some(arg_count),
-                    call_param_keys: None,
-                    return_type: None,
-                    call_name_end: None,
-                    type_arg_range: None,
-                    codegen_origin: None,
+                    ..Finding::new(
+                        snake_name,
+                        EntityType::Command,
+                        Behavior::SpectaCall,
+                        adjust_range(method_range, line_offset),
+                    )
                 });
             }
         }
@@ -563,8 +530,8 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
         if let (Some(event_name_idx), Some(event_method_idx)) =
             (specta_event_name_idx, specta_event_method_idx)
         {
-            let event_name_cap = m.captures.iter().find(|c| c.index == event_name_idx);
-            let event_method_cap = m.captures.iter().find(|c| c.index == event_method_idx);
+            let event_name_cap = find_capture(m, Some(event_name_idx));
+            let event_method_cap = find_capture(m, Some(event_method_idx));
 
             if let (Some(name_cap), Some(method_cap)) = (event_name_cap, event_method_cap) {
                 let camel_name = name_cap
@@ -591,16 +558,13 @@ fn parse_frontend(content: &str, lang: LangType, line_offset: usize) -> ParseRes
                     };
 
                     findings.push(Finding {
-                        key: kebab_name,
-                        entity: EntityType::Event,
-                        behavior,
-                        range: adjust_range(name_range, line_offset),
-                        call_arg_count: None,
-                        call_param_keys: None,
-                        return_type: None,
-                        call_name_end: None,
-                        type_arg_range: None,
                         codegen_origin: Some(crate::indexer::GeneratorKind::Specta),
+                        ..Finding::new(
+                            kebab_name,
+                            EntityType::Event,
+                            behavior,
+                            adjust_range(name_range, line_offset),
+                        )
                     });
                 }
             }
@@ -630,11 +594,8 @@ fn extract_type_argument_info(
     content: &str,
 ) -> Option<TypeArgInfo> {
     // Find the call_expression node from the generic pattern captures
-    let call_node = call_generic_idx
-        .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-        .or_else(|| {
-            call_await_generic_idx.and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-        })?;
+    let call_node = find_capture(m, call_generic_idx)
+        .or_else(|| find_capture(m, call_await_generic_idx))?;
 
     // Walk children to find type_arguments
     let node = call_node.node;
@@ -671,7 +632,7 @@ fn count_specta_call_args(
     let Some(call_idx) = specta_call_idx else {
         return 0;
     };
-    let Some(call_cap) = m.captures.iter().find(|c| c.index == call_idx) else {
+    let Some(call_cap) = find_capture(m, Some(call_idx)) else {
         return 0;
     };
 
@@ -836,25 +797,19 @@ fn extract_rust_findings(
     while let Some(m) = matches.next() {
         // Process specta typed event emit: GlobalEvent(payload).emit_to(&app)
         if let Some(emit_idx) = specta_emit_struct_idx {
-            if let Some(cap) = m.captures.iter().find(|c| c.index == emit_idx) {
+            if let Some(cap) = find_capture(m, Some(emit_idx)) {
                 let struct_name = cap.node.utf8_text(content.as_bytes()).unwrap_or_default();
                 if struct_name.starts_with(|c: char| c.is_ascii_uppercase()) {
                     let kebab_name = crate::utils::camel_to_kebab(struct_name);
-                    findings.push(Finding {
-                        key: kebab_name,
-                        entity: EntityType::Event,
-                        behavior: Behavior::Emit,
-                        range: Range {
+                    findings.push(Finding::new(
+                        kebab_name,
+                        EntityType::Event,
+                        Behavior::Emit,
+                        Range {
                             start: point_to_position(cap.node.start_position()),
                             end: point_to_position(cap.node.end_position()),
                         },
-                        call_arg_count: None,
-                        call_param_keys: None,
-                        return_type: None,
-                        call_name_end: None,
-                        type_arg_range: None,
-                        codegen_origin: None,
-                    });
+                    ));
                 }
                 continue;
             }
@@ -862,8 +817,8 @@ fn extract_rust_findings(
 
         // Process struct_item — check if it has #[derive(...Event...)]
         if let (Some(sname_idx), Some(sitem_idx)) = (struct_name_idx, struct_item_idx) {
-            let name_cap = m.captures.iter().find(|c| c.index == sname_idx);
-            let item_cap = m.captures.iter().find(|c| c.index == sitem_idx);
+            let name_cap = find_capture(m, Some(sname_idx));
+            let item_cap = find_capture(m, Some(sitem_idx));
 
             if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
                 if rust_type_extractor::has_specta_event_derive(item_cap.node, content) {
@@ -872,29 +827,23 @@ fn extract_rust_findings(
                         .utf8_text(content.as_bytes())
                         .unwrap_or_default();
                     let kebab_name = crate::utils::camel_to_kebab(struct_name);
-                    findings.push(Finding {
-                        key: kebab_name,
-                        entity: EntityType::Event,
-                        behavior: Behavior::Definition,
-                        range: Range {
+                    findings.push(Finding::new(
+                        kebab_name,
+                        EntityType::Event,
+                        Behavior::Definition,
+                        Range {
                             start: point_to_position(name_cap.node.start_position()),
                             end: point_to_position(name_cap.node.end_position()),
                         },
-                        call_arg_count: None,
-                        call_param_keys: None,
-                        return_type: None,
-                        call_name_end: None,
-                        type_arg_range: None,
-                        codegen_origin: None,
-                    });
+                    ));
                 }
                 continue;
             }
         }
 
         if let (Some(name_idx), Some(item_idx)) = (fn_name_idx, fn_item_idx) {
-            let name_cap = m.captures.iter().find(|c| c.index == name_idx);
-            let item_cap = m.captures.iter().find(|c| c.index == item_idx);
+            let name_cap = find_capture(m, Some(name_idx));
+            let item_cap = find_capture(m, Some(item_idx));
 
             if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
                 if rust_type_extractor::has_tauri_command_attr(item_cap.node, content) {
@@ -902,29 +851,23 @@ fn extract_rust_findings(
                         .node
                         .utf8_text(content.as_bytes())
                         .unwrap_or_default();
-                    findings.push(Finding {
-                        key: name.to_string(),
-                        entity: EntityType::Command,
-                        behavior: Behavior::Definition,
-                        range: Range {
+                    findings.push(Finding::new(
+                        name.to_string(),
+                        EntityType::Command,
+                        Behavior::Definition,
+                        Range {
                             start: point_to_position(name_cap.node.start_position()),
                             end: point_to_position(name_cap.node.end_position()),
                         },
-                        call_arg_count: None,
-                        call_param_keys: None,
-                        return_type: None,
-                        call_name_end: None,
-                        type_arg_range: None,
-                        codegen_origin: None,
-                    });
+                    ));
                 }
                 continue;
             }
         }
 
         if let (Some(method_idx), Some(event_idx)) = (method_name_idx, event_name_idx) {
-            let method_capture = m.captures.iter().find(|c| c.index == method_idx);
-            let event_capture = m.captures.iter().find(|c| c.index == event_idx);
+            let method_capture = find_capture(m, Some(method_idx));
+            let event_capture = find_capture(m, Some(event_idx));
 
             if let (Some(method_cap), Some(event_cap)) = (method_capture, event_capture) {
                 let method_name = method_cap
@@ -937,21 +880,15 @@ fn extract_rust_findings(
                     .unwrap_or_default();
 
                 if let Some((entity, behavior)) = rust_event_patterns.get(method_name) {
-                    findings.push(Finding {
-                        key: event_name.to_string(),
-                        entity: *entity,
-                        behavior: *behavior,
-                        range: Range {
+                    findings.push(Finding::new(
+                        event_name.to_string(),
+                        *entity,
+                        *behavior,
+                        Range {
                             start: point_to_position(event_cap.node.start_position()),
                             end: point_to_position(event_cap.node.end_position()),
                         },
-                        call_arg_count: None,
-                        call_param_keys: None,
-                        return_type: None,
-                        call_name_end: None,
-                        type_arg_range: None,
-                        codegen_origin: None,
-                    });
+                    ));
                 }
             }
         }

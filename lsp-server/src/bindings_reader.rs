@@ -7,7 +7,7 @@
 
 use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
 use crate::ts_tree_utils::parse_ts;
-use crate::utils::camel_to_snake;
+use crate::utils::{camel_to_snake, capture_text, find_capture};
 use std::collections::HashMap;
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
@@ -44,33 +44,24 @@ pub fn parse_specta_bindings(content: &str, source_path: &Path) -> Vec<CommandSc
     let mut schemas = Vec::new();
 
     while let Some(m) = matches.next() {
-        // Only match `commands` variable
-        let var_name = var_name_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-            .unwrap_or("");
+        let bytes = content.as_bytes();
 
+        // Only match `commands` variable
+        let var_name = capture_text(m, var_name_idx, bytes);
         if var_name != "commands" {
             continue;
         }
 
-        let method_name = method_name_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-            .unwrap_or("");
-
+        let method_name = capture_text(m, method_name_idx, bytes);
         if method_name.is_empty() {
             continue;
         }
 
-        let params = params_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+        let params = find_capture(m, params_idx)
             .map(|cap| extract_params_from_node(cap.node, content))
             .unwrap_or_default();
 
-        let return_type_node = return_type_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .map(|cap| cap.node);
+        let return_type_node = find_capture(m, return_type_idx).map(|cap| cap.node);
 
         let return_type = return_type_node.map_or_else(
             || "void".to_string(),
@@ -202,17 +193,9 @@ fn parse_type_aliases_and_interfaces(
         let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
 
         while let Some(m) = matches.next() {
-            let name = name_idx
-                .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-                .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("")
-                .to_string();
-
-            let def = value_idx
-                .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-                .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("")
-                .to_string();
+            let bytes = content.as_bytes();
+            let name = capture_text(m, name_idx, bytes).to_string();
+            let def = capture_text(m, value_idx, bytes).to_string();
 
             if !name.is_empty() && !def.is_empty() {
                 aliases.insert(name, def);
@@ -232,15 +215,8 @@ fn parse_type_aliases_and_interfaces(
             let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
 
             while let Some(m) = matches.next() {
-                let name = name_idx
-                    .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-                    .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-                    .unwrap_or("")
-                    .to_string();
-
-                let body_node = body_idx
-                    .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-                    .map(|cap| cap.node);
+                let name = capture_text(m, name_idx, content.as_bytes()).to_string();
+                let body_node = find_capture(m, body_idx).map(|cap| cap.node);
 
                 if let Some(body) = body_node {
                     if !name.is_empty() {
@@ -330,25 +306,20 @@ pub fn parse_specta_events(content: &str, source_path: &Path) -> Vec<EventSchema
     let mut schemas = Vec::new();
 
     while let Some(m) = matches.next() {
-        let fn_name = fn_name_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-            .unwrap_or("");
+        let bytes = content.as_bytes();
 
+        let fn_name = capture_text(m, fn_name_idx, bytes);
         if fn_name != "__makeEvents__" {
             continue;
         }
 
         // Extract type map: {TypeName: PayloadType, ...}
-        let type_map = type_obj_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+        let type_map = find_capture(m, type_obj_idx)
             .map(|cap| extract_type_object_entries(cap.node, content))
             .unwrap_or_default();
 
         // Extract value map: {TypeName: "event-name", ...}
-        let value_node = value_obj_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .map(|cap| cap.node);
+        let value_node = find_capture(m, value_obj_idx).map(|cap| cap.node);
 
         if let Some(vnode) = value_node {
             let mut vcursor = vnode.walk();
@@ -448,24 +419,15 @@ pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchem
     let mut schemas = Vec::new();
 
     while let Some(m) = matches.next() {
-        let fn_name = fn_name_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-            .unwrap_or("");
+        let bytes = content.as_bytes();
 
+        let fn_name = capture_text(m, fn_name_idx, bytes);
         if fn_name != "listen" {
             continue;
         }
 
-        let type_arg = type_arg_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-            .unwrap_or("");
-
-        let event_name = event_name_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-            .unwrap_or("");
+        let type_arg = capture_text(m, type_arg_idx, bytes);
+        let event_name = capture_text(m, event_name_idx, bytes);
 
         if event_name.is_empty() || type_arg.is_empty() {
             continue;

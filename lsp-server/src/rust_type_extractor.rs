@@ -1,6 +1,7 @@
 //! Extract parameter and return type information from Rust #[`tauri::command`] functions
 
 use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
+use crate::utils::{capture_text, find_capture};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
@@ -146,39 +147,26 @@ fn try_extract_command_schemas_from_node(
 
     while let Some(m) = matches.next() {
         // Check that fn_item has a #[tauri::command] attribute
-        if let Some(item_idx) = fn_item_idx {
-            if let Some(item_cap) = m.captures.iter().find(|c| c.index == item_idx) {
-                let fn_node = item_cap.node;
-                if !has_tauri_command_attr(fn_node, content) {
-                    continue;
-                }
+        if let Some(item_cap) = find_capture(m, fn_item_idx) {
+            if !has_tauri_command_attr(item_cap.node, content) {
+                continue;
             }
         }
 
-        let fn_name = fn_name_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-            .unwrap_or("")
-            .to_string();
-
+        let fn_name = capture_text(m, fn_name_idx, content.as_bytes()).to_string();
         if fn_name.is_empty() {
             continue;
         }
 
         // Extract params
-        let params = if let Some(params_idx) = fn_params_idx {
-            if let Some(cap) = m.captures.iter().find(|c| c.index == params_idx) {
-                parse_rust_params_from_node(cap.node, content)
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+        let params = find_capture(m, fn_params_idx)
+            .map(|cap| parse_rust_params_from_node(cap.node, content))
+            .unwrap_or_default();
 
         // Extract return type
-        let return_type = if let Some(ret_idx) = fn_return_idx {
-            if let Some(cap) = m.captures.iter().find(|c| c.index == ret_idx) {
+        let return_type = find_capture(m, fn_return_idx).map_or_else(
+            || "void".to_string(),
+            |cap| {
                 let ret_text = cap
                     .node
                     .utf8_text(content.as_bytes())
@@ -186,12 +174,8 @@ fn try_extract_command_schemas_from_node(
                     .trim()
                     .to_string();
                 rust_type_to_ts(&ret_text)
-            } else {
-                "void".to_string()
-            }
-        } else {
-            "void".to_string()
-        };
+            },
+        );
 
         schemas.push(CommandSchema {
             command_name: fn_name,
@@ -392,17 +376,12 @@ fn try_extract_event_schemas_from_node(
     let mut matches = cursor.matches(&query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
-        let event_name = event_name_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-            .unwrap_or("");
-
+        let event_name = capture_text(m, event_name_idx, content.as_bytes());
         if event_name.is_empty() || !seen_events.insert(event_name.to_string()) {
             continue;
         }
 
-        let payload_type = payload_arg_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+        let payload_type = find_capture(m, payload_arg_idx)
             .and_then(|cap| {
                 let node = cap.node;
                 // Try to resolve type from the payload expression

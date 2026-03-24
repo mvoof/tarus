@@ -68,6 +68,25 @@ pub struct Finding {
     pub codegen_origin: Option<GeneratorKind>, // Set when call site is from typed codegen (e.g. specta events API)
 }
 
+impl Finding {
+    /// Create a new Finding with only required fields; optional fields default to `None`.
+    #[must_use]
+    pub fn new(key: String, entity: EntityType, behavior: Behavior, range: Range) -> Self {
+        Self {
+            key,
+            entity,
+            behavior,
+            range,
+            call_arg_count: None,
+            call_param_keys: None,
+            return_type: None,
+            call_name_end: None,
+            type_arg_range: None,
+            codegen_origin: None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct FileIndex {
     pub path: PathBuf,

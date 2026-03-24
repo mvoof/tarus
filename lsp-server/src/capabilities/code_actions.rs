@@ -210,41 +210,24 @@ fn rank_and_limit(mut candidates: Vec<RustFileCandidate>) -> Vec<RustFileCandida
     candidates.into_iter().take(5).collect()
 }
 
-/// Build a code action to fix or insert the payload type on an `emit()` / `listen()` call.
-fn make_event_payload_action(
-    event_name: &str,
+/// Build a quickfix code action that inserts or replaces a type annotation (`<T>`).
+///
+/// Shared by return-type and event-payload actions. Handles:
+/// - `None` return type → insert `<expected>` at `call_name_end`
+/// - `Some(wrong)` → replace `type_arg_range` with `<expected>`
+/// - Skips `void`/`any` and matching types
+fn make_type_fix_action(
     loc: &LocationInfo,
+    expected: &str,
+    label: &str,
     project_index: &ProjectIndex,
     params: &CodeActionParams,
 ) -> Option<CodeAction> {
-    if !matches!(loc.behavior, Behavior::Emit | Behavior::Listen) {
-        return None;
-    }
-
-    if !project_index.has_bindings_files() {
-        return None;
-    }
-
-    let schema = project_index.get_event_schema(event_name)?;
-
-    if matches!(schema.generator, GeneratorKind::RustSource)
-        && !project_index
-            .type_aliases
-            .contains_key(&schema.payload_type)
-    {
-        return None;
-    }
-
-    let expected = &schema.payload_type;
-    if expected == "void" || expected == "null" {
-        return None;
-    }
-
     let (title, edit_range, new_text) = match &loc.return_type {
         None => {
             let insert_pos = loc.call_name_end?;
             (
-                format!("Add payload type '{expected}'"),
+                format!("Add {label} '{expected}'"),
                 Range {
                     start: insert_pos,
                     end: insert_pos,
@@ -261,7 +244,7 @@ fn make_event_payload_action(
             }
             let type_range = loc.type_arg_range?;
             (
-                format!("Fix payload type to '{expected}'"),
+                format!("Fix {label} to '{expected}'"),
                 type_range,
                 format!("<{expected}>"),
             )
@@ -292,6 +275,39 @@ fn make_event_payload_action(
     })
 }
 
+/// Build a code action to fix or insert the payload type on an `emit()` / `listen()` call.
+fn make_event_payload_action(
+    event_name: &str,
+    loc: &LocationInfo,
+    project_index: &ProjectIndex,
+    params: &CodeActionParams,
+) -> Option<CodeAction> {
+    if !matches!(loc.behavior, Behavior::Emit | Behavior::Listen) {
+        return None;
+    }
+
+    if !project_index.has_bindings_files() {
+        return None;
+    }
+
+    let schema = project_index.get_event_schema(event_name)?;
+
+    if matches!(schema.generator, GeneratorKind::RustSource)
+        && !project_index
+            .type_aliases
+            .contains_key(&schema.payload_type)
+    {
+        return None;
+    }
+
+    let expected = &schema.payload_type;
+    if expected == "void" || expected == "null" {
+        return None;
+    }
+
+    make_type_fix_action(loc, expected, "payload type", project_index, params)
+}
+
 /// Build a code action to fix or insert the return type on an `invoke()` call.
 fn make_return_type_action(
     command_name: &str,
@@ -309,7 +325,6 @@ fn make_return_type_action(
 
     let schema = project_index.get_schema(command_name)?;
 
-    // RustSource schemas are allowed when the return type has a known binding
     if matches!(schema.generator, GeneratorKind::RustSource)
         && !project_index.type_aliases.contains_key(&schema.return_type)
     {
@@ -321,56 +336,5 @@ fn make_return_type_action(
         return None;
     }
 
-    let (title, edit_range, new_text) = match &loc.return_type {
-        None => {
-            // Missing generic: insert <Expected> after function name
-            let insert_pos = loc.call_name_end?;
-            (
-                format!("Add return type '{expected}'"),
-                Range {
-                    start: insert_pos,
-                    end: insert_pos,
-                },
-                format!("<{expected}>"),
-            )
-        }
-        Some(ts_type) => {
-            if ts_type == "void" || ts_type == "any" {
-                return None;
-            }
-            if super::diagnostics::types_match(ts_type, expected, project_index) {
-                return None;
-            }
-            // Wrong generic: replace <Wrong> with <Expected>
-            let type_range = loc.type_arg_range?;
-            (
-                format!("Fix return type to '{expected}'"),
-                type_range,
-                format!("<{expected}>"),
-            )
-        }
-    };
-
-    let doc_uri = params.text_document.uri.clone();
-    let workspace_edit = WorkspaceEdit {
-        document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
-            text_document: OptionalVersionedTextDocumentIdentifier {
-                uri: doc_uri,
-                version: None,
-            },
-            edits: vec![OneOf::Left(TextEdit {
-                range: edit_range,
-                new_text,
-            })],
-        }])),
-        ..Default::default()
-    };
-
-    Some(CodeAction {
-        title,
-        kind: Some(CodeActionKind::QUICKFIX),
-        diagnostics: Some(params.context.diagnostics.clone()),
-        edit: Some(workspace_edit),
-        ..Default::default()
-    })
+    make_type_fix_action(loc, expected, "return type", project_index, params)
 }

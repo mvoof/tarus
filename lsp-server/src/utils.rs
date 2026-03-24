@@ -2,6 +2,31 @@
 
 use tower_lsp_server::lsp_types::{Position, Range};
 
+/// Find a tree-sitter capture by its `Option<u32>` index within a match.
+///
+/// Returns `None` if `idx` is `None` or the capture is not found.
+#[must_use]
+pub fn find_capture<'a>(
+    m: &'a tree_sitter::QueryMatch<'a, '_>,
+    idx: Option<u32>,
+) -> Option<&'a tree_sitter::QueryCapture<'a>> {
+    idx.and_then(|i| m.captures.iter().find(|c| c.index == i))
+}
+
+/// Extract UTF-8 text from a tree-sitter capture by index.
+///
+/// Returns `""` if the capture is missing or text extraction fails.
+#[must_use]
+pub fn capture_text<'a>(
+    m: &tree_sitter::QueryMatch<'_, '_>,
+    idx: Option<u32>,
+    content: &'a [u8],
+) -> &'a str {
+    idx.and_then(|i| m.captures.iter().find(|c| c.index == i))
+        .and_then(|cap| cap.node.utf8_text(content).ok())
+        .unwrap_or("")
+}
+
 /// Convert a camelCase or `PascalCase` identifier to `snake_case`
 ///
 /// Examples:
