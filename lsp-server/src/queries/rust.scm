@@ -2,6 +2,7 @@
 
 ; Function items — #[tauri::command] detection is done via sibling walk in Rust code.
 ; This handles any number of attributes between #[tauri::command] and fn.
+; function_item: fn my_command() {}
 (function_item
   name: (identifier) @fn_name) @fn_item
 
@@ -17,7 +18,7 @@
   (#any-of? @method_name "emit" "emit_str" "emit_filter" "emit_str_filter" "listen" "listen_any" "once" "once_any")
 )
 
-; Method calls with event as second argument: .emit_to(target, "event")
+; Method calls with event as second argument: app.emit_to("target", "event", payload)
 (call_expression
   function: (field_expression
     field: (field_identifier) @method_name)
@@ -30,6 +31,7 @@
 )
 
 ; Struct items — #[derive(Event)] detection is done via sibling walk in Rust code.
+; struct_item: struct MyEvent {}
 (struct_item
   name: (type_identifier) @struct_name) @struct_item
 

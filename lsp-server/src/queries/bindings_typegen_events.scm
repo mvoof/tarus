@@ -1,3 +1,4 @@
+; listen<PayloadType>('my-event')
 (call_expression
   (identifier) @fn_name
   (type_arguments (_) @type_arg)

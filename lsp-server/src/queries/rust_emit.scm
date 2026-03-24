@@ -1,3 +1,4 @@
+; emit("event", payload)
 (call_expression
   function: (field_expression
     field: (field_identifier) @method_name)

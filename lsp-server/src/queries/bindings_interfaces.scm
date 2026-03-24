@@ -1,3 +1,4 @@
+; export interface MyInterface { field: string; }
 (export_statement
   (interface_declaration
     name: (type_identifier) @iface_name

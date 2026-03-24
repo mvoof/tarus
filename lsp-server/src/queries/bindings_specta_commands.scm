@@ -1,3 +1,4 @@
+; export const commands = { async myCommand(param: T): Promise<R> { ... } }
 (export_statement
   (lexical_declaration
     (variable_declarator
