@@ -1,5 +1,9 @@
 ## Change Log
 
+### [0.6.2]
+
+- **Diagnostics Fix:** Resolved a false-positive warning where unused Tauri Events were incorrectly reported as unused Commands (`Command '...' is defined but never invoked in frontend`). The internal `DiagnosticInfo` was refactored into a strict enum to cleanly separate `Command` and `Event` evaluation logic.
+
 ### [0.6.1]
 
 - **Specta Event Support:** Navigation, CodeLens, hover, references, and diagnostics for tauri-specta's typed event API (`events.X.listen/emit/once`).
