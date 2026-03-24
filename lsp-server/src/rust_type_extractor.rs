@@ -463,8 +463,8 @@ fn resolve_emit_payload_type(
                 }
             }
 
-            // Fallback: look for local `let` binding in enclosing function body
-            resolve_local_variable_type(fn_node, var_name, content)
+            // Fallback: look for local `let` binding searching backwards from the usage node
+            resolve_local_variable_type(node, var_name, content)
         }
         _ => None,
     }
@@ -485,54 +485,63 @@ fn find_enclosing_function<'a>(
     None
 }
 
-/// Resolve the type of a local variable by scanning `let` declarations in the function body.
+/// Resolve the type of a local variable by searching backwards from the site of the variable's use.
 ///
 /// Handles:
 /// - `let var: Type = ...;` → extract type annotation
 /// - `let var = StructName { ... };` → extract struct name from `struct_expression`
 fn resolve_local_variable_type(
-    fn_node: tree_sitter::Node<'_>,
+    usage_node: tree_sitter::Node<'_>,
     var_name: &str,
     content: &str,
 ) -> Option<String> {
-    let body = fn_node.child_by_field_name("body")?;
-    let mut cursor = body.walk();
+    let mut current = usage_node;
 
-    for child in body.children(&mut cursor) {
-        if child.kind() != "let_declaration" {
-            continue;
-        }
+    loop {
+        // Check all previous siblings of the current node
+        let mut sibling = current.prev_sibling();
+        while let Some(s) = sibling {
+            if s.kind() == "let_declaration" {
+                // Check if the pattern matches our variable name
+                if let Some(pattern) = s.child_by_field_name("pattern") {
+                    if let Ok(pat_text) = pattern.utf8_text(content.as_bytes()) {
+                        if pat_text == var_name {
+                            // Try type annotation first: `let payload: Payload = ...`
+                            if let Some(type_node) = s.child_by_field_name("type") {
+                                if let Ok(type_text) = type_node.utf8_text(content.as_bytes()) {
+                                    return Some(rust_type_to_ts(type_text));
+                                }
+                            }
 
-        // Check if the pattern matches our variable name
-        let Some(pattern) = child.child_by_field_name("pattern") else {
-            continue;
-        };
-        let Ok(pat_text) = pattern.utf8_text(content.as_bytes()) else {
-            continue;
-        };
-        if pat_text != var_name {
-            continue;
-        }
+                            // Try value: `let payload = Payload { ... }`
+                            if let Some(value_node) = s.child_by_field_name("value") {
+                                if value_node.kind() == "struct_expression" {
+                                    if let Some(name_node) = value_node.child_by_field_name("name") {
+                                        if let Ok(struct_name) = name_node.utf8_text(content.as_bytes()) {
+                                            return Some(rust_type_to_ts(struct_name));
+                                        }
+                                    }
+                                }
+                            }
 
-        // Try type annotation first: `let payload: Payload = ...`
-        if let Some(type_node) = child.child_by_field_name("type") {
-            if let Ok(type_text) = type_node.utf8_text(content.as_bytes()) {
-                return Some(rust_type_to_ts(type_text));
-            }
-        }
-
-        // Try value: `let payload = Payload { ... }`
-        if let Some(value_node) = child.child_by_field_name("value") {
-            if value_node.kind() == "struct_expression" {
-                if let Some(name_node) = value_node.child_by_field_name("name") {
-                    if let Ok(struct_name) = name_node.utf8_text(content.as_bytes()) {
-                        return Some(rust_type_to_ts(struct_name));
+                            return None;
+                        }
                     }
                 }
             }
+            sibling = s.prev_sibling();
         }
 
-        return None;
+        // Move up to the parent to check its previous siblings
+        if let Some(parent) = current.parent() {
+            // Stop if we reach a function_item or another scope boundary if needed
+            if parent.kind() == "function_item" {
+                break;
+            }
+            current = parent;
+        } else {
+            break;
+        }
     }
 
     None
