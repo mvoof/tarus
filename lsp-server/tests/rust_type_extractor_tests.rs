@@ -132,3 +132,66 @@ fn test_only_tauri_command_extracted() {
         "helper_fn should not be extracted (no #[tauri::command])"
     );
 }
+
+// ─── Event schema extraction ──────────────────────────────────────────────────
+
+use lsp_server::rust_type_extractor::extract_event_schemas;
+
+#[test]
+fn test_event_schema_local_variable_payload() {
+    let rust_code = r#"
+use tauri::AppHandle;
+
+struct Payload {
+    text: String,
+    count: u32,
+}
+
+fn setup(app: AppHandle) {
+    let payload = Payload { text: "hello".into(), count: 42 };
+    app.emit("my-event", payload).unwrap();
+}
+"#;
+
+    let schemas = extract_event_schemas(rust_code, &test_path("lib.rs"));
+    assert_eq!(schemas.len(), 1, "Should find 1 event schema");
+    assert_eq!(schemas[0].event_name, "my-event");
+    assert_eq!(schemas[0].payload_type, "Payload");
+}
+
+#[test]
+fn test_event_schema_direct_struct_payload() {
+    let rust_code = r#"
+use tauri::AppHandle;
+
+struct Info {
+    msg: String,
+}
+
+fn setup(app: AppHandle) {
+    app.emit("info-event", Info { msg: "hi".into() }).unwrap();
+}
+"#;
+
+    let schemas = extract_event_schemas(rust_code, &test_path("lib.rs"));
+    assert_eq!(schemas.len(), 1, "Should find 1 event schema");
+    assert_eq!(schemas[0].event_name, "info-event");
+    assert_eq!(schemas[0].payload_type, "Info");
+}
+
+#[test]
+fn test_event_schema_local_variable_with_type_annotation() {
+    let rust_code = r#"
+use tauri::AppHandle;
+
+fn setup(app: AppHandle) {
+    let data: MyData = get_data();
+    app.emit("data-event", data).unwrap();
+}
+"#;
+
+    let schemas = extract_event_schemas(rust_code, &test_path("lib.rs"));
+    assert_eq!(schemas.len(), 1, "Should find 1 event schema");
+    assert_eq!(schemas[0].event_name, "data-event");
+    assert_eq!(schemas[0].payload_type, "MyData");
+}
