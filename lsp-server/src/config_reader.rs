@@ -29,19 +29,13 @@ pub fn discover_generators(workspace_root: &Path) -> Vec<DiscoveredGenerator> {
 
     let mut results = Vec::new();
 
-    if let Some(g) = discover_specta(src_tauri_dir) {
-        results.push(g);
-    }
+    results.extend(discover_specta_generators(src_tauri_dir));
 
     if let Some(g) = discover_typegen(&tauri_config_path, src_tauri_dir) {
         results.push(g);
     }
 
     if let Some(g) = discover_ts_rs(workspace_root, src_tauri_dir) {
-        results.push(g);
-    }
-
-    if let Some(g) = discover_specta_typescript(src_tauri_dir) {
         results.push(g);
     }
 
@@ -52,14 +46,18 @@ pub fn discover_generators(workspace_root: &Path) -> Vec<DiscoveredGenerator> {
 // Individual generator discovery
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Discover the tauri-specta output file by scanning Rust sources for `.export(` calls.
-fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
+/// Discover the tauri-specta and standalone specta-typescript output file by scanning Rust sources.
+fn discover_specta_generators(src_tauri_dir: &Path) -> Vec<DiscoveredGenerator> {
+    let mut generators = Vec::new();
     let query_str = include_str!("queries/rust_specta_discovery.scm");
 
     let rust_lang: Language = tree_sitter_rust::LANGUAGE.into();
-    let query = Query::new(&rust_lang, query_str).ok()?;
-    let method_name_idx = query.capture_index_for_name("method_name")?;
-    let path_arg_idx = query.capture_index_for_name("path_arg")?;
+    let Ok(query) = Query::new(&rust_lang, query_str) else {
+        return generators;
+    };
+
+    let Some(method_name_idx) = query.capture_index_for_name("method_name") else { return generators; };
+    let Some(path_arg_idx) = query.capture_index_for_name("path_arg") else { return generators; };
 
     for entry in WalkDir::new(src_tauri_dir)
         .into_iter()
@@ -71,8 +69,11 @@ fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
             continue;
         };
 
-        // Fast pre-filter: skip files that don't use tauri_specta
-        if !content.contains("tauri_specta") {
+        // Fast pre-filter: check for either library
+        let has_tauri_specta = content.contains("tauri_specta");
+        let has_specta_ts = content.contains("specta_typescript");
+
+        if !has_tauri_specta && !has_specta_ts {
             continue;
         }
 
@@ -91,7 +92,8 @@ fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
                 .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
                 .unwrap_or("");
 
-            if method != "export" {
+            // Filter methods right away to avoid extra processing
+            if method != "export" && method != "export_to" {
                 continue;
             }
 
@@ -109,8 +111,14 @@ fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
             if ext_ok {
                 let resolved = normalize_path(&src_tauri_dir.join(path_str));
 
-                return Some(DiscoveredGenerator {
-                    kind: GeneratorKind::Specta,
+                let kind = if method == "export" {
+                    GeneratorKind::Specta
+                } else {
+                    GeneratorKind::TsRs
+                };
+
+                generators.push(DiscoveredGenerator {
+                    kind,
                     output_path: resolved,
                     is_directory: false,
                 });
@@ -118,7 +126,7 @@ fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
         }
     }
 
-    None
+    generators
 }
 
 /// Discover the tauri-typegen output directory from the Tauri config file.
@@ -219,77 +227,7 @@ fn discover_ts_rs(workspace_root: &Path, src_tauri_dir: &Path) -> Option<Discove
     None
 }
 
-/// Discover standalone specta-typescript output by scanning for `export_to("path", ...)` calls.
-///
-/// Unlike `tauri-specta` which uses `.export(format, "path")`, standalone `specta-typescript`
-/// uses `Typescript::default().export_to("path", &types)` where the path is the **first** arg.
-/// The output format is identical to ts-rs (`export type Name = ...`), so we use `GeneratorKind::TsRs`.
-fn discover_specta_typescript(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
-    let query_str = include_str!("queries/rust_specta_discovery.scm");
 
-    let rust_lang: Language = tree_sitter_rust::LANGUAGE.into();
-    let query = Query::new(&rust_lang, query_str).ok()?;
-    let method_name_idx = query.capture_index_for_name("method_name")?;
-    let path_arg_idx = query.capture_index_for_name("path_arg")?;
-
-    for entry in WalkDir::new(src_tauri_dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("rs"))
-    {
-        let Ok(content) = std::fs::read_to_string(entry.path()) else {
-            continue;
-        };
-
-        if !content.contains("specta_typescript") {
-            continue;
-        }
-
-        let Some(tree) = parse_rust(&content) else {
-            continue;
-        };
-
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
-
-        while let Some(m) = matches.next() {
-            let method = m
-                .captures
-                .iter()
-                .find(|c| c.index == method_name_idx)
-                .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("");
-
-            if method != "export_to" {
-                continue;
-            }
-
-            let path_str = m
-                .captures
-                .iter()
-                .find(|c| c.index == path_arg_idx)
-                .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("");
-
-            let ext_ok = Path::new(path_str)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("ts") || e.eq_ignore_ascii_case("js"));
-
-            if ext_ok {
-                let resolved = normalize_path(&src_tauri_dir.join(path_str));
-
-                return Some(DiscoveredGenerator {
-                    kind: GeneratorKind::TsRs,
-                    output_path: resolved,
-                    is_directory: false,
-                });
-            }
-        }
-    }
-
-    None
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Parsing helpers
