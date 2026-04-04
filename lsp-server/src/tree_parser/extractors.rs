@@ -23,8 +23,8 @@ pub(super) fn extract_type_argument_info(
     content: &str,
 ) -> Option<TypeArgInfo> {
     // Find the call_expression node from the generic pattern captures
-    let call_node = find_capture(m, call_generic_idx)
-        .or_else(|| find_capture(m, call_await_generic_idx))?;
+    let call_node =
+        find_capture(m, call_generic_idx).or_else(|| find_capture(m, call_await_generic_idx))?;
 
     // Walk children to find type_arguments
     let node = call_node.node;

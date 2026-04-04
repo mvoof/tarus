@@ -31,9 +31,7 @@ use expect_test::Expect;
 use lsp_server::capabilities::{
     code_actions, code_lens, completion, definition, diagnostics, hover, references, symbols,
 };
-use lsp_server::indexer::{
-    CommandSchema, EventSchema, GeneratorKind, ParamSchema, ProjectIndex,
-};
+use lsp_server::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema, ProjectIndex};
 use lsp_server::syntax::{Behavior, EntityType};
 use lsp_server::tree_parser;
 
@@ -141,8 +139,7 @@ pub fn parse_fixture(input: &str) -> FixtureData {
                         .insert(schema.command_name.clone(), schema);
                 }
 
-                let evt_schemas =
-                    lsp_server::bindings_reader::parse_specta_events(&content, &path);
+                let evt_schemas = lsp_server::bindings_reader::parse_specta_events(&content, &path);
                 for schema in evt_schemas {
                     index
                         .generated_event_paths
@@ -157,9 +154,7 @@ pub fn parse_fixture(input: &str) -> FixtureData {
 
             // Parse type aliases (ts-rs and typegen)
             let aliases = match gen_kind {
-                GeneratorKind::TsRs => {
-                    lsp_server::bindings_reader::parse_ts_rs_types(&content)
-                }
+                GeneratorKind::TsRs => lsp_server::bindings_reader::parse_ts_rs_types(&content),
                 GeneratorKind::Typegen => {
                     lsp_server::bindings_reader::parse_typegen_types(&content)
                 }
@@ -356,7 +351,10 @@ fn parse_schema_directive(s: &str) -> CommandSchema {
                 let parts: Vec<&str> = p.trim().splitn(2, ':').collect();
                 ParamSchema {
                     name: parts[0].trim().to_string(),
-                    ts_type: parts.get(1).map(|s| s.trim().to_string()).unwrap_or_default(),
+                    ts_type: parts
+                        .get(1)
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default(),
                 }
             })
             .collect()
@@ -560,7 +558,10 @@ pub fn check_references(fixture: &str, expect: Expect) {
 pub fn check_code_lens(fixture: &str, expect: Expect) {
     let data = parse_fixture(fixture);
     let file = data.cursor_file.as_ref().unwrap_or_else(|| {
-        data.contents.keys().next().expect("fixture must have files")
+        data.contents
+            .keys()
+            .next()
+            .expect("fixture must have files")
     });
     let params = make_code_lens_params(file);
     let result = code_lens::handle_code_lens(params, &data.index);
@@ -576,7 +577,10 @@ pub fn check_code_lens(fixture: &str, expect: Expect) {
                         .as_ref()
                         .map(|c| c.title.as_str())
                         .unwrap_or("(no command)");
-                    format!("{}:{} \"{}\"", lens.range.start.line, lens.range.start.character, title)
+                    format!(
+                        "{}:{} \"{}\"",
+                        lens.range.start.line, lens.range.start.character, title
+                    )
                 })
                 .collect();
             lines.sort();
@@ -645,7 +649,11 @@ pub fn check_completion(fixture: &str, expect: Expect) {
 pub fn check_diagnostics(fixture: &str, expect: Expect) {
     let data = parse_fixture(fixture);
     let file = data.cursor_file.clone().unwrap_or_else(|| {
-        data.contents.keys().next().expect("fixture must have files").clone()
+        data.contents
+            .keys()
+            .next()
+            .expect("fixture must have files")
+            .clone()
     });
     let result = diagnostics::compute_file_diagnostics(&file, &data.index);
 
@@ -753,7 +761,10 @@ pub fn check_code_actions(fixture: &str, expect: Expect) {
 pub fn check_document_symbols(fixture: &str, expect: Expect) {
     let data = parse_fixture(fixture);
     let file = data.cursor_file.as_ref().unwrap_or_else(|| {
-        data.contents.keys().next().expect("fixture must have files")
+        data.contents
+            .keys()
+            .next()
+            .expect("fixture must have files")
     });
     let params = make_document_symbol_params(file);
     let result = symbols::handle_document_symbol(params, &data.index);
@@ -778,14 +789,7 @@ pub fn check_document_symbols(fixture: &str, expect: Expect) {
         Some(DocumentSymbolResponse::Nested(syms)) => {
             let mut lines: Vec<String> = syms
                 .iter()
-                .map(|s| {
-                    format!(
-                        "{:?} \"{}\" {}",
-                        s.kind,
-                        s.name,
-                        format_range(s.range),
-                    )
-                })
+                .map(|s| format!("{:?} \"{}\" {}", s.kind, s.name, format_range(s.range),))
                 .collect();
             lines.sort();
             lines.join("\n")

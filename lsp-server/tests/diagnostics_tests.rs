@@ -107,7 +107,9 @@ invoke("$0greet");
 #[tauri::command]
 fn greet() -> String { String::new() }
 "#,
-        expect![[r#"HINT 1:8..1:13 "invoke('greet') is missing return type, expected 'string'" [tarus/return-type-missing]"#]],
+        expect![[
+            r#"HINT 1:8..1:13 "invoke('greet') is missing return type, expected 'string'" [tarus/return-type-missing]"#
+        ]],
     );
 }
 
@@ -125,7 +127,9 @@ const r = await invoke<number>("$0greet");
 #[tauri::command]
 fn greet() -> String { String::new() }
 "#,
-        expect![[r#"WARNING 1:32..1:37 "invoke<number>('greet') return type mismatch: expected 'string'" [tarus/return-type-mismatch]"#]],
+        expect![[
+            r#"WARNING 1:32..1:37 "invoke<number>('greet') return type mismatch: expected 'string'" [tarus/return-type-mismatch]"#
+        ]],
     );
 }
 
@@ -226,7 +230,9 @@ fn emit_event(app: &AppHandle) {
     app.emit("my-event", "data").unwrap();
 }
 "#,
-        expect![[r#"HINT 1:8..1:16 "listen('my-event') is missing payload type, expected 'UserPayload'" [tarus/event-payload-missing]"#]],
+        expect![[
+            r#"HINT 1:8..1:16 "listen('my-event') is missing payload type, expected 'UserPayload'" [tarus/event-payload-missing]"#
+        ]],
     );
 }
 
@@ -247,7 +253,9 @@ fn emit_event(app: &AppHandle) {
     app.emit("my-event", "data").unwrap();
 }
 "#,
-        expect![[r#"WARNING 1:19..1:27 "listen<WrongType>('my-event') payload type mismatch: expected 'UserPayload'" [tarus/event-payload-mismatch]"#]],
+        expect![[
+            r#"WARNING 1:19..1:27 "listen<WrongType>('my-event') payload type mismatch: expected 'UserPayload'" [tarus/event-payload-mismatch]"#
+        ]],
     );
 }
 
@@ -418,7 +426,9 @@ await commands.createUser$0("Bob", 25, "extra");
 #[tauri::command]
 fn create_user() {}
 "#,
-        expect![[r#"WARNING 1:15..1:25 "commands.create_user() expected 2 arguments but got 3" [tarus/arg-count-mismatch]"#]],
+        expect![[
+            r#"WARNING 1:15..1:25 "commands.create_user() expected 2 arguments but got 3" [tarus/arg-count-mismatch]"#
+        ]],
     );
 }
 
@@ -436,7 +446,9 @@ await commands.createUser$0("Bob");
 #[tauri::command]
 fn create_user() {}
 "#,
-        expect![[r#"WARNING 1:15..1:25 "commands.create_user() expected 2 arguments but got 1" [tarus/arg-count-mismatch]"#]],
+        expect![[
+            r#"WARNING 1:15..1:25 "commands.create_user() expected 2 arguments but got 1" [tarus/arg-count-mismatch]"#
+        ]],
     );
 }
 
@@ -554,7 +566,9 @@ const u = await invoke<string>("$0get_user");
 #[tauri::command]
 fn get_user() -> User { todo!() }
 "#,
-        expect![[r#"WARNING 1:32..1:40 "invoke<string>('get_user') return type mismatch: expected 'User'" [tarus/return-type-mismatch]"#]],
+        expect![[
+            r#"WARNING 1:32..1:40 "invoke<string>('get_user') return type mismatch: expected 'User'" [tarus/return-type-mismatch]"#
+        ]],
     );
 }
 

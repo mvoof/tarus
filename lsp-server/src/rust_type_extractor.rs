@@ -495,8 +495,11 @@ fn resolve_local_variable_type(
                             // Try value: `let payload = Payload { ... }`
                             if let Some(value_node) = s.child_by_field_name("value") {
                                 if value_node.kind() == "struct_expression" {
-                                    if let Some(name_node) = value_node.child_by_field_name("name") {
-                                        if let Ok(struct_name) = name_node.utf8_text(content.as_bytes()) {
+                                    if let Some(name_node) = value_node.child_by_field_name("name")
+                                    {
+                                        if let Ok(struct_name) =
+                                            name_node.utf8_text(content.as_bytes())
+                                        {
                                             return Some(rust_type_to_ts(struct_name));
                                         }
                                     }
