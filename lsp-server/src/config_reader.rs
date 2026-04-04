@@ -166,6 +166,10 @@ fn discover_typegen(tauri_config_path: &Path, src_tauri_dir: &Path) -> Option<Di
 
 /// Discover the ts-rs output directory from `.cargo/config.toml` or `Cargo.toml`.
 fn discover_ts_rs(workspace_root: &Path, src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
+    // By default, ts-rs generates types in the `bindings/` folder next to the `Cargo.toml` file.
+    // This path can be overridden using the `TS_RS_EXPORT_DIR` environment variable.
+    // In the context of Rust projects, this variable is often set in the `.cargo/config.toml` file.
+    // https://docs.rs/ts-rs/latest/ts_rs/#configuration
     let candidates = [
         workspace_root.join(".cargo/config.toml"),
         src_tauri_dir.join(".cargo/config.toml"),
@@ -274,6 +278,7 @@ fn discover_specta_typescript(src_tauri_dir: &Path) -> Option<DiscoveredGenerato
 
             if ext_ok {
                 let resolved = normalize_path(&src_tauri_dir.join(path_str));
+
                 return Some(DiscoveredGenerator {
                     kind: GeneratorKind::TsRs,
                     output_path: resolved,
