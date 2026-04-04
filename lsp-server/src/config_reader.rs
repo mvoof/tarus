@@ -22,6 +22,7 @@ pub fn discover_generators(workspace_root: &Path) -> Vec<DiscoveredGenerator> {
     let Some(tauri_config_path) = crate::scanner::find_tauri_config(workspace_root) else {
         return Vec::new();
     };
+
     let Some(src_tauri_dir) = tauri_config_path.parent() else {
         return Vec::new();
     };
@@ -31,12 +32,15 @@ pub fn discover_generators(workspace_root: &Path) -> Vec<DiscoveredGenerator> {
     if let Some(g) = discover_specta(src_tauri_dir) {
         results.push(g);
     }
+
     if let Some(g) = discover_typegen(&tauri_config_path, src_tauri_dir) {
         results.push(g);
     }
+
     if let Some(g) = discover_ts_rs(workspace_root, src_tauri_dir) {
         results.push(g);
     }
+
     if let Some(g) = discover_specta_typescript(src_tauri_dir) {
         results.push(g);
     }
@@ -104,6 +108,7 @@ fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
 
             if ext_ok {
                 let resolved = normalize_path(&src_tauri_dir.join(path_str));
+
                 return Some(DiscoveredGenerator {
                     kind: GeneratorKind::Specta,
                     output_path: resolved,
@@ -118,25 +123,35 @@ fn discover_specta(src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
 
 /// Discover the tauri-typegen output directory from the Tauri config file.
 ///
-/// Supports `.json` and `.json5` config formats (parsed with `serde_json`).
-/// Returns `None` for `.toml` configs or if no `plugins.typegen` section is present.
+/// Supports `.json`, `.json5`, and `.toml` config formats.
+/// Returns `None` if no `plugins.typegen` section is present.
 fn discover_typegen(tauri_config_path: &Path, src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
-    // Only attempt JSON parsing; TOML configs are not supported by serde_json
     let ext = tauri_config_path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    if ext == "toml" {
-        return None;
-    }
 
     let content = std::fs::read_to_string(tauri_config_path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
 
-    // Section must exist; if absent typegen is not configured
-    let typegen = json.get("plugins")?.get("typegen")?;
+    let output_path_str = if ext == "toml" {
+        let toml_val: toml::Value = content.parse().ok()?;
+        let typegen = toml_val.get("plugins")?.get("typegen")?;
 
-    let output_path = if let Some(p) = typegen.get("outputPath").and_then(|v| v.as_str()) {
+        typegen
+            .get("outputPath")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+    } else {
+        let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let typegen = json.get("plugins")?.get("typegen")?;
+
+        typegen
+            .get("outputPath")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+    };
+
+    let output_path = if let Some(p) = output_path_str {
         normalize_path(&src_tauri_dir.join(p))
     } else {
         normalize_path(&src_tauri_dir.join("../src/generated"))
