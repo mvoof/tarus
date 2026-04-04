@@ -56,8 +56,13 @@ fn discover_specta_generators(src_tauri_dir: &Path) -> Vec<DiscoveredGenerator> 
         return generators;
     };
 
-    let Some(method_name_idx) = query.capture_index_for_name("method_name") else { return generators; };
-    let Some(path_arg_idx) = query.capture_index_for_name("path_arg") else { return generators; };
+    let Some(method_name_idx) = query.capture_index_for_name("method_name") else {
+        return generators;
+    };
+
+    let Some(path_arg_idx) = query.capture_index_for_name("path_arg") else {
+        return generators;
+    };
 
     for entry in WalkDir::new(src_tauri_dir)
         .into_iter()
@@ -227,8 +232,6 @@ fn discover_ts_rs(workspace_root: &Path, src_tauri_dir: &Path) -> Option<Discove
     None
 }
 
-
-
 // ────────────────────────────────────────────────────────────────────────────
 // Parsing helpers
 // ────────────────────────────────────────────────────────────────────────────
@@ -284,4 +287,285 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     components.iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer::GeneratorKind;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn tmp(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("tarus_cfg_test_{name}"));
+        let _ = fs::remove_dir_all(&p);
+
+        p
+    }
+
+    fn assert_discovery(name: &str, files: &[(&str, &str)], expected: &[(GeneratorKind, &str)]) {
+        let root = tmp(name);
+        let src_tauri = root.join("src-tauri");
+        fs::create_dir_all(&src_tauri).unwrap();
+
+        if !files.iter().any(|(p, _)| *p == "tauri.conf.json") {
+            fs::write(
+                src_tauri.join("tauri.conf.json"),
+                r#"{ "identifier": "com.test" }"#,
+            )
+            .unwrap();
+        }
+
+        for (path_str, content) in files {
+            let path = src_tauri.join(path_str);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, content).unwrap();
+        }
+
+        let gens = discover_generators(&root);
+        let _ = fs::remove_dir_all(&root);
+
+        for (kind, expected_suffix) in expected {
+            let found = gens
+                .iter()
+                .find(|g| g.kind == *kind && g.output_path.ends_with(expected_suffix));
+
+            assert!(
+                found.is_some(),
+                "Failed to find {kind:?} ending with '{expected_suffix}'"
+            );
+        }
+
+        if !expected.is_empty() {
+            assert_eq!(
+                gens.len(),
+                expected.len(),
+                "Found extra unexpected generators"
+            );
+        }
+    }
+
+    // ─── Specta ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_specta_single_line_export() {
+        assert_discovery(
+            "specta_single",
+            &[(
+                "src/lib.rs",
+                r#"use tauri_specta::Builder; fn run() { builder.export(Typescript::default(), "../src/bindings.ts"); }"#,
+            )],
+            &[(GeneratorKind::Specta, "src/bindings.ts")],
+        );
+    }
+
+    #[test]
+    fn test_specta_multiline_export_with_nested_parens() {
+        assert_discovery(
+            "specta_multi",
+            &[(
+                "src/lib.rs",
+                r#"use tauri_specta::Builder; fn run() { specta_builder.export(Typescript::default().bigint(BigIntExportBehavior::Number), "../src/types/specta/bindings.ts"); }"#,
+            )],
+            &[(GeneratorKind::Specta, "src/types/specta/bindings.ts")],
+        );
+    }
+
+    #[test]
+    fn test_specta_jsdoc_export() {
+        assert_discovery(
+            "specta_jsdoc",
+            &[(
+                "src/lib.rs",
+                r#"use tauri_specta::Builder; fn run() { builder.export(JSDoc::default(), "../src/bindings.js"); }"#,
+            )],
+            &[(GeneratorKind::Specta, "src/bindings.js")],
+        );
+    }
+
+    #[test]
+    fn test_specta_not_found_without_tauri_specta_import() {
+        assert_discovery(
+            "specta_no_import",
+            &[(
+                "src/lib.rs",
+                r#"fn run() { something.export(Default::default(), "../src/bindings.ts"); }"#,
+            )],
+            &[],
+        );
+    }
+
+    #[test]
+    fn test_specta_cfg_guarded_export() {
+        assert_discovery(
+            "specta_cfg",
+            &[(
+                "src/lib.rs",
+                r#"use tauri_specta::Builder; fn run() { #[cfg(feature = "specta")] builder.export(Typescript::default(), "../src/types/specta/output.ts"); }"#,
+            )],
+            &[(GeneratorKind::Specta, "src/types/specta/output.ts")],
+        );
+    }
+
+    #[test]
+    fn test_specta_multiple_exports_discovered() {
+        assert_discovery(
+            "specta_multiple",
+            &[(
+                "src/lib.rs",
+                r#"use tauri_specta::Builder; use specta_typescript::Typescript; fn run() {
+                builder.export(Typescript::default(), "../src/admin.ts");
+                builder.export(Typescript::default(), "../src/client.ts");
+                Typescript::default().export_to("../src/shared.ts", &types);
+            }"#,
+            )],
+            &[
+                (GeneratorKind::Specta, "src/admin.ts"),
+                (GeneratorKind::Specta, "src/client.ts"),
+                (GeneratorKind::TsRs, "src/shared.ts"),
+            ],
+        );
+    }
+
+    // ─── Standalone specta-typescript ─────────────────────────────────────────
+
+    #[test]
+    fn test_specta_typescript_export_to() {
+        assert_discovery(
+            "specta_ts_standalone",
+            &[(
+                "src/main.rs",
+                r#"use specta_typescript::Typescript; fn main() { Typescript::default().export_to("../src/bindings.ts", &types); }"#,
+            )],
+            &[(GeneratorKind::TsRs, "src/bindings.ts")],
+        );
+    }
+
+    #[test]
+    fn test_specta_typescript_not_found_without_import() {
+        assert_discovery(
+            "specta_ts_no_import",
+            &[(
+                "src/main.rs",
+                r#"fn main() { something.export_to("../src/bindings.ts", &types); }"#,
+            )],
+            &[],
+        );
+    }
+
+    // ─── ts-rs ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_ts_rs_plain_string_env() {
+        assert_discovery(
+            "tsrs_plain",
+            &[(
+                ".cargo/config.toml",
+                r#"[env]
+TS_RS_EXPORT_DIR = "../src/types/ts-rs""#,
+            )],
+            &[(GeneratorKind::TsRs, "src/types/ts-rs")],
+        );
+    }
+
+    #[test]
+    fn test_ts_rs_inline_table_relative() {
+        assert_discovery(
+            "tsrs_relative",
+            &[(
+                ".cargo/config.toml",
+                r#"[env]
+TS_RS_EXPORT_DIR = { value = "./src/bindings_type", relative = true }"#,
+            )],
+            &[(GeneratorKind::TsRs, "src/bindings_type")],
+        );
+    }
+
+    #[test]
+    fn test_ts_rs_cargo_toml_fallback() {
+        assert_discovery(
+            "tsrs_cargo",
+            &[("Cargo.toml", "[dependencies]\nts-rs = \"1\"")],
+            &[(GeneratorKind::TsRs, "src-tauri/bindings")],
+        );
+    }
+
+    #[test]
+    fn test_ts_rs_not_found_without_dep_or_config() {
+        assert_discovery(
+            "tsrs_nothing",
+            &[("Cargo.toml", "[dependencies]\nserde = \"1\"")],
+            &[],
+        );
+    }
+
+    // ─── Typegen ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_typegen_camel_case_output_path() {
+        assert_discovery(
+            "typegen_camel",
+            &[(
+                "tauri.conf.json",
+                r#"{ "plugins": { "typegen": { "outputPath": "../src/types/typegen" } } }"#,
+            )],
+            &[(GeneratorKind::Typegen, "src/types/typegen")],
+        );
+    }
+
+    #[test]
+    fn test_typegen_default_output_path() {
+        assert_discovery(
+            "typegen_default",
+            &[(
+                "tauri.conf.json",
+                r#"{ "plugins": { "typegen": { "projectPath": "." } } }"#,
+            )],
+            &[(GeneratorKind::Typegen, "src/generated")],
+        );
+    }
+
+    #[test]
+    fn test_typegen_not_found_without_plugin_section() {
+        assert_discovery("typegen_no_plugin", &[], &[]);
+    }
+
+    // ─── Combined ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_all_three_generators_discovered() {
+        assert_discovery(
+            "all_three",
+            &[
+                (
+                    "src/lib.rs",
+                    r#"use tauri_specta::Builder; fn run() { builder.export(Typescript::default(), "../src/specta.ts"); }"#,
+                ),
+                (
+                    "tauri.conf.json",
+                    r#"{ "plugins": { "typegen": { "outputPath": "../src/typegen" } } }"#,
+                ),
+                (
+                    ".cargo/config.toml",
+                    r#"[env]
+TS_RS_EXPORT_DIR = "../src/ts-rs""#,
+                ),
+            ],
+            &[
+                (GeneratorKind::Specta, "src/specta.ts"),
+                (GeneratorKind::Typegen, "src/typegen"),
+                (GeneratorKind::TsRs, "src/ts-rs"),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_no_generators_without_tauri_config() {
+        let root = tmp("no_tauri");
+        fs::create_dir_all(&root).unwrap();
+        assert!(discover_generators(&root).is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
 }
