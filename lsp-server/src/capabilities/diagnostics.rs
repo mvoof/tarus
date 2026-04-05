@@ -450,12 +450,13 @@ pub fn types_match(ts_type: &str, expected: &str, project_index: &ProjectIndex) 
         return true;
     }
 
-    // Check if both resolve to the same type alias definition
-    if let Some(expected_def) = project_index.type_aliases.get(expected) {
-        if let Some(ts_def) = project_index.type_aliases.get(ts_type) {
-            return expected_def.value() == ts_def.value();
-        }
-    }
+    // Resolve aliases: if a name is in type_aliases, use its definition; otherwise keep as-is
+    let resolve = |t: &str| {
+        project_index
+            .type_aliases
+            .get(t)
+            .map_or_else(|| t.to_string(), |v| v.value().clone())
+    };
 
-    false
+    resolve(ts_type) == resolve(expected)
 }
