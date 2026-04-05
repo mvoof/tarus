@@ -7,10 +7,6 @@ use super::ProjectIndex;
 
 impl ProjectIndex {
     /// Get all known names for a specific entity type (for completion)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the cache lock is poisoned (only occurs if another thread panicked while holding the lock)
     pub fn get_all_names(&self, entity: EntityType) -> Vec<NameLocation> {
         // Select appropriate cache
         let cache = match entity {
@@ -20,7 +16,8 @@ impl ProjectIndex {
 
         // Try to read from cache
         {
-            let cache_read = cache.read().unwrap();
+            let cache_read = cache.read();
+
             if let Some(cached) = cache_read.as_ref() {
                 return cached.clone();
             }
@@ -42,7 +39,7 @@ impl ProjectIndex {
             .collect();
 
         // Store in cache
-        *cache.write().unwrap() = Some(result.clone());
+        *cache.write() = Some(result.clone());
 
         result
     }
@@ -70,6 +67,7 @@ impl ProjectIndex {
                 // on the Rust side (e.g. specta typed events use `StructName(...).emit_to()`
                 // which isn't captured as a string-based emit Finding).
                 let has_event_schema = self.event_schemas.get(&key.name).is_some();
+
                 DiagnosticInfo::Event {
                     has_definition,
                     has_emitters: locations.iter().any(|l| l.behavior == Behavior::Emit)

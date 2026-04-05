@@ -25,24 +25,17 @@ impl ProjectIndex {
     }
 
     /// Replace the list of config-discovered generators.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned (only if another thread panicked while holding it).
     pub fn set_generator_bindings(&self, bindings: Vec<super::types::DiscoveredGenerator>) {
-        *self.generator_bindings.write().unwrap() = bindings;
+        *self.generator_bindings.write() = bindings;
     }
 
     /// Return the `GeneratorKind` for a given file path based on config-discovered generators.
     ///
     /// For directory-match generators the path must be inside the output directory.
     /// For exact-file generators the path must equal the output file.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned (only if another thread panicked while holding it).
     pub fn get_generator_for_file(&self, path: &Path) -> Option<GeneratorKind> {
-        let bindings = self.generator_bindings.read().unwrap();
+        let bindings = self.generator_bindings.read();
+
         for b in bindings.iter() {
             if b.is_directory {
                 if path.starts_with(&b.output_path) {

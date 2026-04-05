@@ -19,10 +19,10 @@ pub use types::*;
 
 use crate::syntax::EntityType;
 use dashmap::DashMap;
+use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::RwLock;
 use tower_lsp_server::lsp_types::Range;
 
 #[derive(Debug)]
@@ -141,18 +141,15 @@ impl ProjectIndex {
         self.file_map.insert(path_ref, keys_vec);
 
         // Invalidate caches
-        *self.command_names_cache.write().unwrap() = None;
-        *self.event_names_cache.write().unwrap() = None;
+        *self.command_names_cache.write() = None;
+        *self.event_names_cache.write() = None;
+
         for key in &keys_in_this_file {
             self.diagnostic_info_cache.remove(key);
         }
     }
 
     /// Deletes all entries associated with a specific file.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the cache lock is poisoned (only occurs if another thread panicked while holding the lock)
     pub fn remove_file(&self, path: &Path) {
         if let Some((_, keys)) = self.file_map.remove(&path.to_path_buf()) {
             for key in keys {
@@ -168,8 +165,8 @@ impl ProjectIndex {
             }
 
             // Invalidate caches
-            *self.command_names_cache.write().unwrap() = None;
-            *self.event_names_cache.write().unwrap() = None;
+            *self.command_names_cache.write() = None;
+            *self.event_names_cache.write() = None;
         }
 
         // Also remove parse errors for this file
@@ -262,6 +259,7 @@ impl ProjectIndex {
                         limit,
                         "rust refs",
                     );
+
                     Self::push_file_lenses(
                         &mut result,
                         my_loc.range,
@@ -272,6 +270,7 @@ impl ProjectIndex {
                 }
             }
         }
+
         result
     }
 
