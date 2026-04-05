@@ -239,10 +239,10 @@ struct Payload { data: u32 }
     #[test]
     fn no_false_positive_on_event_substring() {
         // "EventEmitter" contains "Event" but is not an Event derive
-        let src = r#"
+        let src = r"
 #[derive(Clone, EventEmitter)]
 struct Payload { data: u32 }
-"#;
+";
         let tree = parse_rust(src);
         let struct_node = find_node(tree.root_node(), "struct_item").unwrap();
 
@@ -251,10 +251,10 @@ struct Payload { data: u32 }
 
     #[test]
     fn detects_full_path_event_derive() {
-        let src = r#"
+        let src = r"
 #[derive(Clone, some_crate::Event)]
 struct Payload { data: u32 }
-"#;
+";
         let tree = parse_rust(src);
         let struct_node = find_node(tree.root_node(), "struct_item").unwrap();
 
