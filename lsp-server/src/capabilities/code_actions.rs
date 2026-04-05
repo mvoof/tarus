@@ -162,22 +162,27 @@ fn find_rust_file_candidates(workspace_root: &Path) -> Vec<RustFileCandidate> {
 }
 
 fn calculate_file_priority(file_name: &str, content: &str) -> u8 {
+    use crate::constants::{
+        PRIORITY_COMMAND_FILE, PRIORITY_DEFAULT, PRIORITY_HAS_COMMAND_ATTR,
+        PRIORITY_INVOKE_HANDLER, PRIORITY_LIB_RS, PRIORITY_MAIN_RS, PRIORITY_MOD_RS,
+    };
+
     if file_name == "lib.rs" {
-        return 100;
+        return PRIORITY_LIB_RS;
     }
     if file_name == "main.rs" {
-        return 95;
+        return PRIORITY_MAIN_RS;
     }
     if content.contains("invoke_handler(") {
-        return 85;
+        return PRIORITY_INVOKE_HANDLER;
     }
     if content.contains("#[tauri::command]") {
-        return 80;
+        return PRIORITY_HAS_COMMAND_ATTR;
     }
     match file_name {
-        "commands.rs" | "api.rs" | "handlers.rs" => 70,
-        "mod.rs" => 65,
-        _ => 50,
+        "commands.rs" | "api.rs" | "handlers.rs" => PRIORITY_COMMAND_FILE,
+        "mod.rs" => PRIORITY_MOD_RS,
+        _ => PRIORITY_DEFAULT,
     }
 }
 

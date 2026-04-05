@@ -21,6 +21,7 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 mod bindings_reader;
 mod capabilities;
 mod config_reader;
+mod constants;
 mod file_processor;
 mod indexer;
 mod rust_type_extractor;
@@ -512,7 +513,7 @@ impl LanguageServer for Backend {
                 let is_dev_mode = self.is_developer_mode_active.clone();
 
                 let task = tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    tokio::time::sleep(Duration::from_millis(constants::DEBOUNCE_MS)).await;
 
                     // Get OLD keys before processing (will be removed)
                     let old_keys: Vec<IndexKey> = project_index

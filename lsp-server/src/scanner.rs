@@ -20,8 +20,7 @@ const EXCLUDED_FILES: &[&str] = &["vite.config.ts"];
 /// Ignored file suffixes list
 const EXCLUDED_FILE_SUFFIXES: &[&str] = &[".d.ts"];
 
-/// List of extensions that are supported by the parser
-const TARGET_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
+use crate::constants::SUPPORTED_EXTENSIONS;
 
 /// Determines if a file or directory name matches the ignore rules
 fn is_ignored_entry_name(name: &str, is_dir: bool) -> bool {
@@ -115,7 +114,7 @@ pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
             e.path()
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| TARGET_EXTENSIONS.contains(&ext))
+                .is_some_and(|ext| SUPPORTED_EXTENSIONS.contains(&ext))
         })
         .map(walkdir::DirEntry::into_path)
         .collect()

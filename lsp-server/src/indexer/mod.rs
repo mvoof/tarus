@@ -63,7 +63,7 @@ impl Default for ProjectIndex {
             event_names_cache: RwLock::new(None),
             diagnostic_info_cache: DashMap::new(),
             parse_errors: DashMap::new(),
-            reference_limit: AtomicUsize::new(3),
+            reference_limit: AtomicUsize::new(crate::constants::DEFAULT_REFERENCE_LIMIT),
             command_schemas: DashMap::new(),
             generated_file_paths: DashMap::new(),
             type_aliases: DashMap::new(),

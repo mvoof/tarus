@@ -332,7 +332,7 @@ fn check_arg_count(
         loc.range,
         DiagnosticSeverity::WARNING,
         message,
-        Some("tarus/arg-count-mismatch"),
+        Some(crate::constants::DIAG_ARG_COUNT_MISMATCH),
         None,
     ))
 }
@@ -371,8 +371,8 @@ fn check_return_type(
     check_type_annotation(
         loc,
         expected,
-        "tarus/return-type-missing",
-        "tarus/return-type-mismatch",
+        crate::constants::DIAG_RETURN_TYPE_MISSING,
+        crate::constants::DIAG_RETURN_TYPE_MISMATCH,
         format!("invoke('{command_name}') is missing return type, expected '{expected}'"),
         |ts_type| {
             format!(
@@ -432,8 +432,8 @@ fn check_event_payload_type(
     check_type_annotation(
         loc,
         expected,
-        "tarus/event-payload-missing",
-        "tarus/event-payload-mismatch",
+        crate::constants::DIAG_EVENT_PAYLOAD_MISSING,
+        crate::constants::DIAG_EVENT_PAYLOAD_MISMATCH,
         format!("{behavior_label}('{event_name}') is missing payload type, expected '{expected}'"),
         |ts_type| {
             format!(

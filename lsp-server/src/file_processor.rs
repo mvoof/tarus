@@ -5,9 +5,6 @@ use crate::indexer::{GeneratorKind, ProjectIndex};
 use crate::tree_parser;
 use std::path::{Path, PathBuf};
 
-/// Supported file extensions
-pub const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
-
 /// Check if file extension is supported
 #[must_use]
 pub fn is_supported_file(path: &Path) -> bool {

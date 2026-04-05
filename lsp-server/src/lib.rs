@@ -5,6 +5,7 @@
 pub mod bindings_reader;
 pub mod capabilities;
 pub mod config_reader;
+pub mod constants;
 pub mod file_processor;
 pub mod indexer;
 pub mod rust_type_extractor;
