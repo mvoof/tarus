@@ -148,7 +148,7 @@ fn try_extract_command_schemas_from_node(
     while let Some(m) = matches.next() {
         // Check that fn_item has a #[tauri::command] attribute
         if let Some(item_cap) = find_capture(m, fn_item_idx) {
-            if !has_tauri_command_attr(item_cap.node, content) {
+            if !crate::rust_attr::has_tauri_command_attr(item_cap.node, content) {
                 continue;
             }
         }
@@ -189,75 +189,8 @@ fn try_extract_command_schemas_from_node(
     Ok(schemas)
 }
 
-/// Check if a struct has a derive attribute containing `Event` (covers both
-/// `tauri_specta::Event` and its common alias `SpectaEvent`).
-#[must_use]
-pub fn has_specta_event_derive(struct_node: tree_sitter::Node<'_>, content: &str) -> bool {
-    let Some(parent) = struct_node.parent() else {
-        return false;
-    };
-
-    let mut cursor = parent.walk();
-    let children: Vec<_> = parent.children(&mut cursor).collect();
-
-    let Some(struct_idx) = children.iter().position(|n| n.id() == struct_node.id()) else {
-        return false;
-    };
-
-    for sibling in children[..struct_idx].iter().rev() {
-        let kind = sibling.kind();
-        if kind == "attribute_item" {
-            let text = sibling.utf8_text(content.as_bytes()).unwrap_or("");
-            if text.contains("derive") && text.contains("Event") {
-                return true;
-            }
-        } else if kind == "line_comment" || kind == "block_comment" {
-            // Skip comments between attributes
-        } else {
-            break;
-        }
-    }
-
-    false
-}
-
-/// Check if a function node has a `#[tauri::command]` or `#[command]` attribute
-/// among its immediately-preceding siblings, skipping other attribute items and comments.
-#[must_use]
-pub fn has_tauri_command_attr(fn_node: tree_sitter::Node<'_>, content: &str) -> bool {
-    // Walk through the siblings BEFORE this function node in its parent
-    let Some(parent) = fn_node.parent() else {
-        return false;
-    };
-
-    let mut cursor = parent.walk();
-    let children: Vec<_> = parent.children(&mut cursor).collect();
-
-    // Find the index of fn_node among siblings
-    let Some(fn_idx) = children.iter().position(|n| n.id() == fn_node.id()) else {
-        return false;
-    };
-
-    // Walk backwards from fn_idx, collecting only consecutive attribute_item nodes
-    // Stop at the first non-attribute sibling (ignoring comments/whitespace)
-    for sibling in children[..fn_idx].iter().rev() {
-        let kind = sibling.kind();
-        if kind == "attribute_item" {
-            let text = sibling.utf8_text(content.as_bytes()).unwrap_or("");
-            if text.contains("tauri::command") {
-                return true;
-            }
-            // Another attribute, keep going back
-        } else if kind == "line_comment" || kind == "block_comment" {
-            // Skip comments between attributes and function
-        } else {
-            // Hit a real statement — stop searching
-            break;
-        }
-    }
-
-    false
-}
+// Attribute detection utilities (has_tauri_command_attr, has_specta_event_derive)
+// are in the `rust_attr` module.
 
 /// Extract parameters from a tree-sitter `parameters` node.
 ///

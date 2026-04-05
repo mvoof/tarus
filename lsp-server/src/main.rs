@@ -24,6 +24,7 @@ mod config_reader;
 mod constants;
 mod file_processor;
 mod indexer;
+mod rust_attr;
 mod rust_type_extractor;
 mod scanner;
 mod syntax;

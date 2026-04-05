@@ -1,7 +1,6 @@
 //! Rust source code parsing for Tauri commands and events
 
 use crate::indexer::Finding;
-use crate::rust_type_extractor;
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use crate::utils::{find_capture, point_to_position};
 use std::collections::HashMap;
@@ -89,7 +88,7 @@ pub(super) fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
             let item_cap = find_capture(m, Some(sitem_idx));
 
             if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
-                if rust_type_extractor::has_specta_event_derive(item_cap.node, content) {
+                if crate::rust_attr::has_specta_event_derive(item_cap.node, content) {
                     let struct_name = name_cap
                         .node
                         .utf8_text(content.as_bytes())
@@ -115,7 +114,7 @@ pub(super) fn parse_rust(content: &str) -> ParseResult<Vec<Finding>> {
             let item_cap = find_capture(m, Some(item_idx));
 
             if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
-                if rust_type_extractor::has_tauri_command_attr(item_cap.node, content) {
+                if crate::rust_attr::has_tauri_command_attr(item_cap.node, content) {
                     let name = name_cap
                         .node
                         .utf8_text(content.as_bytes())
@@ -219,7 +218,7 @@ pub(super) fn extract_rust_findings(
             let item_cap = find_capture(m, Some(sitem_idx));
 
             if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
-                if rust_type_extractor::has_specta_event_derive(item_cap.node, content) {
+                if crate::rust_attr::has_specta_event_derive(item_cap.node, content) {
                     let struct_name = name_cap
                         .node
                         .utf8_text(content.as_bytes())
@@ -244,7 +243,7 @@ pub(super) fn extract_rust_findings(
             let item_cap = find_capture(m, Some(item_idx));
 
             if let (Some(name_cap), Some(item_cap)) = (name_cap, item_cap) {
-                if rust_type_extractor::has_tauri_command_attr(item_cap.node, content) {
+                if crate::rust_attr::has_tauri_command_attr(item_cap.node, content) {
                     let name = name_cap
                         .node
                         .utf8_text(content.as_bytes())

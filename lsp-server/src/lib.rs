@@ -8,6 +8,7 @@ pub mod config_reader;
 pub mod constants;
 pub mod file_processor;
 pub mod indexer;
+pub mod rust_attr;
 pub mod rust_type_extractor;
 pub mod scanner;
 pub mod syntax;
