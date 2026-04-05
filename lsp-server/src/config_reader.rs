@@ -277,15 +277,21 @@ fn parse_ts_rs_export_dir(
 /// Resolve `..` and `.` path components without requiring the path to exist on disk.
 fn normalize_path(path: &Path) -> PathBuf {
     let mut components: Vec<Component<'_>> = Vec::new();
+
     for component in path.components() {
         match component {
             Component::ParentDir => {
-                components.pop();
+                if matches!(components.last(), Some(Component::Normal(_))) {
+                    components.pop();
+                } else {
+                    components.push(component);
+                }
             }
             Component::CurDir => {}
             c => components.push(c),
         }
     }
+
     components.iter().collect()
 }
 
