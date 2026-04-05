@@ -5,7 +5,29 @@ mod common_paths;
 
 use common_fixtures::load_fixture;
 use common_paths::test_path;
-use lsp_server::rust_type_extractor::{extract_command_schemas, rust_type_to_ts};
+use lsp_server::indexer::types::{CommandSchema, EventSchema};
+use lsp_server::rust_type_extractor::{
+    extract_command_schemas_from_tree, extract_event_schemas_from_tree, rust_type_to_ts,
+};
+use std::path::Path;
+use tree_sitter::Parser;
+
+fn parse_rust(content: &str) -> tree_sitter::Tree {
+    let lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+    let mut parser = Parser::new();
+    parser.set_language(&lang).unwrap();
+    parser.parse(content, None).unwrap()
+}
+
+fn extract_command_schemas(content: &str, source_path: &Path) -> Vec<CommandSchema> {
+    let tree = parse_rust(content);
+    extract_command_schemas_from_tree(tree.root_node(), content, source_path)
+}
+
+fn extract_event_schemas(content: &str, source_path: &Path) -> Vec<EventSchema> {
+    let tree = parse_rust(content);
+    extract_event_schemas_from_tree(tree.root_node(), content, &tree, source_path)
+}
 
 // ============================================================
 // rust_type_to_ts primitive mappings
@@ -134,8 +156,6 @@ fn test_only_tauri_command_extracted() {
 }
 
 // ─── Event schema extraction ──────────────────────────────────────────────────
-
-use lsp_server::rust_type_extractor::extract_event_schemas;
 
 #[test]
 fn test_event_schema_local_variable_payload() {

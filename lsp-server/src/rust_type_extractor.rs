@@ -4,7 +4,7 @@ use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
 use crate::utils::{capture_text, find_capture};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Language, Parser, Query, QueryCursor};
+use tree_sitter::{Language, Query, QueryCursor};
 
 const RUST_PARAMS_QUERY: &str = include_str!("queries/rust_params.scm");
 
@@ -70,6 +70,7 @@ fn extract_first_generic_arg_from_type(full_type: &str) -> Option<String> {
 
     // Navigate: source_file > type_item > type node > type_arguments > first child type
     let type_item = root.named_child(0)?;
+
     // The type value is the last named child of type_item (after `type`, name, `=`)
     let type_node = type_item.child_by_field_name("type")?;
 
@@ -79,22 +80,8 @@ fn extract_first_generic_arg_from_type(full_type: &str) -> Option<String> {
     // First named child of type_arguments (skipping `<` and `,` tokens)
     let first_arg = type_args.named_child(0)?;
     let arg_text = &wrapper[first_arg.byte_range()];
-    Some(arg_text.to_string())
-}
 
-/// Extract command schemas from a Rust source file.
-///
-/// Only extracts functions that have `#[tauri::command]` attribute.
-/// Does NOT modify queries/rust.scm.
-///
-/// Prefer `extract_command_schemas_from_tree` when a parsed tree is already available.
-#[must_use]
-#[allow(dead_code)]
-pub fn extract_command_schemas(content: &str, source_path: &Path) -> Vec<CommandSchema> {
-    let Ok(schemas) = try_extract_command_schemas(content, source_path) else {
-        return Vec::new();
-    };
-    schemas
+    Some(arg_text.to_string())
 }
 
 /// Extract command schemas from a pre-parsed tree root node.
@@ -109,23 +96,8 @@ pub fn extract_command_schemas_from_tree(
     let Ok(schemas) = try_extract_command_schemas_from_node(root, content, source_path) else {
         return Vec::new();
     };
+
     schemas
-}
-
-#[allow(dead_code)]
-fn try_extract_command_schemas(
-    content: &str,
-    source_path: &Path,
-) -> Result<Vec<CommandSchema>, Box<dyn std::error::Error>> {
-    let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
-    let mut parser = Parser::new();
-    parser.set_language(&ts_lang)?;
-
-    let tree = parser
-        .parse(content, None)
-        .ok_or("Failed to parse Rust file")?;
-
-    try_extract_command_schemas_from_node(tree.root_node(), content, source_path)
 }
 
 fn try_extract_command_schemas_from_node(
@@ -154,6 +126,7 @@ fn try_extract_command_schemas_from_node(
         }
 
         let fn_name = capture_text(m, fn_name_idx, content.as_bytes()).to_string();
+
         if fn_name.is_empty() {
             continue;
         }
@@ -236,6 +209,7 @@ fn parse_rust_params_from_node(
         }
 
         let ts_type = rust_type_to_ts(rust_type);
+
         result.push(ParamSchema { name, ts_type });
     }
 
@@ -245,19 +219,6 @@ fn parse_rust_params_from_node(
 // ─── Event schema extraction from Rust source ────────────────────────────────
 
 const RUST_EMIT_QUERY: &str = include_str!("queries/rust_emit.scm");
-
-/// Extract event schemas from a Rust source file by finding `emit("event", payload)` calls.
-///
-/// For each emit call, attempts to resolve the payload variable's type from the enclosing
-/// function's parameters.
-#[must_use]
-#[allow(dead_code)]
-pub fn extract_event_schemas(content: &str, source_path: &Path) -> Vec<EventSchema> {
-    let Ok(schemas) = try_extract_event_schemas(content, source_path) else {
-        return Vec::new();
-    };
-    schemas
-}
 
 /// Extract event schemas from a pre-parsed tree root node.
 ///
@@ -272,23 +233,8 @@ pub fn extract_event_schemas_from_tree(
     let Ok(schemas) = try_extract_event_schemas_from_node(root, content, tree, source_path) else {
         return Vec::new();
     };
+
     schemas
-}
-
-#[allow(dead_code)]
-fn try_extract_event_schemas(
-    content: &str,
-    source_path: &Path,
-) -> Result<Vec<EventSchema>, Box<dyn std::error::Error>> {
-    let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
-    let mut parser = Parser::new();
-    parser.set_language(&ts_lang)?;
-
-    let tree = parser
-        .parse(content, None)
-        .ok_or("Failed to parse Rust file")?;
-
-    try_extract_event_schemas_from_node(tree.root_node(), content, &tree, source_path)
 }
 
 fn try_extract_event_schemas_from_node(
@@ -388,12 +334,15 @@ fn find_enclosing_function<'a>(
     _tree: &'a tree_sitter::Tree,
 ) -> Option<tree_sitter::Node<'a>> {
     let mut current = node.parent();
+
     while let Some(n) = current {
         if n.kind() == "function_item" {
             return Some(n);
         }
+
         current = n.parent();
     }
+
     None
 }
 
@@ -444,6 +393,7 @@ fn resolve_local_variable_type(
                     }
                 }
             }
+
             sibling = s.prev_sibling();
         }
 
@@ -453,6 +403,7 @@ fn resolve_local_variable_type(
             if parent.kind() == "function_item" {
                 break;
             }
+            
             current = parent;
         } else {
             break;
