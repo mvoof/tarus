@@ -12,12 +12,36 @@ pub fn has_tauri_command_attr(fn_node: tree_sitter::Node<'_>, content: &str) -> 
     })
 }
 
-/// Check if a struct has a derive attribute containing `Event` (covers both
-/// `tauri_specta::Event` and its common alias `SpectaEvent`).
+/// Check if a struct has a derive attribute containing `Event` (covers
+/// `tauri_specta::Event`, its common alias `SpectaEvent`, and bare `Event`).
+///
+/// Parses the derive argument list to check each trait individually,
+/// avoiding false positives from unrelated derives whose names happen
+/// to contain "Event" (e.g. `EventEmitter`).
 #[must_use]
 pub fn has_specta_event_derive(struct_node: tree_sitter::Node<'_>, content: &str) -> bool {
     has_preceding_attr(struct_node, content, |text| {
-        text.contains("derive") && text.contains("Event")
+        is_derive_with_event_trait(text)
+    })
+}
+
+/// Return true if `attr_text` is a `#[derive(...)]` attribute where one of
+/// the comma-separated arguments is exactly `Event`, `SpectaEvent`, or
+/// a path ending in `::Event` (e.g. `tauri_specta::Event`).
+fn is_derive_with_event_trait(attr_text: &str) -> bool {
+    // attr_text looks like "#[derive(Clone, tauri_specta::Event)]"
+    let Some(inner) = attr_text.strip_prefix("#[derive(") else {
+        return false;
+    };
+
+    let Some(inner) = inner.strip_suffix(")]") else {
+        return false;
+    };
+
+    inner.split(',').any(|arg| {
+        let arg = arg.trim();
+
+        arg == "Event" || arg == "SpectaEvent" || arg.ends_with("::Event")
     })
 }
 
@@ -41,8 +65,10 @@ fn has_preceding_attr(
 
     for sibling in children[..idx].iter().rev() {
         let kind = sibling.kind();
+
         if kind == "attribute_item" {
             let text = sibling.utf8_text(content.as_bytes()).unwrap_or("");
+
             if predicate(text) {
                 return true;
             }
@@ -208,6 +234,31 @@ struct Payload { data: u32 }
         let struct_node = find_node(tree.root_node(), "struct_item").unwrap();
 
         assert!(!has_specta_event_derive(struct_node, src));
+    }
+
+    #[test]
+    fn no_false_positive_on_event_substring() {
+        // "EventEmitter" contains "Event" but is not an Event derive
+        let src = r#"
+#[derive(Clone, EventEmitter)]
+struct Payload { data: u32 }
+"#;
+        let tree = parse_rust(src);
+        let struct_node = find_node(tree.root_node(), "struct_item").unwrap();
+
+        assert!(!has_specta_event_derive(struct_node, src));
+    }
+
+    #[test]
+    fn detects_full_path_event_derive() {
+        let src = r#"
+#[derive(Clone, some_crate::Event)]
+struct Payload { data: u32 }
+"#;
+        let tree = parse_rust(src);
+        let struct_node = find_node(tree.root_node(), "struct_item").unwrap();
+
+        assert!(has_specta_event_derive(struct_node, src));
     }
 
     #[test]
