@@ -186,8 +186,12 @@ impl LanguageServer for Backend {
             return;
         };
 
-        // Discover type generators from project configuration files
-        let generators = config_reader::discover_generators(root);
+        // Discover type generators from project configuration files (sync I/O → off async thread)
+        let root_for_generators = root.clone();
+        let generators =
+            tokio::task::spawn_blocking(move || config_reader::discover_generators(&root_for_generators))
+                .await
+                .unwrap_or_default();
 
         if generators.is_empty() {
             self.client
