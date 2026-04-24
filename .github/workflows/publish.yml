@@ -67,3 +67,9 @@ jobs:
         with:
           pat: ${{ secrets.OPEN_VSX_TOKEN }}
           packagePath: extension
+
+  github-release:
+    needs: build
+    uses: ./.github/workflows/release.yml
+    with:
+      prerelease: false

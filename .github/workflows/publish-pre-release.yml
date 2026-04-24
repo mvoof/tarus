@@ -69,3 +69,9 @@ jobs:
           registryUrl: https://marketplace.visualstudio.com
           packagePath: extension
           preRelease: true
+
+  github-release:
+    needs: build
+    uses: ./.github/workflows/release.yml
+    with:
+      prerelease: true
