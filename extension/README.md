@@ -1,11 +1,8 @@
 <div align="center">
    <img src="https://raw.githubusercontent.com/mvoof/tarus/main/assets/icon.png" alt="TARUS Logo" width="120"/>
    <h1>TARUS</h1>
-
-   <p>
-    <b>The Missing Link for TAURI® Development</b><br>
-    Bridge the gap between Rust and TypeScript with zero configuration.
-   </p>
+   <p><b>The Missing Link for TAURI® Development</b></p>
+   <p>Bridge the gap between Rust and TypeScript with zero configuration.</p>
 
 [![Marketplace](https://img.shields.io/visual-studio-marketplace/v/mvoof.tarus-vscode-extension?style=flat-square&label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Installs](https://img.shields.io/visual-studio-marketplace/i/mvoof.tarus-vscode-extension?style=flat-square)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![TAURI v2.0](https://img.shields.io/badge/TAURI-v2.0-blue?style=flat-square)](https://tauri.app) [![License](https://img.shields.io/github/license/mvoof/tarus?style=flat-square)](LICENSE)
 
@@ -35,10 +32,6 @@ As secondary features, the extension can also detect unused commands and help au
 
 Jump from frontend `invoke` or `emit` calls directly to their Rust implementations using **F12 (Go to Definition)**. Use **Shift+F12** to find all frontend call sites from a Rust function.
 
-- Frontend to Backend navigation
-- Backend to Frontend references
-- Support for complex project structures
-
 </td>
 <td align="center">
 
@@ -52,11 +45,7 @@ Jump from frontend `invoke` or `emit` calls directly to their Rust implementatio
 
 ### Autocomplete
 
-Intelligent suggestions for command and event names. Suggestions appear as soon as you open a quote in `invoke`, `emit`, or `listen` calls, eliminating manual searching.
-
-- Context-aware suggestions
-- Support for command and event names
-- Real-time indexing of new definitions
+Intelligent suggestions for command and event names. suggestions appear as soon as you open a quote in `invoke`, `emit`, or `listen` calls.
 
 </td>
 <td align="center">
@@ -71,11 +60,11 @@ Intelligent suggestions for command and event names. Suggestions appear as soon 
 
 ### Diagnostics
 
-Real-time analysis to detect errors before they reach the browser:
+Real-time analysis to detect errors before runtime:
 
-- **Undefined Commands**: Warns if you invoke a command missing from Rust.
-- **Payload Validation**: Detects missing or extra keys in `invoke` arguments.
-- **Event Desync**: Identifies unlistened or unhandled events.
+- **Undefined Commands**: Warns if a command is missing from Rust.
+- **Payload Validation**: Detects missing or extra keys in arguments.
+- **Event Desync**: Identifies unhandled events.
 
 </td>
 <td align="center">
@@ -90,10 +79,10 @@ Real-time analysis to detect errors before they reach the browser:
 
 ### Code Actions
 
-Quick fixes for development efficiency:
+Efficiency tools for common tasks:
 
-- **Add Missing Types**: Automatically insert generic type parameters.
-- **Generate Commands**: Create Rust command templates directly from frontend call sites.
+- **Add Missing Types**: Insert generic type parameters automatically.
+- **Generate Commands**: Create Rust templates from call sites.
 
 </td>
 <td align="center">
@@ -106,17 +95,17 @@ Quick fixes for development efficiency:
 
 ---
 
-## Support and Integration
+## Integration
 
 ### Language Support
 
-- **Backend**: Rust (`#[tauri::command]`, `AppHandle::emit`, `Window::listen`)
-- **Frontend**: TypeScript, JavaScript, JSX, TSX
-- **Frameworks**: React, Vue 3 (SFC), Svelte, Angular
+- **Backend**: Rust
+- **Frontend**: TypeScript, JavaScript
+- **Frameworks**: React, Vue 3, Svelte, Angular
 
-### Type Generator Support
+### Type Generators
 
-TARUS reads generated bindings to provide structural type checking for:
+TARUS supports automatic discovery of generated bindings from:
 
 - **tauri-specta**
 - **ts-rs**
@@ -124,14 +113,8 @@ TARUS reads generated bindings to provide structural type checking for:
 
 ---
 
-## Documentation
-
-- **[Changelog](./CHANGELOG.md)** — Version history and release notes.
-- **[Architecture Guide](./docs/ARCHITECTURE.md)** — Deep dive into Tree-sitter and LSP internals.
-- **[Contributing](./CONTRIBUTING.md)** — Guidelines for building and testing.
-
-## License
-
-[MIT](./LICENSE) © 2026 mvoof
+<div align="center">
+   <i>Source code available on <a href="https://github.com/mvoof/tarus">GitHub</a></i>
+</div>
 
 TAURI is a trademark of The Tauri Programme within the Commons Conservancy.
