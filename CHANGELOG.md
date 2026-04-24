@@ -1,8 +1,22 @@
 ## Change Log
 
+### [0.7.0] - 2026-04-24
+
+- **Enhanced Type Support:** Full bidirectional payload type checking between Rust and Frontend.
+  - **Rust-to-TS Mapping:** Accurate conversion for primitives, `Result`, `Option`, `Vec`, and complex nested types using tree-sitter.
+  - **TAURI® v2 API:** Support for `emit`, `listen`, `emitTo`, and `win.emit` with full type validation.
+- **Performance Improvements:**
+  - **Concurrent Indexing:** Switched to `parking_lot::RwLock` for faster, panic-free state management.
+  - **Background Tasks:** Generator discovery and heavy indexing now run on dedicated threads to keep the LSP responsive.
+- **Stability & Fixes:**
+  - **Smarter Resolution:** Fixed type resolution for shadowed local variables and asymmetric type aliases.
+  - **Discovery:** Added TOML support for `tauri-typegen` and improved detection of TAURI config files.
+  - **Precision:** Eliminated false positives in `Event` derive detection and redundant diagnostic messages.
+- **Internal Refactoring:** Major cleanup of `tree_parser` and `indexer` modules into focused submodules for better maintainability.
+
 ### [0.6.2]
 
-- **Diagnostics Fix:** Resolved a false-positive warning where unused Tauri Events were incorrectly reported as unused Commands (`Command '...' is defined but never invoked in frontend`). The internal `DiagnosticInfo` was refactored into a strict enum to cleanly separate `Command` and `Event` evaluation logic.
+- **Diagnostics Fix:** Resolved a false-positive warning where unused TAURI Events were incorrectly reported as unused Commands (`Command '...' is defined but never invoked in frontend`). The internal `DiagnosticInfo` was refactored into a strict enum to cleanly separate `Command` and `Event` evaluation logic.
 
 ### [0.6.1]
 
@@ -36,7 +50,7 @@
 - **Code Quality:** Major refactoring to a modular architecture, improving maintainability and enabling comprehensive testing.
 
 ### [0.3.1]
-- **Completion:** Autocomplete for command and event names inside Tauri API calls. Triggers only in context (uses `command_syntax.json`).
+- **Completion:** Autocomplete for command and event names inside TAURI API calls. Triggers only in context (uses `command_syntax.json`).
 - **Diagnostics:** For all command/event mismatch diagnostic messages, use the WARNING status.
 
 ### [0.3.0]
@@ -52,7 +66,7 @@
 ### [0.2.1]
 
 - **Silent by Default:** Removed reference counting logs. The extension now runs silently in the background without spamming "Updated index" messages.
-- **Smart Activation:** Strictly validates Tauri projects on startup. Disables LSP features for non-Tauri workspaces.
+- **Smart Activation:** Strictly validates TAURI projects on startup. Disables LSP features for non-TAURI workspaces.
 - **Developer Experience:** Added incremental debug reporting. When `tarus.developerMode` is enabled, saving a file logs a detailed structure report for that file.
 - **Performance:** Optimized the indexing loop by removing unnecessary count aggregations.
 
