@@ -1,39 +1,134 @@
 //! File processing utilities
 
-use crate::indexer::ProjectIndex;
+use crate::bindings_reader;
+use crate::indexer::{GeneratorKind, ProjectIndex};
 use crate::tree_parser;
 use std::path::{Path, PathBuf};
 
-/// Supported file extensions
-pub const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
-
 /// Check if file extension is supported
-#[must_use] pub fn is_supported_file(path: &Path) -> bool {
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        SUPPORTED_EXTENSIONS.contains(&ext)
-    } else {
-        false
-    }
+#[must_use]
+pub fn is_supported_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| crate::constants::SUPPORTED_EXTENSIONS.contains(&ext))
 }
 
-/// Process file content from editor buffer
-pub fn process_file_content(
-    path: &Path,
-    content: &str,
-    project_index: &ProjectIndex,
-) -> bool {
+/// Process file content from editor buffer.
+///
+/// Returns `true` if the file was successfully routed and processed.
+///
+/// # Panics
+///
+/// Panics if the `generator_bindings` lock is poisoned (only if another thread panicked
+/// while holding the write lock).
+pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectIndex) -> bool {
     if !is_supported_file(path) {
         return false;
     }
 
-    match tree_parser::parse(path, content) {
-        Ok(file_index) => {
-            project_index.add_file(file_index);
-            true
+    // Check if this is a generated bindings file via config-based discovery.
+    if let Some(kind) = project_index.get_generator_for_file(path) {
+        process_bindings_file(path, content, kind, project_index);
+
+        return true;
+    }
+
+    if path.extension().is_some_and(|s| s == "rs") {
+        match tree_parser::parse_rust_full(content, path) {
+            Ok(rust_index) => {
+                let path_buf = path.to_path_buf();
+
+                project_index.remove_schemas_for_file(&path_buf);
+                project_index.remove_event_schemas_for_file(&path_buf);
+
+                project_index.add_file(rust_index.file_index);
+
+                for schema in rust_index.command_schemas {
+                    if !project_index
+                        .get_schema(&schema.command_name)
+                        .is_some_and(|e| e.generator != GeneratorKind::RustSource)
+                    {
+                        project_index.add_schema(schema);
+                    }
+                }
+
+                for schema in rust_index.event_schemas {
+                    if !project_index
+                        .get_event_schema(&schema.event_name)
+                        .is_some_and(|e| e.generator != GeneratorKind::RustSource)
+                    {
+                        project_index.add_event_schema(schema);
+                    }
+                }
+
+                true
+            }
+
+            Err(e) => {
+                project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
+                false
+            }
         }
-        Err(e) => {
-            project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
-            false
+    } else {
+        match tree_parser::parse(path, content) {
+            Ok(file_index) => {
+                project_index.add_file(file_index);
+
+                true
+            }
+
+            Err(e) => {
+                project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
+
+                false
+            }
+        }
+    }
+}
+
+/// Route a generated bindings file to the appropriate reader and store results.
+fn process_bindings_file(
+    path: &Path,
+    content: &str,
+    kind: GeneratorKind,
+    project_index: &ProjectIndex,
+) {
+    let path_buf = path.to_path_buf();
+
+    // Clear stale data for this file first
+    project_index.remove_schemas_for_file(&path_buf);
+    project_index.remove_type_aliases_for_file(&path_buf);
+    project_index.remove_event_schemas_for_file(&path_buf);
+
+    match kind {
+        GeneratorKind::Specta => {
+            for schema in bindings_reader::parse_specta_bindings(content, &path_buf) {
+                project_index.add_schema(schema);
+            }
+
+            for schema in bindings_reader::parse_specta_events(content, &path_buf) {
+                project_index.add_event_schema(schema);
+            }
+        }
+
+        GeneratorKind::TsRs => {
+            for (name, def) in bindings_reader::parse_ts_rs_types(content) {
+                project_index.add_type_alias(name, def, path.to_path_buf());
+            }
+        }
+
+        GeneratorKind::Typegen => {
+            for (name, def) in bindings_reader::parse_typegen_types(content) {
+                project_index.add_type_alias(name, def, path.to_path_buf());
+            }
+
+            for schema in bindings_reader::parse_typegen_events(content, &path_buf) {
+                project_index.add_event_schema(schema);
+            }
+        }
+
+        GeneratorKind::RustSource => {
+            // Not a valid kind for generated TS files — ignore
         }
     }
 }
@@ -44,13 +139,11 @@ pub fn process_file_index(path: PathBuf, project_index: &ProjectIndex) -> bool {
         return false;
     }
 
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
+    match std::fs::read_to_string(&path) {
+        Ok(content) => process_file_content(&path, &content, project_index),
         Err(e) => {
             project_index.set_parse_error(path, format!("Failed to read file: {e}"));
-            return false;
+            false
         }
-    };
-
-    process_file_content(&path, &content, project_index)
+    }
 }

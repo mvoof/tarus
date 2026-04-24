@@ -119,16 +119,13 @@ await myInvoke("my_command");
 sendEvent("my_event");
 ```
 
-### Generic Type Parameters
+### Type Generation Support
 
-Generic type calls are fully supported:
+TARUS works with popular type generation libraries for Tauri: [tauri-specta](https://github.com/specta-rs/tauri-specta), [specta-typescript](https://github.com/specta-rs/specta/tree/main/specta-typescript), [ts-rs](https://github.com/Aleph-Alpha/ts-rs), and [tauri-typegen](https://github.com/thwbh/tauri-typegen). When generated binding files are present, all the same features — navigation, CodeLens, hover, references, autocomplete, and diagnostics — extend to cover type information as well. This includes parameter key validation, return type checking, and event payload type verification with quick-fix code actions.
 
-```typescript
-// All these patterns work with navigation, autocomplete, and diagnostics
-await invoke<number>("get_count");
-await invoke<Session>("get_session", { id: 1 });
-emit<void>("event_name");
-```
+Generator output paths are discovered automatically from your existing project configs (`tauri.conf.json`, `.cargo/config.toml`, Rust source files) — no extra setup required.
+
+Specta's typed event API (`events.X.listen/emit/once`) is also fully supported.
 
 ### Extension Settings
 

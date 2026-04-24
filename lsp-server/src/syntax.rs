@@ -27,10 +27,13 @@ pub enum Behavior {
     Emit,
     /// Event listen (listen("event"))
     Listen,
+    /// Specta-style command call (Frontend: commands.methodName(...))
+    SpectaCall,
 }
 
 /// Parse error types
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // "Error" suffix is semantically meaningful here
 pub enum ParseError {
     /// File contains syntax errors
     SyntaxError(String),

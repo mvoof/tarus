@@ -49,7 +49,7 @@ pub fn handle_completion(
 
     let line = lines[line_idx];
     let col = params.text_document_position.position.character as usize;
-    let byte_index = lsp_character_to_byte_index(line, col);
+    let byte_index = crate::utils::lsp_character_to_byte_index(line, col);
     let prefix = &line[..byte_index];
 
     // Check if in completion context
@@ -103,32 +103,4 @@ pub fn handle_completion(
     }
 
     Some(CompletionResponse::Array(items))
-}
-
-pub fn lsp_character_to_byte_index(line: &str, character: usize) -> usize {
-    let mut byte_index = 0;
-    let mut char_count = 0;
-
-    for (i, c) in line.char_indices() {
-        if char_count == character {
-            return i;
-        }
-        // LSP 'character' is usually based on UTF-16 code units.
-        // Most editors (VS Code) use UTF-16.
-        // Rust's char is a Unicode Scalar Value.
-        // We need to count how many UTF-16 code units this char takes.
-        char_count += c.len_utf16();
-        byte_index = i + c.len_utf8();
-    }
-
-    // If we overshoot or match exactly at the end
-    if char_count <= character {
-        return byte_index;
-    }
-
-    // Fallback? Ideally shouldn't happen if character is valid.
-    // If we haven't returned yet, it might mean we are strictly inside the last char
-    // (unlikely if loop finishes) OR the requested character is beyond string length.
-    // Just return the length of the string to be safe.
-    line.len()
 }

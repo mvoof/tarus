@@ -1,12 +1,13 @@
 //! Code Actions capability - generate Rust command templates
 
-use crate::indexer::ProjectIndex;
+use crate::indexer::{GeneratorKind, LocationInfo, ProjectIndex};
 use crate::scanner::find_src_tauri_dir;
-use crate::syntax::EntityType;
+use crate::syntax::{Behavior, EntityType};
 use std::path::{Path, PathBuf};
 use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    Position, Range, TextEdit, Uri, WorkspaceEdit,
+    DocumentChanges, OneOf, OptionalVersionedTextDocumentIdentifier, Position, Range,
+    TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
 };
 use tower_lsp_server::UriExt;
 
@@ -29,15 +30,30 @@ pub fn handle_code_action(
 
     let position = params.range.start;
 
-    // Check if cursor is on an undefined command
-    if let Some((key, _loc)) = project_index.get_key_at_position(&path, position) {
+    // Check if cursor is on a command or event
+    if let Some((key, loc)) = project_index.get_key_at_position(&path, position) {
+        // --- Event payload type code action ---
+        if key.entity == EntityType::Event {
+            if let Some(action) = make_event_payload_action(&key.name, &loc, project_index, params)
+            {
+                return Some(vec![CodeActionOrCommand::CodeAction(action)]);
+            }
+            return None;
+        }
+
         if key.entity != EntityType::Command {
             return None;
         }
 
+        // --- Return type code action ---
+        if let Some(action) = make_return_type_action(&key.name, &loc, project_index, params) {
+            return Some(vec![CodeActionOrCommand::CodeAction(action)]);
+        }
+
+        // --- Generate Rust command stub (existing) ---
         let info = project_index.get_diagnostic_info(&key);
-        if info.has_definition {
-           return None;
+        if info.has_definition() {
+            return None;
         }
 
         let root = workspace_root?;
@@ -51,7 +67,8 @@ pub fn handle_code_action(
         let mut actions = Vec::new();
 
         for candidate in ranked {
-            let file_name = candidate.path
+            let file_name = candidate
+                .path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
@@ -65,30 +82,26 @@ pub fn handle_code_action(
                 continue;
             };
 
-            // Uri has interior mutability due to caching, but we don't modify after insertion
-            #[allow(clippy::mutable_key_type)]
-            let mut changes = std::collections::HashMap::new();
-            // LSP line numbers won't exceed u32::MAX in practice
-            #[allow(clippy::cast_possible_truncation)]
-            changes.insert(
-                target_uri,
-                vec![TextEdit {
-                    range: Range {
-                        start: Position {
-                            line: candidate.insertion_line as u32,
-                            character: 0,
-                        },
-                        end: Position {
-                            line: candidate.insertion_line as u32,
-                            character: 0,
-                        },
-                    },
-                    new_text: command_template,
-                }],
-            );
-
             let workspace_edit = WorkspaceEdit {
-                changes: Some(changes),
+                document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                    text_document: OptionalVersionedTextDocumentIdentifier {
+                        uri: target_uri,
+                        version: None,
+                    },
+                    edits: vec![OneOf::Left(TextEdit {
+                        range: Range {
+                            start: Position {
+                                line: u32::try_from(candidate.insertion_line).unwrap_or(u32::MAX),
+                                character: 0,
+                            },
+                            end: Position {
+                                line: u32::try_from(candidate.insertion_line).unwrap_or(u32::MAX),
+                                character: 0,
+                            },
+                        },
+                        new_text: command_template,
+                    })],
+                }])),
                 ..Default::default()
             };
 
@@ -149,22 +162,27 @@ fn find_rust_file_candidates(workspace_root: &Path) -> Vec<RustFileCandidate> {
 }
 
 fn calculate_file_priority(file_name: &str, content: &str) -> u8 {
+    use crate::constants::{
+        PRIORITY_COMMAND_FILE, PRIORITY_DEFAULT, PRIORITY_HAS_COMMAND_ATTR,
+        PRIORITY_INVOKE_HANDLER, PRIORITY_LIB_RS, PRIORITY_MAIN_RS, PRIORITY_MOD_RS,
+    };
+
     if file_name == "lib.rs" {
-        return 100;
+        return PRIORITY_LIB_RS;
     }
     if file_name == "main.rs" {
-        return 95;
+        return PRIORITY_MAIN_RS;
     }
     if content.contains("invoke_handler(") {
-        return 85;
+        return PRIORITY_INVOKE_HANDLER;
     }
     if content.contains("#[tauri::command]") {
-        return 80;
+        return PRIORITY_HAS_COMMAND_ATTR;
     }
     match file_name {
-        "commands.rs" | "api.rs" | "handlers.rs" => 70,
-        "mod.rs" => 65,
-        _ => 50,
+        "commands.rs" | "api.rs" | "handlers.rs" => PRIORITY_COMMAND_FILE,
+        "mod.rs" => PRIORITY_MOD_RS,
+        _ => PRIORITY_DEFAULT,
     }
 }
 
@@ -178,7 +196,9 @@ fn find_insertion_line(content: &str) -> usize {
         if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
             last_use = i + 1;
         }
-        if (trimmed.starts_with("mod ") || trimmed.starts_with("pub mod ")) && !trimmed.contains('{') {
+        if (trimmed.starts_with("mod ") || trimmed.starts_with("pub mod "))
+            && !trimmed.contains('{')
+        {
             last_mod = i + 1;
         }
     }
@@ -193,4 +213,133 @@ fn find_insertion_line(content: &str) -> usize {
 fn rank_and_limit(mut candidates: Vec<RustFileCandidate>) -> Vec<RustFileCandidate> {
     candidates.sort_by(|a, b| b.priority.cmp(&a.priority));
     candidates.into_iter().take(5).collect()
+}
+
+/// Build a quickfix code action that inserts or replaces a type annotation (`<T>`).
+///
+/// Shared by return-type and event-payload actions. Handles:
+/// - `None` return type → insert `<expected>` at `call_name_end`
+/// - `Some(wrong)` → replace `type_arg_range` with `<expected>`
+/// - Skips `void`/`any` and matching types
+fn make_type_fix_action(
+    loc: &LocationInfo,
+    expected: &str,
+    label: &str,
+    project_index: &ProjectIndex,
+    params: &CodeActionParams,
+) -> Option<CodeAction> {
+    let (title, edit_range, new_text) = match &loc.return_type {
+        None => {
+            let insert_pos = loc.call_name_end?;
+            (
+                format!("Add {label} '{expected}'"),
+                Range {
+                    start: insert_pos,
+                    end: insert_pos,
+                },
+                format!("<{expected}>"),
+            )
+        }
+        Some(ts_type) => {
+            if ts_type == "void" || ts_type == "any" {
+                return None;
+            }
+            if super::diagnostics::types_match(ts_type, expected, project_index) {
+                return None;
+            }
+            let type_range = loc.type_arg_range?;
+            (
+                format!("Fix {label} to '{expected}'"),
+                type_range,
+                format!("<{expected}>"),
+            )
+        }
+    };
+
+    let doc_uri = params.text_document.uri.clone();
+    let workspace_edit = WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: doc_uri,
+                version: None,
+            },
+            edits: vec![OneOf::Left(TextEdit {
+                range: edit_range,
+                new_text,
+            })],
+        }])),
+        ..Default::default()
+    };
+
+    Some(CodeAction {
+        title,
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(params.context.diagnostics.clone()),
+        edit: Some(workspace_edit),
+        ..Default::default()
+    })
+}
+
+/// Build a code action to fix or insert the payload type on an `emit()` / `listen()` call.
+fn make_event_payload_action(
+    event_name: &str,
+    loc: &LocationInfo,
+    project_index: &ProjectIndex,
+    params: &CodeActionParams,
+) -> Option<CodeAction> {
+    if !matches!(loc.behavior, Behavior::Emit | Behavior::Listen) {
+        return None;
+    }
+
+    if !project_index.has_bindings_files() {
+        return None;
+    }
+
+    let schema = project_index.get_event_schema(event_name)?;
+
+    if matches!(schema.generator, GeneratorKind::RustSource)
+        && !project_index
+            .type_aliases
+            .contains_key(&schema.payload_type)
+    {
+        return None;
+    }
+
+    let expected = &schema.payload_type;
+    if expected == "void" || expected == "null" {
+        return None;
+    }
+
+    make_type_fix_action(loc, expected, "payload type", project_index, params)
+}
+
+/// Build a code action to fix or insert the return type on an `invoke()` call.
+fn make_return_type_action(
+    command_name: &str,
+    loc: &LocationInfo,
+    project_index: &ProjectIndex,
+    params: &CodeActionParams,
+) -> Option<CodeAction> {
+    if !matches!(loc.behavior, Behavior::Call) {
+        return None;
+    }
+
+    if !project_index.has_bindings_files() {
+        return None;
+    }
+
+    let schema = project_index.get_schema(command_name)?;
+
+    if matches!(schema.generator, GeneratorKind::RustSource)
+        && !project_index.type_aliases.contains_key(&schema.return_type)
+    {
+        return None;
+    }
+
+    let expected = &schema.return_type;
+    if expected == "void" {
+        return None;
+    }
+
+    make_type_fix_action(loc, expected, "return type", project_index, params)
 }
