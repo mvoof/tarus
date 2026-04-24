@@ -5,6 +5,9 @@ on:
     tags:
       - "v*-pre-release"
 
+permissions:
+  contents: read
+
 jobs:
   build:
     uses: ./.github/workflows/build.yml
@@ -53,7 +56,6 @@ jobs:
           chmod +x extension/bin/lsp-server-macos-x64
           chmod +x extension/bin/lsp-server-macos-arm64
 
-          cp README.md extension/README.md
           cp CHANGELOG.md extension/CHANGELOG.md
           cp LICENSE extension/LICENSE || echo "License file not found, skipping"
 
@@ -70,3 +72,9 @@ jobs:
           registryUrl: https://marketplace.visualstudio.com
           packagePath: extension
           preRelease: true
+
+  github-release:
+    needs: build
+    uses: ./.github/workflows/release.yml
+    with:
+      prerelease: true

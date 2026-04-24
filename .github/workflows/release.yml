@@ -1,0 +1,36 @@
+name: GitHub Release
+
+on:
+  workflow_call:
+    inputs:
+      prerelease:
+        required: true
+        type: boolean
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: compiled-binaries
+
+      - name: Prepare Release Assets
+        run: |
+          mkdir -p release-assets
+          cp compiled-binaries/lsp-server-linux-x64/lsp-server-linux-x64 release-assets/
+          cp compiled-binaries/lsp-server-win-x64.exe/lsp-server-win-x64.exe release-assets/
+          cp compiled-binaries/lsp-server-macos-x64/lsp-server-macos-x64 release-assets/
+          cp compiled-binaries/lsp-server-macos-arm64/lsp-server-macos-arm64 release-assets/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ inputs.prerelease }}
