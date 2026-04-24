@@ -4,7 +4,7 @@
    <p><b>The Missing Link for TAURI® Development</b></p>
    <p>Bridge the gap between Rust and TypeScript with zero configuration.</p>
 
-[![Marketplace](https://img.shields.io/visual-studio-marketplace/v/mvoof.tarus-vscode-extension?style=flat-square&label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Installs](https://img.shields.io/visual-studio-marketplace/i/mvoof.tarus-vscode-extension?style=flat-square)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![TAURI v2.0](https://img.shields.io/badge/TAURI-v2.0-blue?style=flat-square)](https://tauri.app) [![License](https://img.shields.io/github/license/mvoof/tarus?style=flat-square)](LICENSE)
+[![Marketplace](https://vsmarketplacebadges.dev/version-short/mvoof.tarus-vscode-extension.svg?style=flat-square&label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Installs](https://vsmarketplacebadges.dev/installs-short/mvoof.tarus-vscode-extension.svg?style=flat-square)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![TAURI v2.0](https://img.shields.io/badge/TAURI-v2.0-blue?style=flat-square)](https://tauri.app) [![License](https://img.shields.io/github/license/mvoof/tarus?style=flat-square)](LICENSE) [![GitHub Stars](https://img.shields.io/github/stars/mvoof/tarus?style=flat-square)](https://github.com/mvoof/tarus/stargazers)
 
 </div>
 
