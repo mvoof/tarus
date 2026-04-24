@@ -3,6 +3,9 @@ name: Build Server Binaries
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build Server (${{ matrix.target.os }})

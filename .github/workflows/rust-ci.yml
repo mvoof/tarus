@@ -9,6 +9,9 @@ on:
       - 'lsp-server/Cargo.lock'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   rust-ci:
     name: Cargo Check & Clippy
