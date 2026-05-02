@@ -383,16 +383,12 @@ impl LanguageServer for Backend {
         let result = capabilities::symbols::handle_document_symbol(params, &self.project_index);
 
         if let Some(ref response) = result {
-            match response {
-                DocumentSymbolResponse::Flat(syms) => {
-                    self.log_dev_info(&format!("✅ Found {} document symbols", syms.len()))
-                        .await;
-                }
-                DocumentSymbolResponse::Nested(syms) => {
-                    self.log_dev_info(&format!("✅ Found {} nested document symbols", syms.len()))
-                        .await;
-                }
-            }
+            let count = match response {
+                DocumentSymbolResponse::Flat(syms) => syms.len(),
+                DocumentSymbolResponse::Nested(syms) => syms.len(),
+            };
+            self.log_dev_info(&format!("✅ Found {count} document symbols"))
+                .await;
         } else {
             self.log_dev_info("⚠️ No document symbols found").await;
         }
