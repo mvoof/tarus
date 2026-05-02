@@ -26,7 +26,7 @@ use tree_sitter::{Language, Parser};
 
 use frontend_parser::parse_frontend;
 use lang_config::is_angular_file;
-use rust_parser::{extract_rust_findings, parse_rust};
+use rust_parser::extract_rust_findings;
 use sfc_parser::extract_script_blocks;
 
 /// Main parsing function - entry point for all file types
@@ -51,7 +51,17 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
     };
 
     let findings = match lang {
-        Some(LangType::Rust) => parse_rust(content)?,
+        Some(LangType::Rust) => {
+            let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
+            let mut parser = Parser::new();
+            parser.set_language(&ts_lang).map_err(|e| {
+                ParseError::LanguageError(format!("Failed to set Rust language: {e}"))
+            })?;
+            let tree = parser.parse(content, None).ok_or_else(|| {
+                ParseError::SyntaxError("Failed to parse Rust file".to_string())
+            })?;
+            extract_rust_findings(tree.root_node(), content, &ts_lang)?
+        }
         Some(LangType::TypeScript | LangType::JavaScript | LangType::Angular) => {
             parse_frontend(content, lang.unwrap(), 0)?
         }
