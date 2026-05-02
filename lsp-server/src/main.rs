@@ -517,54 +517,14 @@ impl LanguageServer for Backend {
 
                 let task = tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(constants::DEBOUNCE_MS)).await;
-
-                    // Get OLD keys before processing (will be removed)
-                    let old_keys: Vec<IndexKey> = project_index.get_file_keys(&path_clone);
-
-                    if file_processor::process_file_content(&path_clone, &content, &project_index) {
-                        // Log parse errors in developer mode (check AFTER processing)
-                        if is_dev_mode.load(Ordering::Relaxed) {
-                            if let Some(error_msg) = project_index.get_parse_error(&path_clone) {
-                                let filename = path_clone
-                                    .file_name()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("unknown");
-                                client
-                                    .log_message(
-                                        MessageType::ERROR,
-                                        format!("Parse error in {filename}: {error_msg}"),
-                                    )
-                                    .await;
-                            }
-                        }
-                        // Get NEW keys after processing
-                        let new_keys: Vec<IndexKey> = project_index.get_file_keys(&path_clone);
-
-                        // Combine old and new keys to find all affected commands/events
-                        let mut all_keys = HashSet::new();
-                        for key in old_keys.iter().chain(new_keys.iter()) {
-                            all_keys.insert(key.clone());
-                        }
-
-                        // Collect all files that contain these commands/events
-                        let mut affected_files = HashSet::new();
-                        affected_files.insert(path_clone.clone());
-
-                        for key in &all_keys {
-                            for loc in project_index.get_locations_for_key(key) {
-                                affected_files.insert(loc.path.clone());
-                            }
-                        }
-
-                        // Publish diagnostics for all affected files
-                        for file in affected_files {
-                            if let Some(uri) = Uri::from_file_path(&file) {
-                                let diagnostics =
-                                    diagnostics::compute_file_diagnostics(&file, &project_index);
-                                client.publish_diagnostics(uri, diagnostics, None).await;
-                            }
-                        }
-                    }
+                    process_debounced_change(
+                        &path_clone,
+                        &content,
+                        &project_index,
+                        &client,
+                        &is_dev_mode,
+                    )
+                    .await;
                 });
 
                 self.debounce_tasks.insert(path, task);
@@ -586,6 +546,66 @@ impl LanguageServer for Backend {
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+/// Process a file change after debounce: parse, compute affected keys,
+/// and publish diagnostics for all impacted files.
+async fn process_debounced_change(
+    path: &std::path::Path,
+    content: &str,
+    project_index: &Arc<ProjectIndex>,
+    client: &Client,
+    is_dev_mode: &Arc<AtomicBool>,
+) {
+    // Get OLD keys before processing (will be removed)
+    let old_keys: Vec<IndexKey> = project_index.get_file_keys(path);
+
+    if !file_processor::process_file_content(path, content, project_index) {
+        return;
+    }
+
+    // Log parse errors in developer mode (check AFTER processing)
+    if is_dev_mode.load(Ordering::Relaxed) {
+        if let Some(error_msg) = project_index.get_parse_error(path) {
+            let filename = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+            client
+                .log_message(
+                    MessageType::ERROR,
+                    format!("Parse error in {filename}: {error_msg}"),
+                )
+                .await;
+        }
+    }
+
+    // Get NEW keys after processing
+    let new_keys: Vec<IndexKey> = project_index.get_file_keys(path);
+
+    // Combine old and new keys to find all affected commands/events
+    let mut all_keys = HashSet::new();
+    for key in old_keys.iter().chain(new_keys.iter()) {
+        all_keys.insert(key.clone());
+    }
+
+    // Collect all files that contain these commands/events
+    let mut affected_files = HashSet::new();
+    affected_files.insert(path.to_path_buf());
+
+    for key in &all_keys {
+        for loc in project_index.get_locations_for_key(key) {
+            affected_files.insert(loc.path.clone());
+        }
+    }
+
+    // Publish diagnostics for all affected files
+    for file in affected_files {
+        if let Some(uri) = Uri::from_file_path(&file) {
+            let diagnostics = diagnostics::compute_file_diagnostics(&file, project_index);
+            client.publish_diagnostics(uri, diagnostics, None).await;
+        }
     }
 }
 
