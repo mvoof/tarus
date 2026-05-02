@@ -27,31 +27,31 @@ use tower_lsp_server::lsp_types::Range;
 
 #[derive(Debug)]
 pub struct ProjectIndex {
-    pub map: DashMap<IndexKey, Vec<LocationInfo>>,
-    pub file_map: DashMap<PathBuf, Vec<IndexKey>>,
+    pub(crate) map: DashMap<IndexKey, Vec<LocationInfo>>,
+    pub(crate) file_map: DashMap<PathBuf, Vec<IndexKey>>,
     // Caches for get_all_names() results
     pub(crate) command_names_cache: RwLock<NameCache>,
     pub(crate) event_names_cache: RwLock<NameCache>,
     // Cache for diagnostic info (avoids re-iterating locations)
     pub(crate) diagnostic_info_cache: DashMap<IndexKey, DiagnosticInfo>,
     // Parse errors by file path
-    pub parse_errors: DashMap<PathBuf, String>,
+    pub(crate) parse_errors: DashMap<PathBuf, String>,
     // Configuration: Max number of individual file links to show in CodeLens before summarizing
-    pub reference_limit: AtomicUsize,
+    pub(crate) reference_limit: AtomicUsize,
     // Schema storage: command_name -> CommandSchema
-    pub command_schemas: DashMap<String, CommandSchema>,
+    pub(crate) command_schemas: DashMap<String, CommandSchema>,
     // Reverse index: source_path -> list of command names (for stale removal)
-    pub generated_file_paths: DashMap<PathBuf, Vec<String>>,
+    pub(crate) generated_file_paths: DashMap<PathBuf, Vec<String>>,
     // Type alias storage: alias_name -> type definition string
-    pub type_aliases: DashMap<String, String>,
+    pub(crate) type_aliases: DashMap<String, String>,
     // Reverse index: source_path -> list of alias names (for stale removal)
-    pub generated_alias_paths: DashMap<PathBuf, Vec<String>>,
+    pub(crate) generated_alias_paths: DashMap<PathBuf, Vec<String>>,
     // Event schema storage: event_name -> EventSchema
-    pub event_schemas: DashMap<String, EventSchema>,
+    pub(crate) event_schemas: DashMap<String, EventSchema>,
     // Reverse index: source_path -> list of event names (for stale removal)
-    pub generated_event_paths: DashMap<PathBuf, Vec<String>>,
+    pub(crate) generated_event_paths: DashMap<PathBuf, Vec<String>>,
     // Generators discovered from project configuration files
-    pub generator_bindings: RwLock<Vec<DiscoveredGenerator>>,
+    pub(crate) generator_bindings: RwLock<Vec<DiscoveredGenerator>>,
 }
 
 impl Default for ProjectIndex {
@@ -79,6 +79,12 @@ impl ProjectIndex {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Invalidate all name caches (should be called after any mutation to the index)
+    fn invalidate_caches(&self) {
+        *self.command_names_cache.write() = None;
+        *self.event_names_cache.write() = None;
     }
 
     /// Search for a key by cursor position (Reverse Lookup)
@@ -140,9 +146,7 @@ impl ProjectIndex {
         let keys_vec: Vec<_> = keys_in_this_file.iter().cloned().collect();
         self.file_map.insert(path_ref, keys_vec);
 
-        // Invalidate caches
-        *self.command_names_cache.write() = None;
-        *self.event_names_cache.write() = None;
+        self.invalidate_caches();
 
         for key in &keys_in_this_file {
             self.diagnostic_info_cache.remove(key);
@@ -164,9 +168,7 @@ impl ProjectIndex {
                 self.diagnostic_info_cache.remove(&key);
             }
 
-            // Invalidate caches
-            *self.command_names_cache.write() = None;
-            *self.event_names_cache.write() = None;
+            self.invalidate_caches();
         }
 
         // Also remove parse errors for this file
@@ -193,6 +195,44 @@ impl ProjectIndex {
         };
 
         self.map.get(&key).map(|v| v.clone()).unwrap_or_default()
+    }
+
+    /// Check if a type alias exists by name
+    pub fn has_type_alias(&self, name: &str) -> bool {
+        self.type_aliases.contains_key(name)
+    }
+
+    /// Get a type alias definition by name
+    pub fn get_type_alias(&self, name: &str) -> Option<String> {
+        self.type_aliases.get(name).map(|v| v.clone())
+    }
+
+    /// Get the reference limit for `CodeLens` display
+    pub fn get_reference_limit(&self) -> usize {
+        self.reference_limit.load(Ordering::Relaxed)
+    }
+
+    /// Set the reference limit for `CodeLens` display
+    pub fn set_reference_limit(&self, limit: usize) {
+        self.reference_limit.store(limit, Ordering::Relaxed);
+    }
+
+    /// Get keys associated with a file path
+    pub fn get_file_keys(&self, path: &Path) -> Vec<IndexKey> {
+        self.file_map
+            .get(&path.to_path_buf())
+            .map(|keys| keys.value().clone())
+            .unwrap_or_default()
+    }
+
+    /// Get all indexed file paths (for iterating over the entire index)
+    pub fn get_indexed_paths(&self) -> Vec<PathBuf> {
+        self.file_map.iter().map(|e| e.key().clone()).collect()
+    }
+
+    /// Get all locations for a given index key
+    pub fn get_locations_for_key(&self, key: &IndexKey) -> Vec<LocationInfo> {
+        self.map.get(key).map(|v| v.clone()).unwrap_or_default()
     }
 
     /// Preparing data for `CodeLens`

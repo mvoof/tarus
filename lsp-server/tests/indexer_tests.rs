@@ -372,14 +372,14 @@ fn test_type_aliases() {
     );
 
     assert_eq!(
-        index.type_aliases.get("UserProfile").map(|v| v.clone()),
+        index.get_type_alias("UserProfile"),
         Some("{ id: number; name: string }".to_string())
     );
 
     index.remove_type_aliases_for_file(&path);
 
     assert!(
-        index.type_aliases.get("UserProfile").is_none(),
+        !index.has_type_alias("UserProfile"),
         "Alias should be removed"
     );
 }

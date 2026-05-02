@@ -239,11 +239,11 @@ fn test_process_ts_rs_file_populates_type_aliases() {
     process_file_content(&path, &content, &index);
 
     assert!(
-        index.type_aliases.contains_key("UserProfile"),
+        index.has_type_alias("UserProfile"),
         "UserProfile alias should be in index"
     );
     assert!(
-        index.type_aliases.contains_key("TaskState"),
+        index.has_type_alias("TaskState"),
         "TaskState alias should be in index"
     );
 }

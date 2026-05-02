@@ -169,8 +169,7 @@ impl LanguageServer for Backend {
             if let Some(settings) = iter.next() {
                 if let Some(limit) = settings.as_u64() {
                     self.project_index
-                        .reference_limit
-                        .store(usize::try_from(limit).unwrap_or(3), Ordering::Relaxed);
+                        .set_reference_limit(usize::try_from(limit).unwrap_or(3));
 
                     self.client
                         .log_message(
@@ -237,8 +236,7 @@ impl LanguageServer for Backend {
             }
 
             // Publish diagnostics for all indexed files
-            for entry in &project_index_clone.file_map {
-                let path = entry.key().clone();
+            for path in project_index_clone.get_indexed_paths() {
                 if let Some(uri) = Uri::from_file_path(&path) {
                     let diagnostics =
                         diagnostics::compute_file_diagnostics(&path, &project_index_clone);
@@ -521,11 +519,7 @@ impl LanguageServer for Backend {
                     tokio::time::sleep(Duration::from_millis(constants::DEBOUNCE_MS)).await;
 
                     // Get OLD keys before processing (will be removed)
-                    let old_keys: Vec<IndexKey> = project_index
-                        .file_map
-                        .get(&path_clone)
-                        .map(|keys| keys.value().clone())
-                        .unwrap_or_default();
+                    let old_keys: Vec<IndexKey> = project_index.get_file_keys(&path_clone);
 
                     if file_processor::process_file_content(&path_clone, &content, &project_index) {
                         // Log parse errors in developer mode (check AFTER processing)
@@ -544,11 +538,7 @@ impl LanguageServer for Backend {
                             }
                         }
                         // Get NEW keys after processing
-                        let new_keys: Vec<IndexKey> = project_index
-                            .file_map
-                            .get(&path_clone)
-                            .map(|keys| keys.value().clone())
-                            .unwrap_or_default();
+                        let new_keys: Vec<IndexKey> = project_index.get_file_keys(&path_clone);
 
                         // Combine old and new keys to find all affected commands/events
                         let mut all_keys = HashSet::new();
@@ -561,10 +551,8 @@ impl LanguageServer for Backend {
                         affected_files.insert(path_clone.clone());
 
                         for key in &all_keys {
-                            if let Some(locations) = project_index.map.get(key) {
-                                for loc in locations.iter() {
-                                    affected_files.insert(loc.path.clone());
-                                }
+                            for loc in project_index.get_locations_for_key(key) {
+                                affected_files.insert(loc.path.clone());
                             }
                         }
 
