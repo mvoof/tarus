@@ -127,12 +127,13 @@ pub fn parse_fixture(input: &str) -> FixtureData {
             // Parse command schemas (specta only)
             if gen_kind == GeneratorKind::Specta {
                 let cmd_schemas =
-                    lsp_server::bindings_reader::parse_specta_bindings(&content, &path);
+                    lsp_server::bindings_reader::parse_specta_bindings(&content, path.clone());
                 for schema in cmd_schemas {
                     index.add_schema(schema);
                 }
 
-                let evt_schemas = lsp_server::bindings_reader::parse_specta_events(&content, &path);
+                let evt_schemas =
+                    lsp_server::bindings_reader::parse_specta_events(&content, path.clone());
                 for schema in evt_schemas {
                     index.add_event_schema(schema);
                 }
@@ -153,7 +154,7 @@ pub fn parse_fixture(input: &str) -> FixtureData {
             // Parse typegen events
             if gen_kind == GeneratorKind::Typegen {
                 let evt_schemas =
-                    lsp_server::bindings_reader::parse_typegen_events(&content, &path);
+                    lsp_server::bindings_reader::parse_typegen_events(&content, path.clone());
                 for schema in evt_schemas {
                     index.add_event_schema(schema);
                 }

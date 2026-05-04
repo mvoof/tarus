@@ -4,9 +4,18 @@ use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
 use crate::utils::{capture_text, find_capture};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Language, Query, QueryCursor};
+use tree_sitter::{Query, QueryCursor};
 
 const RUST_PARAMS_QUERY: &str = include_str!("queries/rust_params.scm");
+
+const TAURI_SELF_PARAMS: &[&str] = &["self", "&self", "&mut self"];
+const TAURI_INJECTED_TYPES: &[&str] = &["AppHandle", "Window", "WebviewWindow", "Webview"];
+
+fn setup_rust_query(query_str: &str) -> Option<(Query, QueryCursor)> {
+    let lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+    let query = Query::new(&lang, query_str).ok()?;
+    Some((query, QueryCursor::new()))
+}
 
 /// Map a Rust type string to its TypeScript equivalent.
 ///
@@ -105,9 +114,8 @@ fn try_extract_command_schemas_from_node(
     content: &str,
     source_path: &Path,
 ) -> Result<Vec<CommandSchema>, Box<dyn std::error::Error>> {
-    let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
-    let query = Query::new(&ts_lang, RUST_PARAMS_QUERY)?;
-    let mut cursor = QueryCursor::new();
+    let (query, mut cursor) =
+        setup_rust_query(RUST_PARAMS_QUERY).ok_or("failed to build rust_params query")?;
 
     let fn_name_idx = query.capture_index_for_name("fn_name");
     let fn_params_idx = query.capture_index_for_name("fn_params");
@@ -187,8 +195,7 @@ fn parse_rust_params_from_node(
             .unwrap_or("")
             .to_string();
 
-        // Skip `self` parameter
-        if name == "self" || name == "&self" || name == "&mut self" {
+        if TAURI_SELF_PARAMS.contains(&name.as_str()) {
             continue;
         }
 
@@ -202,9 +209,7 @@ fn parse_rust_params_from_node(
             continue;
         }
 
-        // Skip Tauri-injected parameters (not user data)
-        let skip_types = ["AppHandle", "Window", "WebviewWindow", "Webview"];
-        if skip_types.contains(&rust_type) || rust_type.starts_with("State<") {
+        if TAURI_INJECTED_TYPES.contains(&rust_type) || rust_type.starts_with("State<") {
             continue;
         }
 
@@ -241,9 +246,8 @@ fn try_extract_event_schemas_from_node(
     content: &str,
     source_path: &Path,
 ) -> Result<Vec<EventSchema>, Box<dyn std::error::Error>> {
-    let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
-    let query = Query::new(&ts_lang, RUST_EMIT_QUERY)?;
-    let mut cursor = QueryCursor::new();
+    let (query, mut cursor) =
+        setup_rust_query(RUST_EMIT_QUERY).ok_or("failed to build rust_emit query")?;
 
     let event_name_idx = query.capture_index_for_name("event_name");
     let payload_arg_idx = query.capture_index_for_name("payload_arg");
@@ -331,6 +335,48 @@ fn find_enclosing_function(node: tree_sitter::Node<'_>) -> Option<tree_sitter::N
     None
 }
 
+/// Try to extract type info from a `let_declaration` node matching `var_name`.
+///
+/// Returns `Some(type)` if the binding matches and has a recoverable type,
+/// `None` if the binding does not match this variable.
+/// Returns `Some("unknown")` would be misleading — we just return `None` to let
+/// the caller keep searching.
+fn check_let_declaration(
+    s: tree_sitter::Node<'_>,
+    var_name: &str,
+    content: &str,
+) -> Option<String> {
+    if s.kind() != "let_declaration" {
+        return None;
+    }
+
+    let pattern = s.child_by_field_name("pattern")?;
+    if pattern.utf8_text(content.as_bytes()).ok()? != var_name {
+        return None;
+    }
+
+    // `let var: Type = ...` → type annotation wins
+    if let Some(type_node) = s.child_by_field_name("type") {
+        if let Ok(type_text) = type_node.utf8_text(content.as_bytes()) {
+            return Some(rust_type_to_ts(type_text));
+        }
+    }
+
+    // `let var = StructName { ... }` → struct name
+    if let Some(value_node) = s.child_by_field_name("value") {
+        if value_node.kind() == "struct_expression" {
+            if let Some(name_node) = value_node.child_by_field_name("name") {
+                if let Ok(struct_name) = name_node.utf8_text(content.as_bytes()) {
+                    return Some(rust_type_to_ts(struct_name));
+                }
+            }
+        }
+    }
+
+    // Pattern matched but no type info recoverable
+    None
+}
+
 /// Resolve the type of a local variable by searching backwards from the site of the variable's use.
 ///
 /// Handles:
@@ -344,51 +390,18 @@ fn resolve_local_variable_type(
     let mut current = usage_node;
 
     loop {
-        // Check all previous siblings of the current node
         let mut sibling = current.prev_sibling();
         while let Some(s) = sibling {
-            if s.kind() == "let_declaration" {
-                // Check if the pattern matches our variable name
-                if let Some(pattern) = s.child_by_field_name("pattern") {
-                    if let Ok(pat_text) = pattern.utf8_text(content.as_bytes()) {
-                        if pat_text == var_name {
-                            // Try type annotation first: `let payload: Payload = ...`
-                            if let Some(type_node) = s.child_by_field_name("type") {
-                                if let Ok(type_text) = type_node.utf8_text(content.as_bytes()) {
-                                    return Some(rust_type_to_ts(type_text));
-                                }
-                            }
-
-                            // Try value: `let payload = Payload { ... }`
-                            if let Some(value_node) = s.child_by_field_name("value") {
-                                if value_node.kind() == "struct_expression" {
-                                    if let Some(name_node) = value_node.child_by_field_name("name")
-                                    {
-                                        if let Ok(struct_name) =
-                                            name_node.utf8_text(content.as_bytes())
-                                        {
-                                            return Some(rust_type_to_ts(struct_name));
-                                        }
-                                    }
-                                }
-                            }
-
-                            return None;
-                        }
-                    }
-                }
+            if let Some(ty) = check_let_declaration(s, var_name, content) {
+                return Some(ty);
             }
-
             sibling = s.prev_sibling();
         }
 
-        // Move up to the parent to check its previous siblings
         if let Some(parent) = current.parent() {
-            // Stop if we reach a function_item or another scope boundary if needed
             if parent.kind() == "function_item" {
                 break;
             }
-            
             current = parent;
         } else {
             break;

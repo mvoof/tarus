@@ -29,7 +29,7 @@ fn test_camel_to_snake() {
 #[test]
 fn test_parse_specta_extracts_schemas() {
     let content = load_fixture("bindings/specta_bindings.ts");
-    let schemas = parse_specta_bindings(&content, &test_path("specta_bindings.ts"));
+    let schemas = parse_specta_bindings(&content, test_path("specta_bindings.ts"));
 
     assert_eq!(schemas.len(), 3, "Should parse 3 command schemas");
 
@@ -47,7 +47,7 @@ fn test_parse_specta_extracts_schemas() {
 #[test]
 fn test_parse_specta_camel_to_snake() {
     let content = load_fixture("bindings/specta_bindings.ts");
-    let schemas = parse_specta_bindings(&content, &test_path("specta_bindings.ts"));
+    let schemas = parse_specta_bindings(&content, test_path("specta_bindings.ts"));
 
     // getUserProfile → get_user_profile
     assert!(schemas.iter().any(|s| s.command_name == "get_user_profile"));
@@ -58,7 +58,7 @@ fn test_parse_specta_camel_to_snake() {
 #[test]
 fn test_parse_specta_result_return_unwrapped() {
     let content = load_fixture("bindings/specta_bindings.ts");
-    let schemas = parse_specta_bindings(&content, &test_path("specta_bindings.ts"));
+    let schemas = parse_specta_bindings(&content, test_path("specta_bindings.ts"));
 
     // getUserProfile returns Promise<Result<UserProfile, string>> → "UserProfile"
     let s = schemas
@@ -71,7 +71,7 @@ fn test_parse_specta_result_return_unwrapped() {
 #[test]
 fn test_parse_specta_no_params() {
     let content = load_fixture("bindings/specta_bindings.ts");
-    let schemas = parse_specta_bindings(&content, &test_path("specta_bindings.ts"));
+    let schemas = parse_specta_bindings(&content, test_path("specta_bindings.ts"));
 
     let ping = schemas.iter().find(|s| s.command_name == "ping").unwrap();
     assert!(ping.params.is_empty(), "ping should have no params");
@@ -81,7 +81,7 @@ fn test_parse_specta_no_params() {
 #[test]
 fn test_parse_specta_multi_params() {
     let content = load_fixture("bindings/specta_bindings.ts");
-    let schemas = parse_specta_bindings(&content, &test_path("specta_bindings.ts"));
+    let schemas = parse_specta_bindings(&content, test_path("specta_bindings.ts"));
 
     // createUser(name: string, age: number)
     let s = schemas
@@ -319,7 +319,7 @@ export const events = __makeEvents__<{
 "#;
 
     let schemas =
-        lsp_server::bindings_reader::parse_specta_events(content, &test_path("bindings.ts"));
+        lsp_server::bindings_reader::parse_specta_events(content, test_path("bindings.ts"));
     assert_eq!(schemas.len(), 2, "Should parse 2 event schemas");
 
     let demo = schemas.iter().find(|s| s.event_name == "demo-event");
@@ -354,7 +354,7 @@ export async function onAppReady(
 "#;
 
     let schemas =
-        lsp_server::bindings_reader::parse_typegen_events(content, &test_path("events.ts"));
+        lsp_server::bindings_reader::parse_typegen_events(content, test_path("events.ts"));
     assert_eq!(schemas.len(), 2, "Should parse 2 event schemas");
 
     let notif = schemas.iter().find(|s| s.event_name == "notification-sent");

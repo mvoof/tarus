@@ -112,11 +112,11 @@ fn process_bindings_file(
 
     match kind {
         GeneratorKind::Specta => {
-            for schema in bindings_reader::parse_specta_bindings(content, &path_buf) {
+            for schema in bindings_reader::parse_specta_bindings(content, path_buf.clone()) {
                 project_index.add_schema(schema);
             }
 
-            for schema in bindings_reader::parse_specta_events(content, &path_buf) {
+            for schema in bindings_reader::parse_specta_events(content, path_buf) {
                 project_index.add_event_schema(schema);
             }
         }
@@ -132,7 +132,7 @@ fn process_bindings_file(
                 project_index.add_type_alias(name, def, path.to_path_buf());
             }
 
-            for schema in bindings_reader::parse_typegen_events(content, &path_buf) {
+            for schema in bindings_reader::parse_typegen_events(content, path_buf) {
                 project_index.add_event_schema(schema);
             }
         }
