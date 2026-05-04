@@ -26,7 +26,6 @@ impl LangType {
             "js" | "jsx" => Some(Self::JavaScript),
             "vue" => Some(Self::Vue),
             "svelte" => Some(Self::Svelte),
-            "component.ts" => Some(Self::Angular),
             _ => None,
         }
     }

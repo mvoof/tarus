@@ -62,8 +62,8 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
             })?;
             extract_rust_findings(tree.root_node(), content, &ts_lang)?
         }
-        Some(LangType::TypeScript | LangType::JavaScript | LangType::Angular) => {
-            parse_frontend(content, lang.unwrap(), 0)?
+        Some(lang_val @ (LangType::TypeScript | LangType::JavaScript | LangType::Angular)) => {
+            parse_frontend(content, lang_val, 0)?
         }
         Some(LangType::Vue | LangType::Svelte) => {
             let blocks = extract_script_blocks(content);
