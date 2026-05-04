@@ -90,30 +90,23 @@ fn check_type_annotation(
 
 /// Compute diagnostics for a specific file
 pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-
-    // If file has parse errors, skip diagnostic generation
-    // (errors are logged in developer mode only, not shown to user)
-    // TS/Rust analyzer already shows syntax errors
     if project_index.get_parse_error(path).is_some() {
-        return diagnostics;
+        return Vec::new();
     }
 
     let keys: Vec<IndexKey> = match project_index.file_map.get(path) {
         Some(k) => k.value().clone(),
-        None => return diagnostics,
+        None => return Vec::new(),
     };
 
     let has_bindings = project_index.has_bindings_files();
+    let mut diagnostics = Vec::new();
 
     for key in &keys {
-        let info: DiagnosticInfo = project_index.get_diagnostic_info(key);
+        let info = project_index.get_diagnostic_info(key);
         let locations = project_index.get_locations(key.entity, &key.name);
-
-        // Filter locations to only those in current file
         let local_locations: Vec<_> = locations.iter().filter(|l| l.path == *path).collect();
 
-        // Find first occurrence of each behavior type
         let first_call = local_locations
             .iter()
             .find(|l| matches!(l.behavior, Behavior::Call | Behavior::SpectaCall))
@@ -124,86 +117,103 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
             .map(|l| l.range);
 
         for loc in &local_locations {
-            // --- Layer 1: Structural diagnostics (always active) ---
-            let msg = match loc.behavior {
-                // Show on Definition if command/event never used
-                Behavior::Definition => {
-                    let (entity_label, usage_label, is_unused) = match key.entity {
-                        crate::syntax::EntityType::Command => {
-                            ("Command", "invoked in frontend", !info.has_calls())
-                        }
-                        crate::syntax::EntityType::Event => (
-                            "Event",
-                            "emitted or listened for",
-                            !info.has_emitters() && !info.has_listeners(),
-                        ),
-                    };
+            compute_structural_diagnostics(
+                loc,
+                key,
+                &info,
+                first_call,
+                first_emit,
+                &mut diagnostics,
+            );
 
-                    if is_unused {
-                        Some((
-                            DiagnosticSeverity::WARNING,
-                            format!(
-                                "{entity_label} '{}' is defined but never {usage_label}",
-                                key.name
-                            ),
-                        ))
-                    } else {
-                        None
-                    }
-                }
-                // Show on FIRST Call/SpectaCall only if command not defined
-                Behavior::Call | Behavior::SpectaCall if !info.has_definition() => {
-                    if first_call == Some(loc.range) {
-                        Some((
-                            DiagnosticSeverity::WARNING,
-                            format!("Command '{}' is not defined in Rust backend", key.name),
-                        ))
-                    } else {
-                        None // Skip subsequent calls
-                    }
-                }
-                // Show on Listen if event never emitted
-                Behavior::Listen if !info.has_emitters() => Some((
-                    DiagnosticSeverity::WARNING,
-                    format!("Event '{}' is listened for but never emitted", key.name),
-                )),
-                // Show on FIRST Emit only if event never listened
-                Behavior::Emit if !info.has_listeners() => {
-                    if first_emit == Some(loc.range) {
-                        Some((
-                            DiagnosticSeverity::WARNING,
-                            format!("Event '{}' is emitted but no listeners found", key.name),
-                        ))
-                    } else {
-                        None // Skip subsequent emits
-                    }
-                }
-                _ => None,
-            };
-
-            if let Some((severity, message)) = msg {
-                diagnostics.push(tarus_diagnostic(loc.range, severity, message, None, None));
-            }
-
-            // --- Layer 2: Type diagnostics (only when binding files are present) ---
             if has_bindings {
-                if let Some(d) = check_param_keys(loc, &key.name, project_index) {
-                    diagnostics.push(d);
-                }
-                if let Some(d) = check_arg_count(loc, &key.name, project_index) {
-                    diagnostics.push(d);
-                }
-                if let Some(d) = check_return_type(loc, &key.name, project_index) {
-                    diagnostics.push(d);
-                }
-                if let Some(d) = check_event_payload_type(loc, &key.name, project_index) {
-                    diagnostics.push(d);
-                }
+                compute_type_diagnostics(loc, key, project_index, &mut diagnostics);
             }
         }
     }
 
     diagnostics
+}
+
+fn compute_structural_diagnostics(
+    loc: &LocationInfo,
+    key: &IndexKey,
+    info: &DiagnosticInfo,
+    first_call: Option<tower_lsp_server::lsp_types::Range>,
+    first_emit: Option<tower_lsp_server::lsp_types::Range>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let msg = match loc.behavior {
+        Behavior::Definition => {
+            let (entity_label, usage_label, is_unused) = match key.entity {
+                crate::syntax::EntityType::Command => {
+                    ("Command", "invoked in frontend", !info.has_calls())
+                }
+                crate::syntax::EntityType::Event => (
+                    "Event",
+                    "emitted or listened for",
+                    !info.has_emitters() && !info.has_listeners(),
+                ),
+            };
+            if is_unused {
+                Some((
+                    DiagnosticSeverity::WARNING,
+                    format!("{entity_label} '{}' is defined but never {usage_label}", key.name),
+                ))
+            } else {
+                None
+            }
+        }
+        Behavior::Call | Behavior::SpectaCall if !info.has_definition() => {
+            if first_call == Some(loc.range) {
+                Some((
+                    DiagnosticSeverity::WARNING,
+                    format!("Command '{}' is not defined in Rust backend", key.name),
+                ))
+            } else {
+                None
+            }
+        }
+        Behavior::Listen if !info.has_emitters() => Some((
+            DiagnosticSeverity::WARNING,
+            format!("Event '{}' is listened for but never emitted", key.name),
+        )),
+        Behavior::Emit if !info.has_listeners() => {
+            if first_emit == Some(loc.range) {
+                Some((
+                    DiagnosticSeverity::WARNING,
+                    format!("Event '{}' is emitted but no listeners found", key.name),
+                ))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    if let Some((severity, message)) = msg {
+        diagnostics.push(tarus_diagnostic(loc.range, severity, message, None, None));
+    }
+}
+
+fn compute_type_diagnostics(
+    loc: &LocationInfo,
+    key: &IndexKey,
+    project_index: &ProjectIndex,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let Some(d) = check_param_keys(loc, &key.name, project_index) {
+        diagnostics.push(d);
+    }
+    if let Some(d) = check_arg_count(loc, &key.name, project_index) {
+        diagnostics.push(d);
+    }
+    if let Some(d) = check_return_type(loc, &key.name, project_index) {
+        diagnostics.push(d);
+    }
+    if let Some(d) = check_event_payload_type(loc, &key.name, project_index) {
+        diagnostics.push(d);
+    }
 }
 
 /// Validate the argument keys passed to an `invoke()` call against the expected

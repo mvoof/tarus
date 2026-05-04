@@ -11,6 +11,9 @@ use tower_lsp_server::lsp_types::{
 };
 use tower_lsp_server::UriExt;
 
+const COMMAND_TEMPLATE: &str =
+    "\n#[tauri::command]\nfn {name}() -> Result<String, String> {\n    Ok(\"Not implemented\".to_string())\n}\n";
+
 /// Rust file candidate for command insertion
 #[derive(Debug, Clone)]
 pub struct RustFileCandidate {
@@ -27,99 +30,91 @@ pub fn handle_code_action(
 ) -> Option<CodeActionResponse> {
     let path_cow = params.text_document.uri.to_file_path()?;
     let path = path_cow.to_path_buf();
+    let (key, loc) = project_index.get_key_at_position(&path, params.range.start)?;
 
-    let position = params.range.start;
-
-    // Check if cursor is on a command or event
-    if let Some((key, loc)) = project_index.get_key_at_position(&path, position) {
-        // --- Event payload type code action ---
-        if key.entity == EntityType::Event {
-            if let Some(action) = make_event_payload_action(&key.name, &loc, project_index, params)
-            {
-                return Some(vec![CodeActionOrCommand::CodeAction(action)]);
-            }
-            return None;
+    match key.entity {
+        EntityType::Event => handle_event_action(&key.name, &loc, project_index, params),
+        EntityType::Command => {
+            handle_command_action(&key, &loc, project_index, params, workspace_root)
         }
+    }
+}
 
-        if key.entity != EntityType::Command {
-            return None;
-        }
+fn handle_event_action(
+    event_name: &str,
+    loc: &LocationInfo,
+    project_index: &ProjectIndex,
+    params: &CodeActionParams,
+) -> Option<CodeActionResponse> {
+    let action = make_event_payload_action(event_name, loc, project_index, params)?;
+    Some(vec![CodeActionOrCommand::CodeAction(action)])
+}
 
-        // --- Return type code action ---
-        if let Some(action) = make_return_type_action(&key.name, &loc, project_index, params) {
-            return Some(vec![CodeActionOrCommand::CodeAction(action)]);
-        }
-
-        // --- Generate Rust command stub (existing) ---
-        let info = project_index.get_diagnostic_info(&key);
-        if info.has_definition() {
-            return None;
-        }
-
-        let root = workspace_root?;
-
-        let candidates = find_rust_file_candidates(root);
-        if candidates.is_empty() {
-            return None;
-        }
-
-        let ranked = rank_and_limit(candidates);
-        let mut actions = Vec::new();
-
-        for candidate in ranked {
-            let file_name = candidate
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
-
-            let command_template = format!(
-                "\n#[tauri::command]\nfn {}() -> Result<String, String> {{\n    Ok(\"Not implemented\".to_string())\n}}\n",
-                key.name
-            );
-
-            let Some(target_uri) = Uri::from_file_path(&candidate.path) else {
-                continue;
-            };
-
-            let workspace_edit = WorkspaceEdit {
-                document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
-                    text_document: OptionalVersionedTextDocumentIdentifier {
-                        uri: target_uri,
-                        version: None,
-                    },
-                    edits: vec![OneOf::Left(TextEdit {
-                        range: Range {
-                            start: Position {
-                                line: u32::try_from(candidate.insertion_line).unwrap_or(u32::MAX),
-                                character: 0,
-                            },
-                            end: Position {
-                                line: u32::try_from(candidate.insertion_line).unwrap_or(u32::MAX),
-                                character: 0,
-                            },
-                        },
-                        new_text: command_template,
-                    })],
-                }])),
-                ..Default::default()
-            };
-
-            let action = CodeAction {
-                title: format!("Create Rust command '{}' in {}", key.name, file_name),
-                kind: Some(CodeActionKind::QUICKFIX),
-                diagnostics: Some(params.context.diagnostics.clone()),
-                edit: Some(workspace_edit),
-                ..Default::default()
-            };
-
-            actions.push(CodeActionOrCommand::CodeAction(action));
-        }
-
-        return Some(actions);
+fn handle_command_action(
+    key: &crate::indexer::IndexKey,
+    loc: &LocationInfo,
+    project_index: &ProjectIndex,
+    params: &CodeActionParams,
+    workspace_root: Option<&PathBuf>,
+) -> Option<CodeActionResponse> {
+    // Return type fix action takes priority
+    if let Some(action) = make_return_type_action(&key.name, loc, project_index, params) {
+        return Some(vec![CodeActionOrCommand::CodeAction(action)]);
     }
 
-    None
+    // Generate Rust command stub if command not yet defined
+    let info = project_index.get_diagnostic_info(key);
+    if info.has_definition() {
+        return None;
+    }
+
+    let root = workspace_root?;
+    let candidates = find_rust_file_candidates(root);
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let mut actions = Vec::new();
+    for candidate in rank_and_limit(candidates) {
+        let file_name = candidate
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+
+        let new_text = COMMAND_TEMPLATE.replace("{name}", &key.name);
+        let Some(target_uri) = Uri::from_file_path(&candidate.path) else {
+            continue;
+        };
+
+        let insert_line = u32::try_from(candidate.insertion_line).unwrap_or(u32::MAX);
+        let workspace_edit = WorkspaceEdit {
+            document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: target_uri,
+                    version: None,
+                },
+                edits: vec![OneOf::Left(TextEdit {
+                    range: Range {
+                        start: Position { line: insert_line, character: 0 },
+                        end: Position { line: insert_line, character: 0 },
+                    },
+                    new_text,
+                })],
+            }])),
+            ..Default::default()
+        };
+
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: format!("Create Rust command '{}' in {}", key.name, file_name),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(params.context.diagnostics.clone()),
+            edit: Some(workspace_edit),
+            ..Default::default()
+        }));
+    }
+
+    Some(actions)
 }
 
 fn find_rust_file_candidates(workspace_root: &Path) -> Vec<RustFileCandidate> {
