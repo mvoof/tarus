@@ -72,6 +72,14 @@ impl Backend {
         }
     }
 
+    /// Log a developer-mode result: "✅ Found N <label>" or "⚠️ No <label> found".
+    async fn log_dev_result(&self, count: Option<usize>, label: &str) {
+        match count {
+            Some(n) => self.log_dev_info(&format!("✅ Found {n} {label}")).await,
+            None => self.log_dev_info(&format!("⚠️ No {label} found")).await,
+        }
+    }
+
     async fn publish_diagnostics_for_file(&self, path: &PathBuf) {
         let Some(uri) = Uri::from_file_path(path) else {
             return;
@@ -267,12 +275,14 @@ impl LanguageServer for Backend {
 
         let result = capabilities::definition::handle_goto_definition(params, &self.project_index);
 
-        if let Some(GotoDefinitionResponse::Link(ref links)) = result {
-            self.log_dev_info(&format!("✅ Found {} definition links", links.len()))
-                .await;
-        } else {
-            self.log_dev_info("⚠️ No definitions found").await;
-        }
+        let count = result.as_ref().and_then(|r| {
+            if let GotoDefinitionResponse::Link(links) = r {
+                Some(links.len())
+            } else {
+                None
+            }
+        });
+        self.log_dev_result(count, "definition links").await;
 
         Ok(result)
     }
@@ -289,12 +299,7 @@ impl LanguageServer for Backend {
 
         let result = capabilities::references::handle_references(params, &self.project_index);
 
-        if let Some(ref locations) = result {
-            self.log_dev_info(&format!("✅ Found {} references", locations.len()))
-                .await;
-        } else {
-            self.log_dev_info("⚠️ No references found").await;
-        }
+        self.log_dev_result(result.as_ref().map(Vec::len), "references").await;
 
         Ok(result)
     }
@@ -307,12 +312,7 @@ impl LanguageServer for Backend {
 
         let result = capabilities::code_lens::handle_code_lens(params, &self.project_index);
 
-        if let Some(ref lenses) = result {
-            self.log_dev_info(&format!("✅ Generated {} code lenses", lenses.len()))
-                .await;
-        } else {
-            self.log_dev_info("⚠️ No code lenses found").await;
-        }
+        self.log_dev_result(result.as_ref().map(Vec::len), "code lenses").await;
 
         Ok(result)
     }
@@ -329,11 +329,7 @@ impl LanguageServer for Backend {
 
         let result = capabilities::hover::handle_hover(params, &self.project_index);
 
-        if result.is_some() {
-            self.log_dev_info("✅ Generated hover tooltip").await;
-        } else {
-            self.log_dev_info("⚠️ No hover info available").await;
-        }
+        self.log_dev_result(result.as_ref().map(|_| 1), "hover tooltip").await;
 
         Ok(result)
     }
@@ -355,12 +351,7 @@ impl LanguageServer for Backend {
             workspace_root.as_ref(),
         );
 
-        if let Some(ref actions) = result {
-            self.log_dev_info(&format!("✅ Generated {} code actions", actions.len()))
-                .await;
-        } else {
-            self.log_dev_info("⚠️ No code actions available").await;
-        }
+        self.log_dev_result(result.as_ref().map(Vec::len), "code actions").await;
 
         Ok(result)
     }
@@ -376,16 +367,8 @@ impl LanguageServer for Backend {
 
         let result = capabilities::symbols::handle_document_symbol(params, &self.project_index);
 
-        if let Some(ref response) = result {
-            let count = match response {
-                DocumentSymbolResponse::Flat(syms) => syms.len(),
-                DocumentSymbolResponse::Nested(syms) => syms.len(),
-            };
-            self.log_dev_info(&format!("✅ Found {count} document symbols"))
-                .await;
-        } else {
-            self.log_dev_info("⚠️ No document symbols found").await;
-        }
+        self.log_dev_result(result.as_ref().map(document_symbol_len), "document symbols")
+            .await;
 
         Ok(result)
     }
@@ -402,20 +385,8 @@ impl LanguageServer for Backend {
 
         let result = capabilities::symbols::handle_workspace_symbol(&params, &self.project_index);
 
-        if let Some(ref response) = result {
-            match response {
-                OneOf::Left(syms) => {
-                    self.log_dev_info(&format!("✅ Found {} workspace symbols", syms.len()))
-                        .await;
-                }
-                OneOf::Right(syms) => {
-                    self.log_dev_info(&format!("✅ Found {} workspace symbols", syms.len()))
-                        .await;
-                }
-            }
-        } else {
-            self.log_dev_info("⚠️ No workspace symbols found").await;
-        }
+        self.log_dev_result(result.as_ref().map(one_of_len), "workspace symbols")
+            .await;
 
         Ok(result)
     }
@@ -429,23 +400,8 @@ impl LanguageServer for Backend {
             &self.document_cache,
         );
 
-        if let Some(ref response) = result {
-            match response {
-                CompletionResponse::Array(items) => {
-                    self.log_dev_info(&format!("✅ Generated {} completion items", items.len()))
-                        .await;
-                }
-                CompletionResponse::List(list) => {
-                    self.log_dev_info(&format!(
-                        "✅ Generated {} completion items",
-                        list.items.len()
-                    ))
-                    .await;
-                }
-            }
-        } else {
-            self.log_dev_info("⚠️ No completions available").await;
-        }
+        self.log_dev_result(result.as_ref().map(completion_response_len), "completion items")
+            .await;
 
         Ok(result)
     }
@@ -463,8 +419,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path_cow) = params.text_document.uri.to_file_path() {
-            let path: PathBuf = path_cow.into_owned();
+        if let Some(path) = uri_to_path(&params.text_document.uri) {
             let content = params.text_document.text.clone();
 
             // Cache document content for completion
@@ -484,9 +439,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path_cow) = params.text_document.uri.to_file_path() {
-            let path: PathBuf = path_cow.into_owned();
-
+        if let Some(path) = uri_to_path(&params.text_document.uri) {
             // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
             if let Some(change) = params.content_changes.into_iter().next() {
                 let content = change.text;
@@ -527,8 +480,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path_cow) = params.text_document.uri.to_file_path() {
-            let path: PathBuf = path_cow.into_owned();
+        if let Some(path) = uri_to_path(&params.text_document.uri) {
             self.on_change(path.clone()).await;
             self.publish_diagnostics_for_file(&path).await;
         }
@@ -536,6 +488,31 @@ impl LanguageServer for Backend {
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
+    uri.to_file_path().map(|c| c.into_owned())
+}
+
+fn document_symbol_len(response: &DocumentSymbolResponse) -> usize {
+    match response {
+        DocumentSymbolResponse::Flat(syms) => syms.len(),
+        DocumentSymbolResponse::Nested(syms) => syms.len(),
+    }
+}
+
+fn one_of_len(response: &OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>) -> usize {
+    match response {
+        OneOf::Left(syms) => syms.len(),
+        OneOf::Right(syms) => syms.len(),
+    }
+}
+
+fn completion_response_len(response: &CompletionResponse) -> usize {
+    match response {
+        CompletionResponse::Array(items) => items.len(),
+        CompletionResponse::List(list) => list.items.len(),
     }
 }
 
