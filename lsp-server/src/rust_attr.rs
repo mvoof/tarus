@@ -52,31 +52,19 @@ fn has_preceding_attr(
     content: &str,
     predicate: impl Fn(&str) -> bool,
 ) -> bool {
-    let Some(parent) = node.parent() else {
-        return false;
-    };
+    let mut sibling = node.prev_sibling();
 
-    let mut cursor = parent.walk();
-    let children: Vec<_> = parent.children(&mut cursor).collect();
-
-    let Some(idx) = children.iter().position(|n| n.id() == node.id()) else {
-        return false;
-    };
-
-    for sibling in children[..idx].iter().rev() {
-        let kind = sibling.kind();
-
-        if kind == "attribute_item" {
-            let text = sibling.utf8_text(content.as_bytes()).unwrap_or("");
-
-            if predicate(text) {
-                return true;
+    while let Some(s) = sibling {
+        match s.kind() {
+            "attribute_item" => {
+                if predicate(s.utf8_text(content.as_bytes()).unwrap_or("")) {
+                    return true;
+                }
             }
-        } else if kind == "line_comment" || kind == "block_comment" {
-            // Skip comments between attributes
-        } else {
-            break;
+            "line_comment" | "block_comment" => {}
+            _ => break,
         }
+        sibling = s.prev_sibling();
     }
 
     false

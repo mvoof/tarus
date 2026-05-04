@@ -246,17 +246,14 @@ fn check_param_keys(
         return None;
     }
 
-    // Build sets for comparison
-    let expected: Vec<&str> = schema.params.iter().map(|p| p.name.as_str()).collect();
-    let actual: std::collections::HashSet<&str> = call_keys.iter().map(String::as_str).collect();
-    let expected_set: std::collections::HashSet<&str> = expected.iter().copied().collect();
+    // BTreeSet gives deterministic ordering for diagnostic messages
+    let expected: std::collections::BTreeSet<&str> =
+        schema.params.iter().map(|p| p.name.as_str()).collect();
+    let actual: std::collections::BTreeSet<&str> =
+        call_keys.iter().map(String::as_str).collect();
 
     // Missing required params (present in schema, absent in call)
-    let missing: Vec<&str> = expected
-        .iter()
-        .copied()
-        .filter(|e| !actual.contains(e))
-        .collect();
+    let missing: Vec<&str> = expected.difference(&actual).copied().collect();
 
     if !missing.is_empty() {
         return Some(tarus_diagnostic(
@@ -274,23 +271,17 @@ fn check_param_keys(
     }
 
     // Unexpected extra params (present in call, absent from schema)
-    let extra: Vec<&str> = actual
-        .iter()
-        .copied()
-        .filter(|a| !expected_set.contains(a))
-        .collect();
+    let extra: Vec<&str> = actual.difference(&expected).copied().collect();
 
     if !extra.is_empty() {
-        let mut sorted_extra = extra;
-        sorted_extra.sort_unstable();
         return Some(tarus_diagnostic(
             loc.range,
             DiagnosticSeverity::WARNING,
             format!(
                 "invoke('{}') has unexpected argument{}: {}",
                 command_name,
-                if sorted_extra.len() == 1 { "" } else { "s" },
-                sorted_extra.join(", ")
+                if extra.len() == 1 { "" } else { "s" },
+                extra.join(", ")
             ),
             None,
             None,
