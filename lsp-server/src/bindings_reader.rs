@@ -5,6 +5,7 @@
 //! - ts-rs: `export type Name = { ... };`
 //! - tauri-typegen: `export type Name = { ... };`
 
+use crate::constants::{SPECTA_COMMANDS_VAR, SPECTA_MAKE_EVENTS_FN, TYPEGEN_LISTEN_FN};
 use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
 use crate::ts_tree_utils::parse_ts;
 use crate::utils::{camel_to_snake, capture_text, find_capture};
@@ -50,7 +51,7 @@ pub fn parse_specta_bindings(content: &str, source_path: PathBuf) -> Vec<Command
 
     while let Some(m) = matches.next() {
         let var_name = capture_text(m, var_name_idx, bytes);
-        if var_name != "commands" {
+        if var_name != SPECTA_COMMANDS_VAR {
             continue;
         }
 
@@ -304,7 +305,7 @@ pub fn parse_specta_events(content: &str, source_path: PathBuf) -> Vec<EventSche
 
     while let Some(m) = matches.next() {
         let fn_name = capture_text(m, fn_name_idx, bytes);
-        if fn_name != "__makeEvents__" {
+        if fn_name != SPECTA_MAKE_EVENTS_FN {
             continue;
         }
 
@@ -392,7 +393,7 @@ pub fn parse_typegen_events(content: &str, source_path: PathBuf) -> Vec<EventSch
 
     while let Some(m) = matches.next() {
         let fn_name = capture_text(m, fn_name_idx, bytes);
-        if fn_name != "listen" {
+        if fn_name != TYPEGEN_LISTEN_FN {
             continue;
         }
 

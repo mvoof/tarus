@@ -3,6 +3,7 @@
 //! Reads project configuration files to find where each binding generator places its output,
 //! rather than sniffing file headers at scan time.
 
+use crate::constants::{SPECTA_EXPORT_METHOD, SPECTA_EXPORT_TO_METHOD};
 use crate::indexer::{DiscoveredGenerator, GeneratorKind};
 use crate::ts_tree_utils::parse_rust;
 use std::path::{Component, Path, PathBuf};
@@ -48,90 +49,114 @@ pub fn discover_generators(workspace_root: &Path) -> Vec<DiscoveredGenerator> {
 
 /// Discover the tauri-specta and standalone specta-typescript output file by scanning Rust sources.
 fn discover_specta_generators(src_tauri_dir: &Path) -> Vec<DiscoveredGenerator> {
-    let mut generators = Vec::new();
+    let rust_lang: Language = tree_sitter_rust::LANGUAGE.into();
     let query_str = include_str!("queries/rust_specta_discovery.scm");
 
-    let rust_lang: Language = tree_sitter_rust::LANGUAGE.into();
     let Ok(query) = Query::new(&rust_lang, query_str) else {
-        return generators;
+        return Vec::new();
     };
 
     let Some(method_name_idx) = query.capture_index_for_name("method_name") else {
-        return generators;
+        return Vec::new();
     };
-
     let Some(path_arg_idx) = query.capture_index_for_name("path_arg") else {
-        return generators;
+        return Vec::new();
     };
 
-    for entry in WalkDir::new(src_tauri_dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("rs"))
-    {
-        let Ok(content) = std::fs::read_to_string(entry.path()) else {
-            continue;
-        };
+    let rust_files = scan_rust_files(src_tauri_dir);
+    let mut generators = Vec::new();
 
-        // Fast pre-filter: check for either library
-        let has_tauri_specta = content.contains("tauri_specta");
-        let has_specta_ts = content.contains("specta_typescript");
-
-        if !has_tauri_specta && !has_specta_ts {
-            continue;
-        }
-
-        let Some(tree) = parse_rust(&content) else {
-            continue;
-        };
-
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
-
-        while let Some(m) = matches.next() {
-            let method = m
-                .captures
-                .iter()
-                .find(|c| c.index == method_name_idx)
-                .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("");
-
-            // Filter methods right away to avoid extra processing
-            if method != "export" && method != "export_to" {
-                continue;
-            }
-
-            let path_str = m
-                .captures
-                .iter()
-                .find(|c| c.index == path_arg_idx)
-                .and_then(|cap| cap.node.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("");
-
-            let ext_ok = Path::new(path_str)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("ts") || e.eq_ignore_ascii_case("js"));
-
-            if ext_ok {
-                let resolved = normalize_path(&src_tauri_dir.join(path_str));
-
-                let kind = if method == "export" {
-                    GeneratorKind::Specta
-                } else {
-                    GeneratorKind::TsRs
-                };
-
-                generators.push(DiscoveredGenerator {
-                    kind,
-                    output_path: resolved,
-                    is_directory: false,
-                });
-            }
-        }
+    for (path, content) in rust_files {
+        match_specta_patterns(
+            &content,
+            &path,
+            src_tauri_dir,
+            &query,
+            method_name_idx,
+            path_arg_idx,
+            &mut generators,
+        );
     }
 
     generators
+}
+
+/// Iterate `src_tauri_dir` recursively and return `(path, content)` for every `.rs` file
+/// that mentions `tauri_specta` or `specta_typescript`.
+fn scan_rust_files(src_tauri_dir: &Path) -> Vec<(PathBuf, String)> {
+    WalkDir::new(src_tauri_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_type().is_file()
+                && e.path().extension().and_then(|s| s.to_str()) == Some("rs")
+        })
+        .filter_map(|e| {
+            let content = std::fs::read_to_string(e.path()).ok()?;
+            if content.contains("tauri_specta") || content.contains("specta_typescript") {
+                Some((e.into_path(), content))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Run the specta discovery query on one file and push any found generators into `out`.
+fn match_specta_patterns(
+    content: &str,
+    _file_path: &Path,
+    src_tauri_dir: &Path,
+    query: &Query,
+    method_name_idx: u32,
+    path_arg_idx: u32,
+    out: &mut Vec<DiscoveredGenerator>,
+) {
+    let Some(tree) = parse_rust(content) else {
+        return;
+    };
+
+    let bytes = content.as_bytes();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(query, tree.root_node(), bytes);
+
+    while let Some(m) = matches.next() {
+        let method = m
+            .captures
+            .iter()
+            .find(|c| c.index == method_name_idx)
+            .and_then(|cap| cap.node.utf8_text(bytes).ok())
+            .unwrap_or("");
+
+        if method != SPECTA_EXPORT_METHOD && method != SPECTA_EXPORT_TO_METHOD {
+            continue;
+        }
+
+        let path_str = m
+            .captures
+            .iter()
+            .find(|c| c.index == path_arg_idx)
+            .and_then(|cap| cap.node.utf8_text(bytes).ok())
+            .unwrap_or("");
+
+        let ext_ok = Path::new(path_str)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("ts") || e.eq_ignore_ascii_case("js"));
+
+        if ext_ok {
+            let resolved = normalize_path(&src_tauri_dir.join(path_str));
+            let kind = if method == SPECTA_EXPORT_METHOD {
+                GeneratorKind::Specta
+            } else {
+                GeneratorKind::TsRs
+            };
+            out.push(DiscoveredGenerator {
+                kind,
+                output_path: resolved,
+                is_directory: false,
+            });
+        }
+    }
 }
 
 /// Discover the tauri-typegen output directory from the Tauri config file.
@@ -139,35 +164,15 @@ fn discover_specta_generators(src_tauri_dir: &Path) -> Vec<DiscoveredGenerator> 
 /// Supports `.json`, `.json5`, and `.toml` config formats.
 /// Returns `None` if no `plugins.typegen` section is present.
 fn discover_typegen(tauri_config_path: &Path, src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
-    let ext = tauri_config_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-
     let content = std::fs::read_to_string(tauri_config_path).ok()?;
+    let ext = tauri_config_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    let output_path_str = if ext == "toml" {
-        let toml_val: toml::Value = content.parse().ok()?;
-        let typegen = toml_val.get("plugins")?.get("typegen")?;
+    // Returns None if plugins.typegen section doesn't exist; Some(None) if section exists but no outputPath
+    let output_path_str = read_typegen_section_output_path(&content, ext)?;
 
-        typegen
-            .get("outputPath")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string)
-    } else {
-        let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-        let typegen = json.get("plugins")?.get("typegen")?;
-
-        typegen
-            .get("outputPath")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string)
-    };
-
-    let output_path = if let Some(p) = output_path_str {
-        normalize_path(&src_tauri_dir.join(p))
-    } else {
-        normalize_path(&src_tauri_dir.join("../src/generated"))
+    let output_path = match output_path_str {
+        Some(p) => normalize_path(&src_tauri_dir.join(p)),
+        None => normalize_path(&src_tauri_dir.join("../src/generated")),
     };
 
     Some(DiscoveredGenerator {
@@ -175,6 +180,24 @@ fn discover_typegen(tauri_config_path: &Path, src_tauri_dir: &Path) -> Option<Di
         output_path,
         is_directory: true,
     })
+}
+
+/// Read `plugins.typegen.outputPath` from a Tauri config file.
+///
+/// Returns:
+/// - `None` if there is no `plugins.typegen` section (caller should skip typegen)
+/// - `Some(None)` if the section exists but has no `outputPath` (use default)
+/// - `Some(Some(path))` if `outputPath` is set explicitly
+fn read_typegen_section_output_path(content: &str, ext: &str) -> Option<Option<String>> {
+    if ext == "toml" {
+        let val: toml::Value = content.parse().ok()?;
+        let typegen = val.get("plugins")?.get("typegen")?;
+        Some(typegen.get("outputPath").and_then(|v| v.as_str()).map(ToString::to_string))
+    } else {
+        let val: serde_json::Value = serde_json::from_str(content).ok()?;
+        let typegen = val.get("plugins")?.get("typegen")?;
+        Some(typegen.get("outputPath").and_then(|v| v.as_str()).map(ToString::to_string))
+    }
 }
 
 /// Discover the ts-rs output directory from `.cargo/config.toml` or `Cargo.toml`.
