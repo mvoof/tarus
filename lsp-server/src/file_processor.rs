@@ -44,21 +44,11 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
                 project_index.add_file(rust_index.file_index);
 
                 for schema in rust_index.command_schemas {
-                    if !project_index
-                        .get_schema(&schema.command_name)
-                        .is_some_and(|e| e.generator != GeneratorKind::RustSource)
-                    {
-                        project_index.add_schema(schema);
-                    }
+                    add_command_schema_if_higher_priority(schema, project_index);
                 }
 
                 for schema in rust_index.event_schemas {
-                    if !project_index
-                        .get_event_schema(&schema.event_name)
-                        .is_some_and(|e| e.generator != GeneratorKind::RustSource)
-                    {
-                        project_index.add_event_schema(schema);
-                    }
+                    add_event_schema_if_higher_priority(schema, project_index);
                 }
 
                 true
@@ -83,6 +73,26 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
                 false
             }
         }
+    }
+}
+
+/// Add a command schema only if no higher-priority (non-RustSource) schema already exists.
+fn add_command_schema_if_higher_priority(schema: crate::indexer::CommandSchema, project_index: &ProjectIndex) {
+    if !project_index
+        .get_schema(&schema.command_name)
+        .is_some_and(|e| e.generator != GeneratorKind::RustSource)
+    {
+        project_index.add_schema(schema);
+    }
+}
+
+/// Add an event schema only if no higher-priority (non-RustSource) schema already exists.
+fn add_event_schema_if_higher_priority(schema: crate::indexer::EventSchema, project_index: &ProjectIndex) {
+    if !project_index
+        .get_event_schema(&schema.event_name)
+        .is_some_and(|e| e.generator != GeneratorKind::RustSource)
+    {
+        project_index.add_event_schema(schema);
     }
 }
 

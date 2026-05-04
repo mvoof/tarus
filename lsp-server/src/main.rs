@@ -82,6 +82,87 @@ impl Backend {
             .publish_diagnostics(uri, diagnostics, None)
             .await;
     }
+
+    /// Load developer mode and reference limit from VS Code configuration.
+    async fn load_config(&self) {
+        let request = ConfigurationParams {
+            items: vec![
+                ConfigurationItem {
+                    scope_uri: None,
+                    section: Some("tarus.developerMode".to_string()),
+                },
+                ConfigurationItem {
+                    scope_uri: None,
+                    section: Some("tarus.referenceLimit".to_string()),
+                },
+            ],
+        };
+
+        let Ok(response) = self.client.configuration(request.items).await else {
+            return;
+        };
+
+        let mut iter = response.into_iter();
+
+        if let Some(settings) = iter.next() {
+            if let Some(is_enabled) = settings.as_bool() {
+                self.is_developer_mode_active.store(is_enabled, Ordering::Relaxed);
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        &format!("Developer Mode initialized to: {is_enabled}"),
+                    )
+                    .await;
+            }
+        }
+
+        if let Some(settings) = iter.next() {
+            if let Some(limit) = settings.as_u64() {
+                self.project_index
+                    .set_reference_limit(usize::try_from(limit).unwrap_or(3));
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        &format!("Reference Limit initialized to: {limit}"),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    /// Spawn background task that scans workspace files, indexes them, and publishes diagnostics.
+    fn spawn_indexing(&self, root: PathBuf) {
+        let project_index = self.project_index.clone();
+        let client = self.client.clone();
+        let is_dev_mode = self.is_developer_mode_active.clone();
+
+        tokio::spawn(async move {
+            client.log_message(MessageType::INFO, "🚀 Starting background indexing...").await;
+
+            let files =
+                tokio::task::spawn_blocking(move || scan_workspace_files(&root))
+                    .await
+                    .unwrap_or_default();
+
+            for path in files {
+                file_processor::process_file_index(path, &project_index);
+            }
+
+            for path in project_index.get_indexed_paths() {
+                if let Some(uri) = Uri::from_file_path(&path) {
+                    let diags = diagnostics::compute_file_diagnostics(&path, &project_index);
+                    client.publish_diagnostics(uri, diags, None).await;
+                }
+            }
+
+            let report = project_index.technical_report();
+            if is_dev_mode.load(Ordering::Relaxed) {
+                client.log_message(MessageType::INFO, report).await;
+            }
+
+            client.log_message(MessageType::INFO, "🏁 Indexing complete".to_string()).await;
+        });
+    }
 }
 
 impl LanguageServer for Backend {
@@ -128,64 +209,17 @@ impl LanguageServer for Backend {
         })
     }
 
-    #[allow(clippy::too_many_lines)] // sequential init steps; splitting hurts readability
     async fn initialized(&self, _: InitializedParams) {
         if !self.is_ready() {
             return;
         }
 
-        let ext_config_request = ConfigurationParams {
-            items: vec![
-                ConfigurationItem {
-                    scope_uri: None,
-                    section: Some("tarus.developerMode".to_string()),
-                },
-                ConfigurationItem {
-                    scope_uri: None,
-                    section: Some("tarus.referenceLimit".to_string()),
-                },
-            ],
-        };
-
-        if let Ok(response) = self.client.configuration(ext_config_request.items).await {
-            let mut iter = response.into_iter();
-
-            // Handle developerMode
-            if let Some(settings) = iter.next() {
-                if let Some(is_enabled) = settings.as_bool() {
-                    self.is_developer_mode_active
-                        .store(is_enabled, Ordering::Relaxed);
-
-                    self.client
-                        .log_message(
-                            MessageType::INFO,
-                            &format!("Developer Mode initialized to: {is_enabled}"),
-                        )
-                        .await;
-                }
-            }
-
-            // Handle referenceLimit
-            if let Some(settings) = iter.next() {
-                if let Some(limit) = settings.as_u64() {
-                    self.project_index
-                        .set_reference_limit(usize::try_from(limit).unwrap_or(3));
-
-                    self.client
-                        .log_message(
-                            MessageType::INFO,
-                            &format!("Reference Limit initialized to: {limit}"),
-                        )
-                        .await;
-                }
-            }
-        }
+        self.load_config().await;
 
         let Some(root) = self.workspace_root.get() else {
             return;
         };
 
-        // Discover type generators from project configuration files (sync I/O → off async thread)
         let root_for_generators = root.clone();
         let generators =
             tokio::task::spawn_blocking(move || config_reader::discover_generators(&root_for_generators))
@@ -215,47 +249,7 @@ impl LanguageServer for Backend {
         }
 
         self.project_index.set_generator_bindings(generators);
-
-        let root_clone = root.clone();
-        let project_index_clone = self.project_index.clone();
-        let client_clone = self.client.clone();
-
-        let is_dev_mode_clone = self.is_developer_mode_active.clone();
-
-        tokio::spawn(async move {
-            client_clone
-                .log_message(MessageType::INFO, "🚀 Starting background indexing...")
-                .await;
-
-            let files = tokio::task::spawn_blocking(move || scan_workspace_files(&root_clone))
-                .await
-                .unwrap_or_default();
-
-            for path in files {
-                file_processor::process_file_index(path, &project_index_clone);
-            }
-
-            // Publish diagnostics for all indexed files
-            for path in project_index_clone.get_indexed_paths() {
-                if let Some(uri) = Uri::from_file_path(&path) {
-                    let diagnostics =
-                        diagnostics::compute_file_diagnostics(&path, &project_index_clone);
-                    client_clone
-                        .publish_diagnostics(uri, diagnostics, None)
-                        .await;
-                }
-            }
-
-            // Report about the indexing process
-            let report = project_index_clone.technical_report();
-            if is_dev_mode_clone.load(Ordering::Relaxed) {
-                client_clone.log_message(MessageType::INFO, report).await;
-            }
-
-            client_clone
-                .log_message(MessageType::INFO, "🏁 Indexing complete".to_string())
-                .await;
-        });
+        self.spawn_indexing(root.clone());
     }
 
     async fn goto_definition(

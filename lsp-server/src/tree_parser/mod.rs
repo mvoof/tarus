@@ -121,7 +121,7 @@ pub fn parse_rust_full(content: &str, path: &Path) -> ParseResult<RustFileIndex>
 
     // 3. Extract event schemas
     let event_schemas =
-        rust_type_extractor::extract_event_schemas_from_tree(root, content, &tree, path);
+        rust_type_extractor::extract_event_schemas_from_tree(root, content, path);
 
     Ok(RustFileIndex {
         file_index: FileIndex {

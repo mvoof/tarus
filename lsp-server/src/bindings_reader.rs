@@ -233,32 +233,39 @@ fn parse_type_aliases_and_interfaces(
     aliases
 }
 
-/// Extract fields from an `interface_body` node into a compact inline object string.
+/// Extract `property_signature` children from `node` as `name: type` pairs.
 ///
-/// Skips index signatures like `[key: string]: unknown`.
-fn extract_interface_fields(body_node: tree_sitter::Node<'_>, content: &str) -> String {
+/// Skips index signatures and any child that isn't a `property_signature`.
+fn extract_named_fields<'a>(node: tree_sitter::Node<'_>, bytes: &'a [u8]) -> Vec<String> {
     let mut fields = Vec::new();
-    let mut cursor = body_node.walk();
+    let mut cursor = node.walk();
 
-    for child in body_node.children(&mut cursor) {
-        if child.kind() == "property_signature" {
-            let name = child
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("");
-
-            let type_text = child
-                .child_by_field_name("type")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .map_or("", |t| t.strip_prefix(": ").unwrap_or(t).trim());
-
-            if !name.is_empty() && !type_text.is_empty() {
-                fields.push(format!("{name}: {type_text}"));
-            }
+    for child in node.children(&mut cursor) {
+        if child.kind() != "property_signature" {
+            continue;
         }
-        // index_signature nodes are automatically skipped
+
+        let name = child
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .unwrap_or("");
+
+        let type_text = child
+            .child_by_field_name("type")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map_or("", |t| t.strip_prefix(": ").unwrap_or(t).trim());
+
+        if !name.is_empty() && !type_text.is_empty() {
+            fields.push(format!("{name}: {type_text}"));
+        }
     }
 
+    fields
+}
+
+/// Extract fields from an `interface_body` node into a compact inline object string.
+fn extract_interface_fields(body_node: tree_sitter::Node<'_>, content: &str) -> String {
+    let fields = extract_named_fields(body_node, content.as_bytes());
     if fields.is_empty() {
         String::new()
     } else {
@@ -359,29 +366,13 @@ fn extract_type_object_entries(
     node: tree_sitter::Node<'_>,
     content: &str,
 ) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    let mut cursor = node.walk();
-
-    for child in node.children(&mut cursor) {
-        if child.kind() == "property_signature" {
-            let name = child
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("");
-
-            let type_text = child
-                .child_by_field_name("type")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .map(|t| t.strip_prefix(": ").unwrap_or(t).trim().to_string())
-                .unwrap_or_default();
-
-            if !name.is_empty() && !type_text.is_empty() {
-                map.insert(name.to_string(), type_text);
-            }
-        }
-    }
-
-    map
+    extract_named_fields(node, content.as_bytes())
+        .into_iter()
+        .filter_map(|field| {
+            let (name, type_text) = field.split_once(": ")?;
+            Some((name.to_string(), type_text.to_string()))
+        })
+        .collect()
 }
 
 /// Parse event schemas from a typegen-generated events file.

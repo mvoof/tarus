@@ -26,7 +26,7 @@ fn extract_command_schemas(content: &str, source_path: &Path) -> Vec<CommandSche
 
 fn extract_event_schemas(content: &str, source_path: &Path) -> Vec<EventSchema> {
     let tree = parse_rust(content);
-    extract_event_schemas_from_tree(tree.root_node(), content, &tree, source_path)
+    extract_event_schemas_from_tree(tree.root_node(), content, source_path)
 }
 
 // ============================================================

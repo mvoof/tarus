@@ -227,10 +227,9 @@ const RUST_EMIT_QUERY: &str = include_str!("queries/rust_emit.scm");
 pub fn extract_event_schemas_from_tree(
     root: tree_sitter::Node<'_>,
     content: &str,
-    tree: &tree_sitter::Tree,
     source_path: &Path,
 ) -> Vec<EventSchema> {
-    let Ok(schemas) = try_extract_event_schemas_from_node(root, content, tree, source_path) else {
+    let Ok(schemas) = try_extract_event_schemas_from_node(root, content, source_path) else {
         return Vec::new();
     };
 
@@ -240,7 +239,6 @@ pub fn extract_event_schemas_from_tree(
 fn try_extract_event_schemas_from_node(
     root: tree_sitter::Node<'_>,
     content: &str,
-    tree: &tree_sitter::Tree,
     source_path: &Path,
 ) -> Result<Vec<EventSchema>, Box<dyn std::error::Error>> {
     let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
@@ -261,11 +259,7 @@ fn try_extract_event_schemas_from_node(
         }
 
         let payload_type = find_capture(m, payload_arg_idx)
-            .and_then(|cap| {
-                let node = cap.node;
-                // Try to resolve type from the payload expression
-                resolve_emit_payload_type(node, content, tree)
-            })
+            .and_then(|cap| resolve_emit_payload_type(cap.node, content))
             .unwrap_or_else(|| "unknown".to_string());
 
         if payload_type != "unknown" {
@@ -292,7 +286,6 @@ fn try_extract_event_schemas_from_node(
 fn resolve_emit_payload_type(
     node: tree_sitter::Node<'_>,
     content: &str,
-    tree: &tree_sitter::Tree,
 ) -> Option<String> {
     let text = node.utf8_text(content.as_bytes()).ok()?;
 
@@ -301,18 +294,14 @@ fn resolve_emit_payload_type(
         "integer_literal" | "float_literal" => Some("number".to_string()),
         "boolean_literal" | "true" | "false" => Some("boolean".to_string()),
         "struct_expression" => {
-            // Direct struct literal: app.emit("event", Payload { ... })
-            // First named child is the type name (type_identifier or scoped_type_identifier)
             let name_node = node.child_by_field_name("name")?;
             let struct_name = name_node.utf8_text(content.as_bytes()).ok()?;
             Some(rust_type_to_ts(struct_name))
         }
         "identifier" => {
-            // Look up variable name in enclosing function parameters
             let var_name = text;
-            let fn_node = find_enclosing_function(node, tree)?;
+            let fn_node = find_enclosing_function(node)?;
 
-            // First try function parameters
             if let Some(params_node) = fn_node.child_by_field_name("parameters") {
                 for param in parse_rust_params_from_node(params_node, content) {
                     if param.name == var_name {
@@ -321,7 +310,6 @@ fn resolve_emit_payload_type(
                 }
             }
 
-            // Fallback: look for local `let` binding searching backwards from the usage node
             resolve_local_variable_type(node, var_name, content)
         }
         _ => None,
@@ -329,10 +317,7 @@ fn resolve_emit_payload_type(
 }
 
 /// Walk up the tree to find the enclosing `function_item`.
-fn find_enclosing_function<'a>(
-    node: tree_sitter::Node<'a>,
-    _tree: &'a tree_sitter::Tree,
-) -> Option<tree_sitter::Node<'a>> {
+fn find_enclosing_function(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
     let mut current = node.parent();
 
     while let Some(n) = current {
