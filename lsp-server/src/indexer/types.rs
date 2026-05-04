@@ -83,6 +83,22 @@ impl Finding {
     }
 }
 
+impl From<(&PathBuf, Finding)> for LocationInfo {
+    fn from((path, f): (&PathBuf, Finding)) -> Self {
+        Self {
+            path: path.clone(),
+            range: f.range,
+            behavior: f.behavior,
+            call_arg_count: f.call_arg_count,
+            call_param_keys: f.call_param_keys,
+            return_type: f.return_type,
+            call_name_end: f.call_name_end,
+            type_arg_range: f.type_arg_range,
+            codegen_origin: f.codegen_origin,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct FileIndex {
     pub path: PathBuf,
