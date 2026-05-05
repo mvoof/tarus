@@ -41,27 +41,44 @@ impl ProjectIndex {
                 continue;
             }
 
-            for my_loc in current_file_locations {
-                let is_current_rust = path.extension().and_then(|s| s.to_str()) == Some("rs");
+            let is_current_rust = path.extension().and_then(|s| s.to_str()) == Some("rs");
+            let limit = self.reference_limit.load(Ordering::Relaxed);
 
-                let mut rust_targets = Vec::new();
-                let mut frontend_targets = Vec::new();
+            let mut rust_targets = Vec::new();
+            let mut frontend_targets = Vec::new();
 
-                for t in &targets {
-                    if t.path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                        rust_targets.push(t.clone());
-                    } else {
-                        frontend_targets.push(t.clone());
-                    }
-                }
-
-                let limit = self.reference_limit.load(Ordering::Relaxed);
-
-                if is_current_rust {
-                    push_file_lenses(&mut result, my_loc.range, frontend_targets, limit, "references");
+            for t in &targets {
+                if t.path.extension().and_then(|s| s.to_str()) == Some("rs") {
+                    rust_targets.push(t.clone());
                 } else {
-                    push_file_lenses(&mut result, my_loc.range, rust_targets, limit, "rust refs");
-                    push_file_lenses(&mut result, my_loc.range, frontend_targets, limit, "references");
+                    frontend_targets.push(t.clone());
+                }
+            }
+
+            for my_loc in current_file_locations {
+                if is_current_rust {
+                    push_file_lenses(
+                        &mut result,
+                        my_loc.range,
+                        frontend_targets.clone(),
+                        limit,
+                        "references",
+                    );
+                } else {
+                    push_file_lenses(
+                        &mut result,
+                        my_loc.range,
+                        rust_targets.clone(),
+                        limit,
+                        "rust refs",
+                    );
+                    push_file_lenses(
+                        &mut result,
+                        my_loc.range,
+                        frontend_targets.clone(),
+                        limit,
+                        "references",
+                    );
                 }
             }
         }
@@ -100,6 +117,10 @@ fn push_file_lenses(
             result.push((range, format!("Go to {fname}"), locs));
         }
     } else {
-        result.push((range, format!("{} {}", targets.len(), summary_label), targets));
+        result.push((
+            range,
+            format!("{} {}", targets.len(), summary_label),
+            targets,
+        ));
     }
 }
