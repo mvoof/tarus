@@ -149,6 +149,21 @@ fn process_bindings_file(
     }
 }
 
+/// Process file from disk
+pub fn process_file_index(path: PathBuf, project_index: &ProjectIndex) -> bool {
+    if !is_supported_file(&path) {
+        return false;
+    }
+
+    match std::fs::read_to_string(&path) {
+        Ok(content) => process_file_content(&path, &content, project_index),
+        Err(e) => {
+            project_index.set_parse_error(path, format!("Failed to read file: {e}"));
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,20 +198,5 @@ mod tests {
             index.type_aliases.contains_key("TaskState"),
             "TaskState alias should be in index"
         );
-    }
-}
-
-/// Process file from disk
-pub fn process_file_index(path: PathBuf, project_index: &ProjectIndex) -> bool {
-    if !is_supported_file(&path) {
-        return false;
-    }
-
-    match std::fs::read_to_string(&path) {
-        Ok(content) => process_file_content(&path, &content, project_index),
-        Err(e) => {
-            project_index.set_parse_error(path, format!("Failed to read file: {e}"));
-            false
-        }
     }
 }
