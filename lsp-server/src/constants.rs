@@ -38,6 +38,25 @@ pub const PRIORITY_DEFAULT: u8 = 50;
 // Timing & limits
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Specta/ts-rs discovery method names
+// ---------------------------------------------------------------------------
+
+/// `specta_typescript` export method name (standalone specta-typescript crate)
+pub const SPECTA_EXPORT_METHOD: &str = "export";
+/// `tauri-specta` export method name
+pub const SPECTA_EXPORT_TO_METHOD: &str = "export_to";
+/// Specta bindings variable name in generated TS
+pub const SPECTA_COMMANDS_VAR: &str = "commands";
+/// Specta events builder function in generated TS
+pub const SPECTA_MAKE_EVENTS_FN: &str = "__makeEvents__";
+/// Typegen listen function name in generated TS
+pub const TYPEGEN_LISTEN_FN: &str = "listen";
+
+// ---------------------------------------------------------------------------
+// Timing & limits
+// ---------------------------------------------------------------------------
+
 /// Debounce delay (ms) before re-processing a file after edits.
 pub const DEBOUNCE_MS: u64 = 300;
 

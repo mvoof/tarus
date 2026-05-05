@@ -5,13 +5,24 @@
 //! - ts-rs: `export type Name = { ... };`
 //! - tauri-typegen: `export type Name = { ... };`
 
+use crate::constants::{SPECTA_COMMANDS_VAR, SPECTA_MAKE_EVENTS_FN, TYPEGEN_LISTEN_FN};
 use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
 use crate::ts_tree_utils::parse_ts;
 use crate::utils::{camel_to_snake, capture_text, find_capture};
 use std::collections::HashMap;
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Language, Query, QueryCursor};
+use tree_sitter::{Query, QueryCursor};
+
+fn ts_language() -> tree_sitter::Language {
+    tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+}
+
+fn setup_ts_query(content: &str, query_str: &str) -> Option<(tree_sitter::Tree, Query)> {
+    let tree = parse_ts(content)?;
+    let query = Query::new(&ts_language(), query_str).ok()?;
+    Some((tree, query))
+}
 
 /// Parse a Specta-generated bindings file and return a list of `CommandSchema`.
 ///
@@ -22,33 +33,25 @@ use tree_sitter::{Language, Query, QueryCursor};
 /// inside an `export const commands = { ... }` block.
 #[must_use]
 pub fn parse_specta_bindings(content: &str, source_path: &Path) -> Vec<CommandSchema> {
-    let Some(tree) = parse_ts(content) else {
+    let Some((tree, query)) =
+        setup_ts_query(content, include_str!("queries/bindings_specta_commands.scm"))
+    else {
         return Vec::new();
     };
 
-    let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
-
-    let query_str = include_str!("queries/bindings_specta_commands.scm");
-
-    let Ok(query) = Query::new(&ts_lang, query_str) else {
-        return Vec::new();
-    };
-
+    let bytes = content.as_bytes();
     let var_name_idx = query.capture_index_for_name("var_name");
     let method_name_idx = query.capture_index_for_name("method_name");
     let params_idx = query.capture_index_for_name("params");
     let return_type_idx = query.capture_index_for_name("return_type");
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+    let mut matches = cursor.matches(&query, tree.root_node(), bytes);
     let mut schemas = Vec::new();
 
     while let Some(m) = matches.next() {
-        let bytes = content.as_bytes();
-
-        // Only match `commands` variable
         let var_name = capture_text(m, var_name_idx, bytes);
-        if var_name != "commands" {
+        if var_name != SPECTA_COMMANDS_VAR {
             continue;
         }
 
@@ -61,11 +64,9 @@ pub fn parse_specta_bindings(content: &str, source_path: &Path) -> Vec<CommandSc
             .map(|cap| extract_params_from_node(cap.node, content))
             .unwrap_or_default();
 
-        let return_type_node = find_capture(m, return_type_idx).map(|cap| cap.node);
-
-        let return_type = return_type_node.map_or_else(
+        let return_type = find_capture(m, return_type_idx).map_or_else(
             || "void".to_string(),
-            |node| unwrap_return_type_node(node, content),
+            |cap| unwrap_return_type_node(cap.node, content),
         );
 
         schemas.push(CommandSchema {
@@ -180,20 +181,18 @@ fn parse_type_aliases_and_interfaces(
         return HashMap::new();
     };
 
-    let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+    let bytes = content.as_bytes();
+    let ts_lang = ts_language();
     let mut aliases = HashMap::new();
 
-    let type_query_str = include_str!("queries/bindings_type_aliases.scm");
-
-    if let Ok(query) = Query::new(&ts_lang, type_query_str) {
+    if let Ok(query) = Query::new(&ts_lang, include_str!("queries/bindings_type_aliases.scm")) {
         let name_idx = query.capture_index_for_name("type_name");
         let value_idx = query.capture_index_for_name("type_value");
 
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+        let mut matches = cursor.matches(&query, tree.root_node(), bytes);
 
         while let Some(m) = matches.next() {
-            let bytes = content.as_bytes();
             let name = capture_text(m, name_idx, bytes).to_string();
             let def = capture_text(m, value_idx, bytes).to_string();
 
@@ -203,19 +202,16 @@ fn parse_type_aliases_and_interfaces(
         }
     }
 
-    // Query for interface declarations (typegen only)
     if include_interfaces {
-        let iface_query_str = include_str!("queries/bindings_interfaces.scm");
-
-        if let Ok(query) = Query::new(&ts_lang, iface_query_str) {
+        if let Ok(query) = Query::new(&ts_lang, include_str!("queries/bindings_interfaces.scm")) {
             let name_idx = query.capture_index_for_name("iface_name");
             let body_idx = query.capture_index_for_name("iface_body");
 
             let mut cursor = QueryCursor::new();
-            let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+            let mut matches = cursor.matches(&query, tree.root_node(), bytes);
 
             while let Some(m) = matches.next() {
-                let name = capture_text(m, name_idx, content.as_bytes()).to_string();
+                let name = capture_text(m, name_idx, bytes).to_string();
                 let body_node = find_capture(m, body_idx).map(|cap| cap.node);
 
                 if let Some(body) = body_node {
@@ -233,32 +229,39 @@ fn parse_type_aliases_and_interfaces(
     aliases
 }
 
-/// Extract fields from an `interface_body` node into a compact inline object string.
+/// Extract `property_signature` children from `node` as `name: type` pairs.
 ///
-/// Skips index signatures like `[key: string]: unknown`.
-fn extract_interface_fields(body_node: tree_sitter::Node<'_>, content: &str) -> String {
+/// Skips index signatures and any child that isn't a `property_signature`.
+fn extract_named_fields(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Vec<String> {
     let mut fields = Vec::new();
-    let mut cursor = body_node.walk();
+    let mut cursor = node.walk();
 
-    for child in body_node.children(&mut cursor) {
-        if child.kind() == "property_signature" {
-            let name = child
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("");
-
-            let type_text = child
-                .child_by_field_name("type")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .map_or("", |t| t.strip_prefix(": ").unwrap_or(t).trim());
-
-            if !name.is_empty() && !type_text.is_empty() {
-                fields.push(format!("{name}: {type_text}"));
-            }
+    for child in node.children(&mut cursor) {
+        if child.kind() != "property_signature" {
+            continue;
         }
-        // index_signature nodes are automatically skipped
+
+        let name = child
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .unwrap_or("");
+
+        let type_text = child
+            .child_by_field_name("type")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map_or("", |t| t.strip_prefix(": ").unwrap_or(t).trim());
+
+        if !name.is_empty() && !type_text.is_empty() {
+            fields.push(format!("{name}: {type_text}"));
+        }
     }
 
+    fields
+}
+
+/// Extract fields from an `interface_body` node into a compact inline object string.
+fn extract_interface_fields(body_node: tree_sitter::Node<'_>, content: &str) -> String {
+    let fields = extract_named_fields(body_node, content.as_bytes());
     if fields.is_empty() {
         String::new()
     } else {
@@ -285,40 +288,31 @@ fn extract_interface_fields(body_node: tree_sitter::Node<'_>, content: &str) -> 
 /// The value object maps TS names to actual event name strings.
 #[must_use]
 pub fn parse_specta_events(content: &str, source_path: &Path) -> Vec<EventSchema> {
-    let Some(tree) = parse_ts(content) else {
+    let Some((tree, query)) =
+        setup_ts_query(content, include_str!("queries/bindings_specta_events.scm"))
+    else {
         return Vec::new();
     };
 
-    let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
-
-    let query_str = include_str!("queries/bindings_specta_events.scm");
-
-    let Ok(query) = Query::new(&ts_lang, query_str) else {
-        return Vec::new();
-    };
-
+    let bytes = content.as_bytes();
     let fn_name_idx = query.capture_index_for_name("fn_name");
     let type_obj_idx = query.capture_index_for_name("type_obj");
     let value_obj_idx = query.capture_index_for_name("value_obj");
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+    let mut matches = cursor.matches(&query, tree.root_node(), bytes);
     let mut schemas = Vec::new();
 
     while let Some(m) = matches.next() {
-        let bytes = content.as_bytes();
-
         let fn_name = capture_text(m, fn_name_idx, bytes);
-        if fn_name != "__makeEvents__" {
+        if fn_name != SPECTA_MAKE_EVENTS_FN {
             continue;
         }
 
-        // Extract type map: {TypeName: PayloadType, ...}
         let type_map = find_capture(m, type_obj_idx)
             .map(|cap| extract_type_object_entries(cap.node, content))
             .unwrap_or_default();
 
-        // Extract value map: {TypeName: "event-name", ...}
         let value_node = find_capture(m, value_obj_idx).map(|cap| cap.node);
 
         if let Some(vnode) = value_node {
@@ -327,12 +321,12 @@ pub fn parse_specta_events(content: &str, source_path: &Path) -> Vec<EventSchema
                 if child.kind() == "pair" {
                     let key = child
                         .child_by_field_name("key")
-                        .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                        .and_then(|n| n.utf8_text(bytes).ok())
                         .unwrap_or("");
 
                     let value = child
                         .child_by_field_name("value")
-                        .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                        .and_then(|n| n.utf8_text(bytes).ok())
                         .map(|s| s.trim_matches('"').trim_matches('\'').to_string())
                         .unwrap_or_default();
 
@@ -359,29 +353,13 @@ fn extract_type_object_entries(
     node: tree_sitter::Node<'_>,
     content: &str,
 ) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    let mut cursor = node.walk();
-
-    for child in node.children(&mut cursor) {
-        if child.kind() == "property_signature" {
-            let name = child
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("");
-
-            let type_text = child
-                .child_by_field_name("type")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .map(|t| t.strip_prefix(": ").unwrap_or(t).trim().to_string())
-                .unwrap_or_default();
-
-            if !name.is_empty() && !type_text.is_empty() {
-                map.insert(name.to_string(), type_text);
-            }
-        }
-    }
-
-    map
+    extract_named_fields(node, content.as_bytes())
+        .into_iter()
+        .filter_map(|field| {
+            let (name, type_text) = field.split_once(": ")?;
+            Some((name.to_string(), type_text.to_string()))
+        })
+        .collect()
 }
 
 /// Parse event schemas from a typegen-generated events file.
@@ -398,31 +376,24 @@ fn extract_type_object_entries(
 /// ```
 #[must_use]
 pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchema> {
-    let Some(tree) = parse_ts(content) else {
+    let Some((tree, query)) =
+        setup_ts_query(content, include_str!("queries/bindings_typegen_events.scm"))
+    else {
         return Vec::new();
     };
 
-    let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
-
-    let query_str = include_str!("queries/bindings_typegen_events.scm");
-
-    let Ok(query) = Query::new(&ts_lang, query_str) else {
-        return Vec::new();
-    };
-
+    let bytes = content.as_bytes();
     let fn_name_idx = query.capture_index_for_name("fn_name");
     let type_arg_idx = query.capture_index_for_name("type_arg");
     let event_name_idx = query.capture_index_for_name("event_name");
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+    let mut matches = cursor.matches(&query, tree.root_node(), bytes);
     let mut schemas = Vec::new();
 
     while let Some(m) = matches.next() {
-        let bytes = content.as_bytes();
-
         let fn_name = capture_text(m, fn_name_idx, bytes);
-        if fn_name != "listen" {
+        if fn_name != TYPEGEN_LISTEN_FN {
             continue;
         }
 
@@ -433,14 +404,12 @@ pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchem
             continue;
         }
 
-        // Strip "types." prefix if present
         let (clean_type, was_prefixed) = if let Some(stripped) = type_arg.strip_prefix("types.") {
             (stripped.to_string(), true)
         } else {
             (type_arg.to_string(), false)
         };
 
-        // Skip lowercase names from types.X — these are variable names, not types
         if !clean_type.is_empty() && (!was_prefixed || clean_type.starts_with(char::is_uppercase)) {
             schemas.push(EventSchema {
                 event_name: event_name.to_string(),

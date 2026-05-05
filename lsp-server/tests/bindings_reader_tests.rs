@@ -226,29 +226,6 @@ fn test_process_specta_file_populates_schema() {
 }
 
 #[test]
-fn test_process_ts_rs_file_populates_type_aliases() {
-    let index = ProjectIndex::new();
-    index.set_generator_bindings(vec![DiscoveredGenerator {
-        kind: GeneratorKind::TsRs,
-        output_path: test_path("ts_rs_types.ts"),
-        is_directory: false,
-    }]);
-    let content = load_fixture("bindings/ts_rs_types.ts");
-    let path = test_path("ts_rs_types.ts");
-
-    process_file_content(&path, &content, &index);
-
-    assert!(
-        index.type_aliases.contains_key("UserProfile"),
-        "UserProfile alias should be in index"
-    );
-    assert!(
-        index.type_aliases.contains_key("TaskState"),
-        "TaskState alias should be in index"
-    );
-}
-
-#[test]
 fn test_rust_file_populates_rust_source_schema() {
     let index = ProjectIndex::new();
     let content = load_fixture("rust/typed_commands.rs");

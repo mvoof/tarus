@@ -35,28 +35,7 @@ pub fn capture_text<'a>(
 /// - `ping` → `ping`
 #[must_use]
 pub fn camel_to_snake(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() + 4);
-    let chars: Vec<char> = s.chars().collect();
-
-    for (i, &ch) in chars.iter().enumerate() {
-        if ch.is_ascii_uppercase() {
-            // Insert underscore before uppercase if:
-            // - not at position 0
-            // - previous char is lowercase OR (next char is lowercase AND previous is uppercase)
-            let prev_is_lower = i > 0 && chars[i - 1].is_ascii_lowercase();
-            let next_is_lower = chars.get(i + 1).is_some_and(char::is_ascii_lowercase);
-            let prev_is_upper = i > 0 && chars[i - 1].is_ascii_uppercase();
-
-            if prev_is_lower || (next_is_lower && prev_is_upper) {
-                result.push('_');
-            }
-            result.push(ch.to_ascii_lowercase());
-        } else {
-            result.push(ch);
-        }
-    }
-
-    result
+    camel_to_separated(s, '_')
 }
 
 /// Convert tree-sitter Point to LSP Position
@@ -101,17 +80,26 @@ pub fn is_position_in_range(pos: Position, range: Range) -> bool {
 /// - `ping` → `ping`
 #[must_use]
 pub fn camel_to_kebab(s: &str) -> String {
+    camel_to_separated(s, '-')
+}
+
+/// Convert a camelCase or `PascalCase` identifier to a separated format
+/// using the given separator character.
+fn camel_to_separated(s: &str, separator: char) -> String {
     let mut result = String::with_capacity(s.len() + 4);
     let chars: Vec<char> = s.chars().collect();
 
     for (i, &ch) in chars.iter().enumerate() {
         if ch.is_ascii_uppercase() {
+            // Insert separator before uppercase if:
+            // - not at position 0
+            // - previous char is lowercase OR (next char is lowercase AND previous is uppercase)
             let prev_is_lower = i > 0 && chars[i - 1].is_ascii_lowercase();
             let next_is_lower = chars.get(i + 1).is_some_and(char::is_ascii_lowercase);
             let prev_is_upper = i > 0 && chars[i - 1].is_ascii_uppercase();
 
             if prev_is_lower || (next_is_lower && prev_is_upper) {
-                result.push('-');
+                result.push(separator);
             }
             result.push(ch.to_ascii_lowercase());
         } else {

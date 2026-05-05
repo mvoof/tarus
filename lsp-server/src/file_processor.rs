@@ -44,21 +44,11 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
                 project_index.add_file(rust_index.file_index);
 
                 for schema in rust_index.command_schemas {
-                    if !project_index
-                        .get_schema(&schema.command_name)
-                        .is_some_and(|e| e.generator != GeneratorKind::RustSource)
-                    {
-                        project_index.add_schema(schema);
-                    }
+                    add_command_schema_if_higher_priority(schema, project_index);
                 }
 
                 for schema in rust_index.event_schemas {
-                    if !project_index
-                        .get_event_schema(&schema.event_name)
-                        .is_some_and(|e| e.generator != GeneratorKind::RustSource)
-                    {
-                        project_index.add_event_schema(schema);
-                    }
+                    add_event_schema_if_higher_priority(schema, project_index);
                 }
 
                 true
@@ -83,6 +73,32 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
                 false
             }
         }
+    }
+}
+
+/// Add a command schema only if no higher-priority (non-RustSource) schema already exists.
+fn add_command_schema_if_higher_priority(
+    schema: crate::indexer::CommandSchema,
+    project_index: &ProjectIndex,
+) {
+    if !project_index
+        .get_schema(&schema.command_name)
+        .is_some_and(|e| e.generator != GeneratorKind::RustSource)
+    {
+        project_index.add_schema(schema);
+    }
+}
+
+/// Add an event schema only if no higher-priority (non-RustSource) schema already exists.
+fn add_event_schema_if_higher_priority(
+    schema: crate::indexer::EventSchema,
+    project_index: &ProjectIndex,
+) {
+    if !project_index
+        .get_event_schema(&schema.event_name)
+        .is_some_and(|e| e.generator != GeneratorKind::RustSource)
+    {
+        project_index.add_event_schema(schema);
     }
 }
 
@@ -145,5 +161,42 @@ pub fn process_file_index(path: PathBuf, project_index: &ProjectIndex) -> bool {
             project_index.set_parse_error(path, format!("Failed to read file: {e}"));
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer::{DiscoveredGenerator, GeneratorKind, ProjectIndex};
+    use std::path::Path;
+
+    fn load_fixture(relative_path: &str) -> String {
+        let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        std::fs::read_to_string(fixtures_dir.join(relative_path))
+            .unwrap_or_else(|e| panic!("Failed to load fixture {relative_path}: {e}"))
+    }
+
+    #[test]
+    fn test_process_ts_rs_file_populates_type_aliases() {
+        let index = ProjectIndex::new();
+        let path = PathBuf::from("ts_rs_types.ts");
+
+        index.set_generator_bindings(vec![DiscoveredGenerator {
+            kind: GeneratorKind::TsRs,
+            output_path: path.clone(),
+            is_directory: false,
+        }]);
+
+        let content = load_fixture("bindings/ts_rs_types.ts");
+        process_file_content(&path, &content, &index);
+
+        assert!(
+            index.type_aliases.contains_key("UserProfile"),
+            "UserProfile alias should be in index"
+        );
+        assert!(
+            index.type_aliases.contains_key("TaskState"),
+            "TaskState alias should be in index"
+        );
     }
 }

@@ -2,10 +2,42 @@
 
 use crate::syntax::{Behavior, EntityType};
 use std::path::Path;
-use tower_lsp_server::lsp_types::{Location, SymbolInformation, SymbolKind};
+use tower_lsp_server::lsp_types::{Location, SymbolInformation, SymbolKind, Uri};
 use tower_lsp_server::UriExt;
 
+use super::types::{IndexKey, LocationInfo};
 use super::ProjectIndex;
+
+fn behavior_label(behavior: Behavior) -> &'static str {
+    match behavior {
+        Behavior::Definition => "command",
+        Behavior::Call => "invoke",
+        Behavior::SpectaCall => "commands",
+        Behavior::Emit => "emit",
+        Behavior::Listen => "listen",
+    }
+}
+
+// `deprecated` field is deprecated in favor of `tags`, but it's still a required
+// field in the `SymbolInformation` struct in this version of `lsp-types`.
+#[allow(deprecated)]
+fn make_symbol_info(key: &IndexKey, loc: &LocationInfo, uri: Uri) -> SymbolInformation {
+    let kind = match key.entity {
+        EntityType::Command => SymbolKind::FUNCTION,
+        EntityType::Event => SymbolKind::EVENT,
+    };
+    SymbolInformation {
+        name: format!("{} ({})", key.name, behavior_label(loc.behavior)),
+        kind,
+        tags: None,
+        deprecated: None,
+        location: Location {
+            uri,
+            range: loc.range,
+        },
+        container_name: Some(format!("{:?}", key.entity)),
+    }
+}
 
 impl ProjectIndex {
     /// Get document symbols for outline view
@@ -16,40 +48,14 @@ impl ProjectIndex {
             return symbols;
         };
 
-        let Some(uri) = tower_lsp_server::lsp_types::Uri::from_file_path(path) else {
+        let Some(uri) = Uri::from_file_path(path) else {
             return symbols;
         };
 
         for key in keys.value() {
             if let Some(locations) = self.map.get(key) {
                 for loc in locations.iter().filter(|l| l.path == path) {
-                    let kind = match key.entity {
-                        EntityType::Command => SymbolKind::FUNCTION,
-                        EntityType::Event => SymbolKind::EVENT,
-                    };
-
-                    let behavior_label = match loc.behavior {
-                        Behavior::Definition => "command",
-                        Behavior::Call => "invoke",
-                        Behavior::SpectaCall => "commands",
-                        Behavior::Emit => "emit",
-                        Behavior::Listen => "listen",
-                    };
-
-                    // `deprecated` field is deprecated in favor of `tags`, but it's still a required
-                    // field in the `SymbolInformation` struct in this version of `lsp-types`.
-                    #[allow(deprecated)]
-                    symbols.push(SymbolInformation {
-                        name: format!("{} ({})", key.name, behavior_label),
-                        kind,
-                        tags: None,
-                        deprecated: None,
-                        location: Location {
-                            uri: uri.clone(),
-                            range: loc.range,
-                        },
-                        container_name: Some(format!("{:?}", key.entity)),
-                    });
+                    symbols.push(make_symbol_info(key, loc, uri.clone()));
                 }
             }
         }
@@ -66,47 +72,18 @@ impl ProjectIndex {
         for entry in &self.map {
             let key = entry.key();
 
-            // Filter by query (substring match)
             if !query.is_empty() && !key.name.to_lowercase().contains(&query_lower) {
                 continue;
             }
 
             for loc in entry.value() {
-                let Some(uri) = tower_lsp_server::lsp_types::Uri::from_file_path(&loc.path) else {
+                let Some(uri) = Uri::from_file_path(&loc.path) else {
                     continue;
                 };
-
-                let kind = match key.entity {
-                    EntityType::Command => SymbolKind::FUNCTION,
-                    EntityType::Event => SymbolKind::EVENT,
-                };
-
-                let behavior_label = match loc.behavior {
-                    Behavior::Definition => "command",
-                    Behavior::Call => "invoke",
-                    Behavior::SpectaCall => "commands",
-                    Behavior::Emit => "emit",
-                    Behavior::Listen => "listen",
-                };
-
-                // `deprecated` field is deprecated in favor of `tags`, but it's still a required
-                // field in the `SymbolInformation` struct in this version of `lsp-types`.
-                #[allow(deprecated)]
-                symbols.push(SymbolInformation {
-                    name: format!("{} ({})", key.name, behavior_label),
-                    kind,
-                    tags: None,
-                    deprecated: None,
-                    location: Location {
-                        uri: uri.clone(),
-                        range: loc.range,
-                    },
-                    container_name: Some(format!("{:?}", key.entity)),
-                });
+                symbols.push(make_symbol_info(key, loc, uri));
             }
         }
 
-        // Limit results
         symbols.truncate(100);
         symbols
     }

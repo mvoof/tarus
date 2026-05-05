@@ -129,26 +129,13 @@ pub fn parse_fixture(input: &str) -> FixtureData {
                 let cmd_schemas =
                     lsp_server::bindings_reader::parse_specta_bindings(&content, &path);
                 for schema in cmd_schemas {
-                    index
-                        .generated_file_paths
-                        .entry(path.clone())
-                        .or_default()
-                        .push(schema.command_name.clone());
-                    index
-                        .command_schemas
-                        .insert(schema.command_name.clone(), schema);
+                    index.add_schema(schema);
                 }
 
-                let evt_schemas = lsp_server::bindings_reader::parse_specta_events(&content, &path);
+                let evt_schemas =
+                    lsp_server::bindings_reader::parse_specta_events(&content, &path);
                 for schema in evt_schemas {
-                    index
-                        .generated_event_paths
-                        .entry(path.clone())
-                        .or_default()
-                        .push(schema.event_name.clone());
-                    index
-                        .event_schemas
-                        .insert(schema.event_name.clone(), schema);
+                    index.add_event_schema(schema);
                 }
             }
 
@@ -161,12 +148,7 @@ pub fn parse_fixture(input: &str) -> FixtureData {
                 _ => std::collections::HashMap::new(),
             };
             for (alias_name, alias_def) in aliases {
-                index
-                    .generated_alias_paths
-                    .entry(path.clone())
-                    .or_default()
-                    .push(alias_name.clone());
-                index.type_aliases.insert(alias_name, alias_def);
+                index.add_type_alias(alias_name, alias_def, path.clone());
             }
 
             // Parse typegen events
@@ -174,14 +156,7 @@ pub fn parse_fixture(input: &str) -> FixtureData {
                 let evt_schemas =
                     lsp_server::bindings_reader::parse_typegen_events(&content, &path);
                 for schema in evt_schemas {
-                    index
-                        .generated_event_paths
-                        .entry(path.clone())
-                        .or_default()
-                        .push(schema.event_name.clone());
-                    index
-                        .event_schemas
-                        .insert(schema.event_name.clone(), schema);
+                    index.add_event_schema(schema);
                 }
             }
         }
@@ -204,19 +179,10 @@ pub fn parse_fixture(input: &str) -> FixtureData {
     for schema_str in schemas {
         let schema = parse_schema_directive(&schema_str);
         let source_path = PathBuf::from("/test/__directives__");
-        index.command_schemas.insert(
-            schema.command_name.clone(),
-            CommandSchema {
-                source_path: source_path.clone(),
-                ..schema
-            },
-        );
-        // Ensure has_bindings_files() returns true
-        index
-            .generated_file_paths
-            .entry(source_path)
-            .or_default()
-            .push(schema_str);
+        index.add_schema(CommandSchema {
+            source_path: source_path.clone(),
+            ..schema
+        });
     }
 
     // Apply $RUST_SCHEMA directives (RustSource generator — NOT from bindings)
@@ -224,39 +190,24 @@ pub fn parse_fixture(input: &str) -> FixtureData {
         let mut schema = parse_schema_directive(&schema_str);
         schema.generator = GeneratorKind::RustSource;
         schema.source_path = PathBuf::from("/test/__rust_source__");
-        index
-            .command_schemas
-            .insert(schema.command_name.clone(), schema);
+        index.add_schema(schema);
     }
 
     // Apply $EVENT_SCHEMA directives
     for schema_str in event_schemas {
         let schema = parse_event_schema_directive(&schema_str);
         let source_path = PathBuf::from("/test/__directives__");
-        index.event_schemas.insert(
-            schema.event_name.clone(),
-            EventSchema {
-                source_path: source_path.clone(),
-                ..schema
-            },
-        );
-        index
-            .generated_event_paths
-            .entry(source_path)
-            .or_default()
-            .push(schema_str);
+        index.add_event_schema(EventSchema {
+            source_path: source_path.clone(),
+            ..schema
+        });
     }
 
     // Apply $TYPE_ALIAS directives
     for alias_str in type_aliases {
         let (name, def) = parse_type_alias_directive(&alias_str);
-        index.type_aliases.insert(name.clone(), def);
         let source_path = PathBuf::from("/test/__directives__");
-        index
-            .generated_alias_paths
-            .entry(source_path)
-            .or_default()
-            .push(name);
+        index.add_type_alias(name, def, source_path);
     }
 
     FixtureData {

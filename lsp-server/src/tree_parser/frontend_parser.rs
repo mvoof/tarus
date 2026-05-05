@@ -4,6 +4,7 @@ use crate::indexer::Finding;
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use crate::utils::{find_capture, point_to_position};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::Range;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
@@ -26,24 +27,20 @@ enum ArgPosition {
     Second,
 }
 
-/// Get all frontend patterns including those with second argument
-fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
+static ALL_FRONTEND_PATTERNS: LazyLock<Vec<FunctionPatternWithPos>> = LazyLock::new(|| {
     vec![
-        // First argument patterns - Commands
         FunctionPatternWithPos {
             name: "invoke",
             entity: EntityType::Command,
             behavior: Behavior::Call,
             arg_position: ArgPosition::First,
         },
-        // First argument patterns - Events (emit)
         FunctionPatternWithPos {
             name: "emit",
             entity: EntityType::Event,
             behavior: Behavior::Emit,
             arg_position: ArgPosition::First,
         },
-        // First argument patterns - Events (listen/subscribe)
         FunctionPatternWithPos {
             name: "listen",
             entity: EntityType::Event,
@@ -56,7 +53,6 @@ fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
             behavior: Behavior::Listen,
             arg_position: ArgPosition::First,
         },
-        // Second argument patterns
         FunctionPatternWithPos {
             name: "emitTo",
             entity: EntityType::Event,
@@ -64,17 +60,49 @@ fn get_all_frontend_patterns() -> Vec<FunctionPatternWithPos> {
             arg_position: ArgPosition::Second,
         },
     ]
+});
+
+/// Capture indices extracted from the query, grouped for readability
+struct FrontendCaptures {
+    func_name: Option<u32>,
+    arg_value: Option<u32>,
+    func_name_second: Option<u32>,
+    arg_value_second: Option<u32>,
+    imported_name: Option<u32>,
+    local_alias: Option<u32>,
+    call_generic: Option<u32>,
+    call_await_generic: Option<u32>,
+    specta_method_name: Option<u32>,
+    specta_call: Option<u32>,
+    specta_event_name: Option<u32>,
+    specta_event_method: Option<u32>,
+}
+
+impl FrontendCaptures {
+    fn from_query(query: &Query) -> Self {
+        Self {
+            func_name: query.capture_index_for_name("func_name"),
+            arg_value: query.capture_index_for_name("arg_value"),
+            func_name_second: query.capture_index_for_name("func_name_second"),
+            arg_value_second: query.capture_index_for_name("arg_value_second"),
+            imported_name: query.capture_index_for_name("imported_name"),
+            local_alias: query.capture_index_for_name("local_alias"),
+            call_generic: query.capture_index_for_name("call_generic"),
+            call_await_generic: query.capture_index_for_name("call_await_generic"),
+            specta_method_name: query.capture_index_for_name("specta_method_name"),
+            specta_call: query.capture_index_for_name("specta_call"),
+            specta_event_name: query.capture_index_for_name("specta_event_name"),
+            specta_event_method: query.capture_index_for_name("specta_event_method"),
+        }
+    }
 }
 
 /// Parse TypeScript/JavaScript source code
-#[allow(clippy::too_many_lines)]
 pub(super) fn parse_frontend(
     content: &str,
     lang: LangType,
     line_offset: usize,
 ) -> ParseResult<Vec<Finding>> {
-    let mut findings = Vec::new();
-
     let ts_lang: Language = match lang {
         LangType::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
         _ => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
@@ -93,234 +121,195 @@ pub(super) fn parse_frontend(
     let query = Query::new(&ts_lang, query_src)
         .map_err(|e| ParseError::QueryError(format!("Failed to create {lang:?} query: {e}")))?;
 
-    let mut cursor = QueryCursor::new();
+    let caps = FrontendCaptures::from_query(&query);
     let root = tree.root_node();
+    let bytes = content.as_bytes();
 
-    // Build alias map from imports
-    let mut aliases: HashMap<String, String> = HashMap::new();
-
-    // Get capture indices for first argument patterns
-    let func_name_idx = query.capture_index_for_name("func_name");
-    let arg_value_idx = query.capture_index_for_name("arg_value");
-    // Get capture indices for second argument patterns
-    let func_name_second_idx = query.capture_index_for_name("func_name_second");
-    let arg_value_second_idx = query.capture_index_for_name("arg_value_second");
-    // Get capture indices for imports
-    let imported_name_idx = query.capture_index_for_name("imported_name");
-    let local_alias_idx = query.capture_index_for_name("local_alias");
-    // Get capture indices for generic call nodes (to extract type_arguments)
-    let call_generic_idx = query.capture_index_for_name("call_generic");
-    let call_await_generic_idx = query.capture_index_for_name("call_await_generic");
-    // Get capture indices for Specta calls
-    let specta_method_name_idx = query.capture_index_for_name("specta_method_name");
-    let specta_call_idx = query.capture_index_for_name("specta_call");
-    // Get capture indices for Specta events
-    let specta_event_name_idx = query.capture_index_for_name("specta_event_name");
-    let specta_event_method_idx = query.capture_index_for_name("specta_event_method");
-
-    let all_patterns = get_all_frontend_patterns();
-
-    // First pass: collect aliases
-    let mut matches = cursor.matches(&query, root, content.as_bytes());
-    while let Some(m) = matches.next() {
-        if let (Some(imp_idx), Some(alias_idx)) = (imported_name_idx, local_alias_idx) {
-            let imported = find_capture(m, Some(imp_idx));
-            let local = find_capture(m, Some(alias_idx));
-
-            if let (Some(imp_cap), Some(local_cap)) = (imported, local) {
-                let imported_name = imp_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-                let local_name = local_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-
-                aliases.insert(local_name.to_string(), imported_name.to_string());
-            }
-        }
-    }
+    // First pass: collect import aliases
+    let aliases = collect_aliases(&query, root, bytes, &caps);
 
     // Second pass: collect function calls
+    let mut findings = Vec::new();
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, root, content.as_bytes());
+    let mut matches = cursor.matches(&query, root, bytes);
+
     while let Some(m) = matches.next() {
-        // Try first argument pattern (func_name + arg_value)
-        if let (Some(func_idx), Some(arg_idx)) = (func_name_idx, arg_value_idx) {
-            let func_capture = find_capture(m, Some(func_idx));
-            let arg_capture = find_capture(m, Some(arg_idx));
-
-            if let (Some(func_cap), Some(arg_cap)) = (func_capture, arg_capture) {
-                let func_name = func_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-                let arg_value = arg_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-
-                // Resolve alias to original name
-                let original_name = aliases
-                    .get(func_name)
-                    .map_or(func_name, std::string::String::as_str);
-
-                // Find matching pattern (first argument)
-                if let Some(pattern) = all_patterns
-                    .iter()
-                    .find(|p| p.name == original_name && p.arg_position == ArgPosition::First)
-                {
-                    let range = Range {
-                        start: point_to_position(arg_cap.node.start_position()),
-                        end: point_to_position(arg_cap.node.end_position()),
-                    };
-
-                    // Extract call_name_end: end of the function identifier (e.g. end of "invoke")
-                    let call_name_end = Some(adjust_position(
-                        point_to_position(func_cap.node.end_position()),
-                        line_offset,
-                    ));
-
-                    // Extract type argument from generic calls: invoke<T>("cmd") → "T"
-                    let type_arg_info = extract_type_argument_info(
-                        m,
-                        call_generic_idx,
-                        call_await_generic_idx,
-                        content,
-                    );
-                    let return_type = type_arg_info.as_ref().map(|i| i.type_text.clone());
-                    let type_arg_range =
-                        type_arg_info.map(|i| adjust_range(i.type_arg_range, line_offset));
-
-                    findings.push(Finding {
-                        return_type,
-                        call_name_end,
-                        type_arg_range,
-                        ..Finding::new(
-                            arg_value.to_string(),
-                            pattern.entity,
-                            pattern.behavior,
-                            adjust_range(range, line_offset),
-                        )
-                    });
-                }
-            }
-        }
-
-        // Try second argument pattern (func_name_second + arg_value_second)
-        if let (Some(func_idx), Some(arg_idx)) = (func_name_second_idx, arg_value_second_idx) {
-            let func_capture = find_capture(m, Some(func_idx));
-            let arg_capture = find_capture(m, Some(arg_idx));
-
-            if let (Some(func_cap), Some(arg_cap)) = (func_capture, arg_capture) {
-                let func_name = func_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-                let arg_value = arg_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-
-                // Resolve alias to original name
-                let original_name = aliases
-                    .get(func_name)
-                    .map_or(func_name, std::string::String::as_str);
-
-                // Find matching pattern (second argument)
-                if let Some(pattern) = all_patterns
-                    .iter()
-                    .find(|p| p.name == original_name && p.arg_position == ArgPosition::Second)
-                {
-                    let range = Range {
-                        start: point_to_position(arg_cap.node.start_position()),
-                        end: point_to_position(arg_cap.node.end_position()),
-                    };
-
-                    findings.push(Finding::new(
-                        arg_value.to_string(),
-                        pattern.entity,
-                        pattern.behavior,
-                        adjust_range(range, line_offset),
-                    ));
-                }
-            }
-        }
-
-        // Try SpectaCall pattern (commands.methodName(...))
-        if let Some(specta_idx) = specta_method_name_idx {
-            if let Some(specta_cap) = find_capture(m, Some(specta_idx)) {
-                let camel_name = specta_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-                let snake_name = crate::utils::camel_to_snake(camel_name);
-
-                let method_range = Range {
-                    start: point_to_position(specta_cap.node.start_position()),
-                    end: point_to_position(specta_cap.node.end_position()),
-                };
-
-                // Count arguments by walking the call_expression node's arguments
-                let arg_count = count_specta_call_args(m, specta_call_idx, content);
-
-                findings.push(Finding {
-                    call_arg_count: Some(arg_count),
-                    ..Finding::new(
-                        snake_name,
-                        EntityType::Command,
-                        Behavior::SpectaCall,
-                        adjust_range(method_range, line_offset),
-                    )
-                });
-            }
-        }
-
-        // Try Specta event pattern (events.eventName.listen/emit/once(...))
-        if let (Some(event_name_idx), Some(event_method_idx)) =
-            (specta_event_name_idx, specta_event_method_idx)
+        if let Some(f) =
+            process_first_arg_pattern(m, &caps, bytes, &aliases, content, line_offset)
         {
-            let event_name_cap = find_capture(m, Some(event_name_idx));
-            let event_method_cap = find_capture(m, Some(event_method_idx));
-
-            if let (Some(name_cap), Some(method_cap)) = (event_name_cap, event_method_cap) {
-                let camel_name = name_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-                let method_name = method_cap
-                    .node
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or_default();
-
-                // Map method name to behavior using the same patterns as frontend events
-                let behavior = match method_name {
-                    "emit" => Some(Behavior::Emit),
-                    "listen" | "once" => Some(Behavior::Listen),
-                    _ => None,
-                };
-
-                if let Some(behavior) = behavior {
-                    let kebab_name = crate::utils::camel_to_kebab(camel_name);
-                    let name_range = Range {
-                        start: point_to_position(name_cap.node.start_position()),
-                        end: point_to_position(name_cap.node.end_position()),
-                    };
-
-                    findings.push(Finding {
-                        codegen_origin: Some(crate::indexer::GeneratorKind::Specta),
-                        ..Finding::new(
-                            kebab_name,
-                            EntityType::Event,
-                            behavior,
-                            adjust_range(name_range, line_offset),
-                        )
-                    });
-                }
-            }
+            findings.push(f);
+        }
+        if let Some(f) = process_second_arg_pattern(m, &caps, bytes, &aliases, line_offset) {
+            findings.push(f);
+        }
+        if let Some(f) = process_specta_call(m, &caps, bytes, content, line_offset) {
+            findings.push(f);
+        }
+        if let Some(f) = process_specta_event(m, &caps, bytes, line_offset) {
+            findings.push(f);
         }
     }
 
     Ok(findings)
+}
+
+fn collect_aliases(
+    query: &Query,
+    root: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    caps: &FrontendCaptures,
+) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(query, root, bytes);
+
+    while let Some(m) = matches.next() {
+        let imp = find_capture(m, caps.imported_name);
+        let loc = find_capture(m, caps.local_alias);
+        if let (Some(imp_cap), Some(loc_cap)) = (imp, loc) {
+            let imported = imp_cap.node.utf8_text(bytes).unwrap_or_default();
+            let local = loc_cap.node.utf8_text(bytes).unwrap_or_default();
+            aliases.insert(local.to_string(), imported.to_string());
+        }
+    }
+
+    aliases
+}
+
+fn process_first_arg_pattern(
+    m: &tree_sitter::QueryMatch<'_, '_>,
+    caps: &FrontendCaptures,
+    bytes: &[u8],
+    aliases: &HashMap<String, String>,
+    content: &str,
+    line_offset: usize,
+) -> Option<Finding> {
+    let func_cap = find_capture(m, caps.func_name)?;
+    let arg_cap = find_capture(m, caps.arg_value)?;
+
+    let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
+    let arg_value = arg_cap.node.utf8_text(bytes).unwrap_or_default();
+    let original_name = aliases.get(func_name).map_or(func_name, String::as_str);
+
+    let pattern = ALL_FRONTEND_PATTERNS
+        .iter()
+        .find(|p| p.name == original_name && p.arg_position == ArgPosition::First)?;
+
+    let range = Range {
+        start: point_to_position(arg_cap.node.start_position()),
+        end: point_to_position(arg_cap.node.end_position()),
+    };
+    let call_name_end = Some(adjust_position(
+        point_to_position(func_cap.node.end_position()),
+        line_offset,
+    ));
+    let type_arg_info = extract_type_argument_info(m, caps.call_generic, caps.call_await_generic, content);
+    let return_type = type_arg_info.as_ref().map(|i| i.type_text.clone());
+    let type_arg_range = type_arg_info.map(|i| adjust_range(i.type_arg_range, line_offset));
+
+    Some(Finding {
+        return_type,
+        call_name_end,
+        type_arg_range,
+        ..Finding::new(
+            arg_value.to_string(),
+            pattern.entity,
+            pattern.behavior,
+            adjust_range(range, line_offset),
+        )
+    })
+}
+
+fn process_second_arg_pattern(
+    m: &tree_sitter::QueryMatch<'_, '_>,
+    caps: &FrontendCaptures,
+    bytes: &[u8],
+    aliases: &HashMap<String, String>,
+    line_offset: usize,
+) -> Option<Finding> {
+    let func_cap = find_capture(m, caps.func_name_second)?;
+    let arg_cap = find_capture(m, caps.arg_value_second)?;
+
+    let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
+    let arg_value = arg_cap.node.utf8_text(bytes).unwrap_or_default();
+    let original_name = aliases.get(func_name).map_or(func_name, String::as_str);
+
+    let pattern = ALL_FRONTEND_PATTERNS
+        .iter()
+        .find(|p| p.name == original_name && p.arg_position == ArgPosition::Second)?;
+
+    let range = Range {
+        start: point_to_position(arg_cap.node.start_position()),
+        end: point_to_position(arg_cap.node.end_position()),
+    };
+
+    Some(Finding::new(
+        arg_value.to_string(),
+        pattern.entity,
+        pattern.behavior,
+        adjust_range(range, line_offset),
+    ))
+}
+
+fn process_specta_call(
+    m: &tree_sitter::QueryMatch<'_, '_>,
+    caps: &FrontendCaptures,
+    bytes: &[u8],
+    content: &str,
+    line_offset: usize,
+) -> Option<Finding> {
+    let specta_cap = find_capture(m, caps.specta_method_name)?;
+
+    let camel_name = specta_cap.node.utf8_text(bytes).unwrap_or_default();
+    let snake_name = crate::utils::camel_to_snake(camel_name);
+    let method_range = Range {
+        start: point_to_position(specta_cap.node.start_position()),
+        end: point_to_position(specta_cap.node.end_position()),
+    };
+    let arg_count = count_specta_call_args(m, caps.specta_call, content);
+
+    Some(Finding {
+        call_arg_count: Some(arg_count),
+        ..Finding::new(
+            snake_name,
+            EntityType::Command,
+            Behavior::SpectaCall,
+            adjust_range(method_range, line_offset),
+        )
+    })
+}
+
+fn process_specta_event(
+    m: &tree_sitter::QueryMatch<'_, '_>,
+    caps: &FrontendCaptures,
+    bytes: &[u8],
+    line_offset: usize,
+) -> Option<Finding> {
+    let name_cap = find_capture(m, caps.specta_event_name)?;
+    let method_cap = find_capture(m, caps.specta_event_method)?;
+
+    let camel_name = name_cap.node.utf8_text(bytes).unwrap_or_default();
+    let method_name = method_cap.node.utf8_text(bytes).unwrap_or_default();
+
+    let behavior = match method_name {
+        "emit" => Behavior::Emit,
+        "listen" | "once" => Behavior::Listen,
+        _ => return None,
+    };
+
+    let kebab_name = crate::utils::camel_to_kebab(camel_name);
+    let name_range = Range {
+        start: point_to_position(name_cap.node.start_position()),
+        end: point_to_position(name_cap.node.end_position()),
+    };
+
+    Some(Finding {
+        codegen_origin: Some(crate::indexer::GeneratorKind::Specta),
+        ..Finding::new(
+            kebab_name,
+            EntityType::Event,
+            behavior,
+            adjust_range(name_range, line_offset),
+        )
+    })
 }

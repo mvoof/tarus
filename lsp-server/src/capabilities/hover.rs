@@ -60,6 +60,14 @@ pub fn handle_hover(params: HoverParams, project_index: &ProjectIndex) -> Option
     None
 }
 
+fn file_icon(path: &std::path::Path) -> &'static str {
+    if path.extension().is_some_and(|e| e == "rs") {
+        "🦀"
+    } else {
+        "⚡️"
+    }
+}
+
 fn push_definitions_section(md_text: &mut String, entity: EntityType, locations: &[LocationInfo]) {
     let definitions: Vec<&LocationInfo> = locations
         .iter()
@@ -73,18 +81,12 @@ fn push_definitions_section(md_text: &mut String, entity: EntityType, locations:
         md_text.push_str("**Definition:**\n");
 
         for def in &definitions {
-            let file_icon = if def.path.extension().is_some_and(|e| e == "rs") {
-                "🦀"
-            } else {
-                "⚡️"
-            };
-
             let filename = def.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
             let _ = writeln!(
                 md_text,
                 "- {} `{}:{}`",
-                file_icon,
+                file_icon(&def.path),
                 filename,
                 def.range.start.line + 1
             );
@@ -152,12 +154,6 @@ fn push_sample_references(md_text: &mut String, entity: EntityType, locations: &
                 break;
             }
 
-            let file_icon = if rf.path.extension().is_some_and(|e| e == "rs") {
-                "🦀"
-            } else {
-                "⚡️"
-            };
-
             let filename = rf.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
             let mut behavior_badge = format!("{:?}", rf.behavior).to_uppercase();
 
@@ -168,7 +164,7 @@ fn push_sample_references(md_text: &mut String, entity: EntityType, locations: &
             let _ = writeln!(
                 md_text,
                 "- {} `[{}] {}:{}`",
-                file_icon,
+                file_icon(&rf.path),
                 behavior_badge,
                 filename,
                 rf.range.start.line + 1
