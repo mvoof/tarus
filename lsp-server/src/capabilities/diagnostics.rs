@@ -445,7 +445,21 @@ fn check_event_payload_type(
     )
 }
 
-/// Check if two type strings match, considering type aliases.
+/// Normalize a TypeScript type string to a canonical form for comparison.
+///
+/// `T[]` and `Array<T>` are equivalent; both become `Array<T>`.
+fn normalize_ts_type(t: &str) -> String {
+    let t = t.trim();
+    if let Some(inner) = t.strip_suffix("[]") {
+        return format!("Array<{}>", normalize_ts_type(inner));
+    }
+    if let Some(inner) = t.strip_prefix("Array<").and_then(|s| s.strip_suffix('>')) {
+        return format!("Array<{}>", normalize_ts_type(inner));
+    }
+    t.to_string()
+}
+
+/// Check if two type strings match, considering type aliases and array notation variants.
 pub fn types_match(ts_type: &str, expected: &str, project_index: &ProjectIndex) -> bool {
     if ts_type == expected {
         return true;
@@ -459,5 +473,8 @@ pub fn types_match(ts_type: &str, expected: &str, project_index: &ProjectIndex) 
             .map_or_else(|| t.to_string(), |v| v.value().clone())
     };
 
-    resolve(ts_type) == resolve(expected)
+    let resolved_actual = normalize_ts_type(&resolve(ts_type));
+    let resolved_expected = normalize_ts_type(&resolve(expected));
+
+    resolved_actual == resolved_expected
 }

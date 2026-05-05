@@ -69,7 +69,7 @@ fn handle_command_action(
     }
 
     let root = workspace_root?;
-    let candidates = find_rust_file_candidates(root);
+    let candidates = tokio::task::block_in_place(|| find_rust_file_candidates(root));
     if candidates.is_empty() {
         return None;
     }

@@ -32,39 +32,44 @@ fn setup_rust_query(query_str: &str) -> Option<(Query, QueryCursor)> {
 pub fn rust_type_to_ts(rust_type: &str) -> String {
     let t = rust_type.trim();
 
-    // Primitives
+    match classify_rust_type(t) {
+        RustType::Number => "number".to_string(),
+        RustType::Str => "string".to_string(),
+        RustType::Bool => "boolean".to_string(),
+        RustType::Unit => "void".to_string(),
+        RustType::Result => extract_first_generic_arg_from_type(t)
+            .map_or_else(|| t.to_string(), |ok| rust_type_to_ts(&ok)),
+        RustType::Option => extract_first_generic_arg_from_type(t)
+            .map_or_else(|| t.to_string(), |inner| format!("{} | null", rust_type_to_ts(&inner))),
+        RustType::Vec => extract_first_generic_arg_from_type(t)
+            .map_or_else(|| t.to_string(), |inner| format!("{}[]", rust_type_to_ts(&inner))),
+        RustType::Other => t.to_string(),
+    }
+}
+
+enum RustType {
+    Number,
+    Str,
+    Bool,
+    Unit,
+    Result,
+    Option,
+    Vec,
+    Other,
+}
+
+fn classify_rust_type(t: &str) -> RustType {
     match t {
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
-        | "isize" | "f32" | "f64" => return "number".to_string(),
-        "String" | "&str" => return "string".to_string(),
-        "bool" => return "boolean".to_string(),
-        "()" => return "void".to_string(),
-        _ => {}
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
+        | "i128" | "isize" | "f32" | "f64" => RustType::Number,
+        "String" | "&str" => RustType::Str,
+        "bool" => RustType::Bool,
+        "()" => RustType::Unit,
+        _ if t.starts_with("Result<") => RustType::Result,
+        _ if t.starts_with("Option<") => RustType::Option,
+        _ if t.starts_with("Vec<") => RustType::Vec,
+        _ => RustType::Other,
     }
-
-    // Result<T, E> → T
-    if t.starts_with("Result<") {
-        if let Some(ok_type) = extract_first_generic_arg_from_type(t) {
-            return rust_type_to_ts(&ok_type);
-        }
-    }
-
-    // Option<T> → T | null
-    if t.starts_with("Option<") {
-        if let Some(inner_type) = extract_first_generic_arg_from_type(t) {
-            return format!("{} | null", rust_type_to_ts(&inner_type));
-        }
-    }
-
-    // Vec<T> → T[]
-    if t.starts_with("Vec<") {
-        if let Some(inner_type) = extract_first_generic_arg_from_type(t) {
-            return format!("{}[]", rust_type_to_ts(&inner_type));
-        }
-    }
-
-    // Unknown type - pass through (user-defined struct)
-    t.to_string()
 }
 
 /// Extract the first generic type argument from a full generic type string

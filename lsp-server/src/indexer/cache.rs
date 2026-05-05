@@ -3,11 +3,12 @@
 use crate::syntax::{Behavior, EntityType};
 
 use super::types::{DiagnosticInfo, IndexKey, LocationInfo, NameLocation};
+use std::sync::Arc;
 use super::ProjectIndex;
 
 impl ProjectIndex {
     /// Get all known names for a specific entity type (for completion)
-    pub fn get_all_names(&self, entity: EntityType) -> Vec<NameLocation> {
+    pub fn get_all_names(&self, entity: EntityType) -> Arc<Vec<NameLocation>> {
         // Select appropriate cache
         let cache = match entity {
             EntityType::Command => &self.command_names_cache,
@@ -17,29 +18,29 @@ impl ProjectIndex {
         // Try to read from cache
         {
             let cache_read = cache.read();
-
             if let Some(cached) = cache_read.as_ref() {
-                return cached.clone();
+                return Arc::clone(cached);
             }
         }
 
         // Cache miss - compute result
-        let result: Vec<(String, Option<LocationInfo>)> = self
-            .map
-            .iter()
-            .filter(|e| e.key().entity == entity)
-            .map(|e| {
-                let definition = e
-                    .value()
-                    .iter()
-                    .find(|l| l.behavior == Behavior::Definition)
-                    .cloned();
-                (e.key().name.clone(), definition)
-            })
-            .collect();
+        let result: Arc<Vec<NameLocation>> = Arc::new(
+            self.map
+                .iter()
+                .filter(|e| e.key().entity == entity)
+                .map(|e| {
+                    let definition = e
+                        .value()
+                        .iter()
+                        .find(|l| l.behavior == Behavior::Definition)
+                        .cloned();
+                    (e.key().name.clone(), definition)
+                })
+                .collect(),
+        );
 
         // Store in cache
-        *cache.write() = Some(result.clone());
+        *cache.write() = Some(Arc::clone(&result));
 
         result
     }

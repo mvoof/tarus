@@ -323,17 +323,11 @@ mod tests {
     use super::*;
     use crate::indexer::GeneratorKind;
     use std::fs;
-    use std::path::PathBuf;
+    use tempfile::TempDir;
 
-    fn tmp(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("tarus_cfg_test_{name}"));
-        let _ = fs::remove_dir_all(&p);
-
-        p
-    }
-
-    fn assert_discovery(name: &str, files: &[(&str, &str)], expected: &[(GeneratorKind, &str)]) {
-        let root = tmp(name);
+    fn assert_discovery(files: &[(&str, &str)], expected: &[(GeneratorKind, &str)]) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
         let src_tauri = root.join("src-tauri");
         fs::create_dir_all(&src_tauri).unwrap();
 
@@ -353,8 +347,7 @@ mod tests {
             fs::write(path, content).unwrap();
         }
 
-        let gens = discover_generators(&root);
-        let _ = fs::remove_dir_all(&root);
+        let gens = discover_generators(root);
 
         for (kind, expected_suffix) in expected {
             let found = gens
@@ -381,7 +374,6 @@ mod tests {
     #[test]
     fn test_specta_single_line_export() {
         assert_discovery(
-            "specta_single",
             &[(
                 "src/lib.rs",
                 r#"use tauri_specta::Builder; fn run() { builder.export(Typescript::default(), "../src/bindings.ts"); }"#,
@@ -393,7 +385,6 @@ mod tests {
     #[test]
     fn test_specta_multiline_export_with_nested_parens() {
         assert_discovery(
-            "specta_multi",
             &[(
                 "src/lib.rs",
                 r#"use tauri_specta::Builder; fn run() { specta_builder.export(Typescript::default().bigint(BigIntExportBehavior::Number), "../src/types/specta/bindings.ts"); }"#,
@@ -405,7 +396,6 @@ mod tests {
     #[test]
     fn test_specta_jsdoc_export() {
         assert_discovery(
-            "specta_jsdoc",
             &[(
                 "src/lib.rs",
                 r#"use tauri_specta::Builder; fn run() { builder.export(JSDoc::default(), "../src/bindings.js"); }"#,
@@ -417,7 +407,6 @@ mod tests {
     #[test]
     fn test_specta_not_found_without_tauri_specta_import() {
         assert_discovery(
-            "specta_no_import",
             &[(
                 "src/lib.rs",
                 r#"fn run() { something.export(Default::default(), "../src/bindings.ts"); }"#,
@@ -429,7 +418,6 @@ mod tests {
     #[test]
     fn test_specta_cfg_guarded_export() {
         assert_discovery(
-            "specta_cfg",
             &[(
                 "src/lib.rs",
                 r#"use tauri_specta::Builder; fn run() { #[cfg(feature = "specta")] builder.export(Typescript::default(), "../src/types/specta/output.ts"); }"#,
@@ -441,7 +429,6 @@ mod tests {
     #[test]
     fn test_specta_multiple_exports_discovered() {
         assert_discovery(
-            "specta_multiple",
             &[(
                 "src/lib.rs",
                 r#"use tauri_specta::Builder; use specta_typescript::Typescript; fn run() {
@@ -463,7 +450,6 @@ mod tests {
     #[test]
     fn test_specta_typescript_export_to() {
         assert_discovery(
-            "specta_ts_standalone",
             &[(
                 "src/main.rs",
                 r#"use specta_typescript::Typescript; fn main() { Typescript::default().export_to("../src/bindings.ts", &types); }"#,
@@ -475,7 +461,6 @@ mod tests {
     #[test]
     fn test_specta_typescript_not_found_without_import() {
         assert_discovery(
-            "specta_ts_no_import",
             &[(
                 "src/main.rs",
                 r#"fn main() { something.export_to("../src/bindings.ts", &types); }"#,
@@ -489,7 +474,6 @@ mod tests {
     #[test]
     fn test_ts_rs_plain_string_env() {
         assert_discovery(
-            "tsrs_plain",
             &[(
                 ".cargo/config.toml",
                 r#"[env]
@@ -502,7 +486,6 @@ TS_RS_EXPORT_DIR = "../src/types/ts-rs""#,
     #[test]
     fn test_ts_rs_inline_table_relative() {
         assert_discovery(
-            "tsrs_relative",
             &[(
                 ".cargo/config.toml",
                 r#"[env]
@@ -515,7 +498,6 @@ TS_RS_EXPORT_DIR = { value = "./src/bindings_type", relative = true }"#,
     #[test]
     fn test_ts_rs_cargo_toml_fallback() {
         assert_discovery(
-            "tsrs_cargo",
             &[("Cargo.toml", "[dependencies]\nts-rs = \"1\"")],
             &[(GeneratorKind::TsRs, "src-tauri/bindings")],
         );
@@ -524,7 +506,6 @@ TS_RS_EXPORT_DIR = { value = "./src/bindings_type", relative = true }"#,
     #[test]
     fn test_ts_rs_not_found_without_dep_or_config() {
         assert_discovery(
-            "tsrs_nothing",
             &[("Cargo.toml", "[dependencies]\nserde = \"1\"")],
             &[],
         );
@@ -535,7 +516,6 @@ TS_RS_EXPORT_DIR = { value = "./src/bindings_type", relative = true }"#,
     #[test]
     fn test_typegen_camel_case_output_path() {
         assert_discovery(
-            "typegen_camel",
             &[(
                 "tauri.conf.json",
                 r#"{ "plugins": { "typegen": { "outputPath": "../src/types/typegen" } } }"#,
@@ -547,7 +527,6 @@ TS_RS_EXPORT_DIR = { value = "./src/bindings_type", relative = true }"#,
     #[test]
     fn test_typegen_default_output_path() {
         assert_discovery(
-            "typegen_default",
             &[(
                 "tauri.conf.json",
                 r#"{ "plugins": { "typegen": { "projectPath": "." } } }"#,
@@ -558,7 +537,7 @@ TS_RS_EXPORT_DIR = { value = "./src/bindings_type", relative = true }"#,
 
     #[test]
     fn test_typegen_not_found_without_plugin_section() {
-        assert_discovery("typegen_no_plugin", &[], &[]);
+        assert_discovery(&[], &[]);
     }
 
     // ─── Combined ────────────────────────────────────────────────────────────
@@ -566,7 +545,6 @@ TS_RS_EXPORT_DIR = { value = "./src/bindings_type", relative = true }"#,
     #[test]
     fn test_all_three_generators_discovered() {
         assert_discovery(
-            "all_three",
             &[
                 (
                     "src/lib.rs",
@@ -592,9 +570,7 @@ TS_RS_EXPORT_DIR = "../src/ts-rs""#,
 
     #[test]
     fn test_no_generators_without_tauri_config() {
-        let root = tmp("no_tauri");
-        fs::create_dir_all(&root).unwrap();
-        assert!(discover_generators(&root).is_empty());
-        let _ = fs::remove_dir_all(&root);
+        let tmp = TempDir::new().unwrap();
+        assert!(discover_generators(tmp.path()).is_empty());
     }
 }

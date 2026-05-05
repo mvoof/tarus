@@ -130,7 +130,7 @@ pub struct LocationInfo {
 pub type NameLocation = (String, Option<LocationInfo>);
 
 /// Cache for command and event names
-pub(super) type NameCache = Option<Vec<NameLocation>>;
+pub(super) type NameCache = Option<std::sync::Arc<Vec<NameLocation>>>;
 
 /// Diagnostic information for a command/event
 #[derive(Clone, Debug)]

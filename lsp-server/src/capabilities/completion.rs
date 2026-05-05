@@ -70,7 +70,7 @@ pub fn handle_completion(
     let mut items = Vec::new();
 
     // Add commands
-    for (name, def_loc) in project_index.get_all_names(EntityType::Command) {
+    for (name, def_loc) in project_index.get_all_names(EntityType::Command).iter() {
         let detail = def_loc.as_ref().map(|l| {
             let filename = l
                 .path
@@ -81,7 +81,7 @@ pub fn handle_completion(
         });
 
         items.push(CompletionItem {
-            label: name,
+            label: name.clone(),
             kind: Some(CompletionItemKind::FUNCTION),
             detail,
             ..Default::default()
@@ -89,9 +89,9 @@ pub fn handle_completion(
     }
 
     // Add events
-    for (name, _) in project_index.get_all_names(EntityType::Event) {
+    for (name, _) in project_index.get_all_names(EntityType::Event).iter() {
         items.push(CompletionItem {
-            label: name,
+            label: name.clone(),
             kind: Some(CompletionItemKind::EVENT),
             detail: Some("Event".to_string()),
             ..Default::default()
