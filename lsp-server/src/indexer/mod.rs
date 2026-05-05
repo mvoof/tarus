@@ -93,7 +93,7 @@ impl ProjectIndex {
         path: &Path,
         position: tower_lsp_server::lsp_types::Position,
     ) -> Option<(IndexKey, LocationInfo)> {
-        let keys_in_file = self.file_map.get(&path.to_path_buf())?;
+        let keys_in_file = self.file_map.get(path)?;
 
         for key in keys_in_file.value() {
             if let Some(locations) = self.map.get(key) {
@@ -145,7 +145,7 @@ impl ProjectIndex {
 
     /// Deletes all entries associated with a specific file.
     pub fn remove_file(&self, path: &Path) {
-        if let Some((_, keys)) = self.file_map.remove(&path.to_path_buf()) {
+        if let Some((_, keys)) = self.file_map.remove(path) {
             for key in keys {
                 self.map.entry(key.clone()).and_modify(|locs| {
                     locs.retain(|loc| loc.path != path);
@@ -162,7 +162,7 @@ impl ProjectIndex {
         }
 
         // Also remove parse errors for this file
-        self.parse_errors.remove(&path.to_path_buf());
+        self.parse_errors.remove(path);
     }
 
     /// Store a parse error for a file
@@ -172,9 +172,7 @@ impl ProjectIndex {
 
     /// Get parse error for a file (if any)
     pub fn get_parse_error(&self, path: &Path) -> Option<String> {
-        self.parse_errors
-            .get(&path.to_path_buf())
-            .map(|e| e.value().clone())
+        self.parse_errors.get(path).map(|e| e.value().clone())
     }
 
     /// Retrieves all locations associated with a specific entity
@@ -195,7 +193,7 @@ impl ProjectIndex {
     /// Get keys associated with a file path
     pub fn get_file_keys(&self, path: &Path) -> Vec<IndexKey> {
         self.file_map
-            .get(&path.to_path_buf())
+            .get(path)
             .map(|keys| keys.value().clone())
             .unwrap_or_default()
     }
@@ -209,5 +207,4 @@ impl ProjectIndex {
     pub fn get_locations_for_key(&self, key: &IndexKey) -> Vec<LocationInfo> {
         self.map.get(key).map(|v| v.clone()).unwrap_or_default()
     }
-
 }
