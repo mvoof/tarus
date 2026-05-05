@@ -73,3 +73,30 @@ impl ProjectIndex {
         self.event_schemas.get(name).map(|v| v.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_type_aliases_add_and_remove() {
+        let index = ProjectIndex::new();
+        let path = PathBuf::from("types.ts");
+
+        index.add_type_alias(
+            "UserProfile".to_string(),
+            "{ id: number; name: string }".to_string(),
+            path.clone(),
+        );
+
+        assert_eq!(
+            index.type_aliases.get("UserProfile").map(|v| v.clone()),
+            Some("{ id: number; name: string }".to_string())
+        );
+
+        index.remove_type_aliases_for_file(&path);
+
+        assert!(!index.type_aliases.contains_key("UserProfile"), "Alias should be removed");
+    }
+}

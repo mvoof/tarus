@@ -143,6 +143,37 @@ fn process_bindings_file(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer::{DiscoveredGenerator, GeneratorKind, ProjectIndex};
+    use std::path::Path;
+
+    fn load_fixture(relative_path: &str) -> String {
+        let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        std::fs::read_to_string(fixtures_dir.join(relative_path))
+            .unwrap_or_else(|e| panic!("Failed to load fixture {relative_path}: {e}"))
+    }
+
+    #[test]
+    fn test_process_ts_rs_file_populates_type_aliases() {
+        let index = ProjectIndex::new();
+        let path = PathBuf::from("ts_rs_types.ts");
+
+        index.set_generator_bindings(vec![DiscoveredGenerator {
+            kind: GeneratorKind::TsRs,
+            output_path: path.clone(),
+            is_directory: false,
+        }]);
+
+        let content = load_fixture("bindings/ts_rs_types.ts");
+        process_file_content(&path, &content, &index);
+
+        assert!(index.type_aliases.contains_key("UserProfile"), "UserProfile alias should be in index");
+        assert!(index.type_aliases.contains_key("TaskState"), "TaskState alias should be in index");
+    }
+}
+
 /// Process file from disk
 pub fn process_file_index(path: PathBuf, project_index: &ProjectIndex) -> bool {
     if !is_supported_file(&path) {

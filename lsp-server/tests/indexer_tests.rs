@@ -361,30 +361,6 @@ fn test_overwrite_schema() {
 }
 
 #[test]
-fn test_type_aliases() {
-    let index = ProjectIndex::new();
-    let path = test_path("types.ts");
-
-    index.add_type_alias(
-        "UserProfile".to_string(),
-        "{ id: number; name: string }".to_string(),
-        path.clone(),
-    );
-
-    assert_eq!(
-        index.get_type_alias("UserProfile"),
-        Some("{ id: number; name: string }".to_string())
-    );
-
-    index.remove_type_aliases_for_file(&path);
-
-    assert!(
-        !index.has_type_alias("UserProfile"),
-        "Alias should be removed"
-    );
-}
-
-#[test]
 fn test_stale_rust_command_schema_cleared_on_reparse() {
     let index = ProjectIndex::new();
     let path = test_path("lib.rs");

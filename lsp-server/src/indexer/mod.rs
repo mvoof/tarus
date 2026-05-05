@@ -187,24 +187,6 @@ impl ProjectIndex {
         self.map.get(&key).map(|v| v.clone()).unwrap_or_default()
     }
 
-    /// Check if a type alias exists by name
-    #[allow(dead_code)] // used in integration tests (tests/)
-    pub fn has_type_alias(&self, name: &str) -> bool {
-        self.type_aliases.contains_key(name)
-    }
-
-    /// Get a type alias definition by name
-    #[allow(dead_code)] // used in integration tests (tests/)
-    pub fn get_type_alias(&self, name: &str) -> Option<String> {
-        self.type_aliases.get(name).map(|v| v.clone())
-    }
-
-    /// Get the reference limit for `CodeLens` display
-    #[allow(dead_code)] // used in integration tests (tests/)
-    pub fn get_reference_limit(&self) -> usize {
-        self.reference_limit.load(Ordering::Relaxed)
-    }
-
     /// Set the reference limit for `CodeLens` display
     pub fn set_reference_limit(&self, limit: usize) {
         self.reference_limit.store(limit, Ordering::Relaxed);
