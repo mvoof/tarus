@@ -10,8 +10,8 @@
     "url": "https://github.com/mvoof/tarus"
   },
   "publisher": "mvoof",
-  "description": "Coding assistant for TAURI® apps. Navigation, autocomplete, diagnostics for commands and events.",
-  "version": "0.7.0",
+  "description": "Coding assistant for TAURI® apps. Navigation, autocomplete, diagnostics and type checking for commands and events.",
+  "version": "0.8.0",
   "engines": {
     "vscode": "^1.105.0"
   },
@@ -64,7 +64,8 @@
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "version-bump": "node --experimental-strip-types ./scripts/bump-version.ts"
   },
   "devDependencies": {
     "@types/node": "22.x",
