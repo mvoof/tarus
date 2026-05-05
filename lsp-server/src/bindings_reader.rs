@@ -10,7 +10,7 @@ use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
 use crate::ts_tree_utils::parse_ts;
 use crate::utils::{camel_to_snake, capture_text, find_capture};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor};
 
@@ -32,7 +32,7 @@ fn setup_ts_query(content: &str, query_str: &str) -> Option<(tree_sitter::Tree, 
 /// ```
 /// inside an `export const commands = { ... }` block.
 #[must_use]
-pub fn parse_specta_bindings(content: &str, source_path: PathBuf) -> Vec<CommandSchema> {
+pub fn parse_specta_bindings(content: &str, source_path: &Path) -> Vec<CommandSchema> {
     let Some((tree, query)) =
         setup_ts_query(content, include_str!("queries/bindings_specta_commands.scm"))
     else {
@@ -73,7 +73,7 @@ pub fn parse_specta_bindings(content: &str, source_path: PathBuf) -> Vec<Command
             command_name: camel_to_snake(method_name),
             params,
             return_type,
-            source_path: source_path.clone(),
+            source_path: source_path.to_path_buf(),
             generator: GeneratorKind::Specta,
         });
     }
@@ -232,7 +232,7 @@ fn parse_type_aliases_and_interfaces(
 /// Extract `property_signature` children from `node` as `name: type` pairs.
 ///
 /// Skips index signatures and any child that isn't a `property_signature`.
-fn extract_named_fields<'a>(node: tree_sitter::Node<'_>, bytes: &'a [u8]) -> Vec<String> {
+fn extract_named_fields(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Vec<String> {
     let mut fields = Vec::new();
     let mut cursor = node.walk();
 
@@ -287,7 +287,7 @@ fn extract_interface_fields(body_node: tree_sitter::Node<'_>, content: &str) -> 
 /// The type parameter maps TS names to payload types.
 /// The value object maps TS names to actual event name strings.
 #[must_use]
-pub fn parse_specta_events(content: &str, source_path: PathBuf) -> Vec<EventSchema> {
+pub fn parse_specta_events(content: &str, source_path: &Path) -> Vec<EventSchema> {
     let Some((tree, query)) =
         setup_ts_query(content, include_str!("queries/bindings_specta_events.scm"))
     else {
@@ -335,7 +335,7 @@ pub fn parse_specta_events(content: &str, source_path: PathBuf) -> Vec<EventSche
                             schemas.push(EventSchema {
                                 event_name: value,
                                 payload_type: payload_type.clone(),
-                                source_path: source_path.clone(),
+                                source_path: source_path.to_path_buf(),
                                 generator: GeneratorKind::Specta,
                             });
                         }
@@ -375,7 +375,7 @@ fn extract_type_object_entries(
 /// }
 /// ```
 #[must_use]
-pub fn parse_typegen_events(content: &str, source_path: PathBuf) -> Vec<EventSchema> {
+pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchema> {
     let Some((tree, query)) =
         setup_ts_query(content, include_str!("queries/bindings_typegen_events.scm"))
     else {
@@ -414,7 +414,7 @@ pub fn parse_typegen_events(content: &str, source_path: PathBuf) -> Vec<EventSch
             schemas.push(EventSchema {
                 event_name: event_name.to_string(),
                 payload_type: clean_type,
-                source_path: source_path.clone(),
+                source_path: source_path.to_path_buf(),
                 generator: GeneratorKind::Typegen,
             });
         }

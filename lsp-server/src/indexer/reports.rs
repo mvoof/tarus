@@ -70,12 +70,12 @@ impl ProjectIndex {
         report_message.push_str("\n\n🔑 === 1. MAIN KEY INDEX (map) ===\n");
         report_message.push_str("   [Key -> List of ALL Locations]\n");
 
-        for entry in self.map.iter() {
+        for entry in &self.map {
             let key = entry.key();
             let locs = entry.value();
             let _ = writeln!(report_message, "  {key:?} ({} loc(s))", locs.len());
             for loc in locs {
-                let _ = writeln!(report_message, "    - {:?} {:?}", loc.path, loc.range);
+                let _ = writeln!(report_message, "    - {} {:?}", loc.path.display(), loc.range);
             }
         }
 
@@ -85,8 +85,8 @@ impl ProjectIndex {
         if self.file_map.is_empty() {
             report_message.push_str("   (File Map is Empty)\n");
         } else {
-            for entry in self.file_map.iter() {
-                let _ = writeln!(report_message, "  {:?} ({} key(s))", entry.key(), entry.value().len());
+            for entry in &self.file_map {
+                let _ = writeln!(report_message, "  {} ({} key(s))", entry.key().display(), entry.value().len());
                 for k in entry.value() {
                     let _ = writeln!(report_message, "    - {k:?}");
                 }

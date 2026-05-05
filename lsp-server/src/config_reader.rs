@@ -188,6 +188,7 @@ fn discover_typegen(tauri_config_path: &Path, src_tauri_dir: &Path) -> Option<Di
 /// - `None` if there is no `plugins.typegen` section (caller should skip typegen)
 /// - `Some(None)` if the section exists but has no `outputPath` (use default)
 /// - `Some(Some(path))` if `outputPath` is set explicitly
+#[allow(clippy::option_option)] // three-way: absent section / present without path / present with path
 fn read_typegen_section_output_path(content: &str, ext: &str) -> Option<Option<String>> {
     if ext == "toml" {
         let val: toml::Value = content.parse().ok()?;

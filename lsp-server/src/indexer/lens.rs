@@ -1,4 +1,4 @@
-//! CodeLens data preparation
+//! `CodeLens` data preparation
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

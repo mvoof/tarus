@@ -5,7 +5,7 @@
 //! - `generators` — generator discovery and bindings detection
 //! - `schemas` — command/event schema and type alias CRUD
 //! - `symbols` — document and workspace symbol search
-//! - `lens` — CodeLens data preparation
+//! - `lens` — `CodeLens` data preparation
 //! - `reports` — debug reports and introspection
 //! - `cache` — name and diagnostic info caching
 
@@ -22,7 +22,6 @@ pub use types::*;
 use crate::syntax::EntityType;
 use dashmap::DashMap;
 use parking_lot::RwLock;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -189,16 +188,19 @@ impl ProjectIndex {
     }
 
     /// Check if a type alias exists by name
+    #[allow(dead_code)] // used in integration tests (tests/)
     pub fn has_type_alias(&self, name: &str) -> bool {
         self.type_aliases.contains_key(name)
     }
 
     /// Get a type alias definition by name
+    #[allow(dead_code)] // used in integration tests (tests/)
     pub fn get_type_alias(&self, name: &str) -> Option<String> {
         self.type_aliases.get(name).map(|v| v.clone())
     }
 
     /// Get the reference limit for `CodeLens` display
+    #[allow(dead_code)] // used in integration tests (tests/)
     pub fn get_reference_limit(&self) -> usize {
         self.reference_limit.load(Ordering::Relaxed)
     }

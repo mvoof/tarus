@@ -492,7 +492,7 @@ impl LanguageServer for Backend {
 }
 
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    uri.to_file_path().map(|c| c.into_owned())
+    uri.to_file_path().map(std::borrow::Cow::into_owned)
 }
 
 fn document_symbol_len(response: &DocumentSymbolResponse) -> usize {
