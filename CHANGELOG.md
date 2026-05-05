@@ -1,5 +1,38 @@
 ## Change Log
 
+### [0.8.0] - 2026-05-05
+
+- **Code quality & maintainability**
+
+  - Removed ~200 lines of duplicated parsing logic across Rust and TypeScript parsers
+  - Split several large functions (50–100+ lines each) into smaller, focused helpers
+  - Extracted shared utilities to eliminate copy-paste in query setup, schema building,  
+    and symbol construction
+  - Moved CodeLens logic into its own file to reduce the size of the central index module
+  - Replaced magic strings scattered across the codebase with named constants  
+
+
+- **Bug fixes**
+
+  - `string[]` and `Array<string>` are now treated as the same type in diagnostics
+  - Fixed a dead code path in language detection that could never be reached
+  - Removed an unsafe `unwrap()` call during file parsing  
+
+
+- **Performance**
+
+  - Name completion no longer copies the full list on every keystroke — uses  shared  
+    reference instead
+  - Hover info for commands/events no longer re-allocates data on each request
+  - Regex/pattern tables for Rust and TypeScript parsers are now built once at startup  
+  instead of on every file parse  
+
+
+- **Reliability**
+
+  - Code actions no longer freeze the editor while scanning Rust source files
+  - Test cleanup now runs correctly even when a test crashes midway
+
 ### [0.7.0] - 2026-04-24
 
 - **Enhanced Type Support:** Full bidirectional payload type checking between Rust and Frontend.
@@ -50,6 +83,7 @@
 - **Code Quality:** Major refactoring to a modular architecture, improving maintainability and enabling comprehensive testing.
 
 ### [0.3.1]
+
 - **Completion:** Autocomplete for command and event names inside TAURI API calls. Triggers only in context (uses `command_syntax.json`).
 - **Diagnostics:** For all command/event mismatch diagnostic messages, use the WARNING status.
 
@@ -61,7 +95,7 @@
 
 ### [0.2.2]
 
-- **Refactor:** use tower-lsp-server  instead tower-lsp.
+- **Refactor:** use tower-lsp-server instead tower-lsp.
 
 ### [0.2.1]
 
