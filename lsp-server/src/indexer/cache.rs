@@ -52,7 +52,8 @@ impl ProjectIndex {
         }
 
         // Cache miss - compute
-        let locations = self.map.get(key).map(|v| v.clone()).unwrap_or_default();
+        let entry = self.map.get(key);
+        let locations: &[LocationInfo] = entry.as_deref().map_or(&[], |v| v.as_slice());
         let has_definition = locations.iter().any(|l| l.behavior == Behavior::Definition);
 
         let info = match key.entity {
