@@ -88,8 +88,7 @@ fn scan_rust_files(src_tauri_dir: &Path) -> Vec<(PathBuf, String)> {
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| {
-            e.file_type().is_file()
-                && e.path().extension().and_then(|s| s.to_str()) == Some("rs")
+            e.file_type().is_file() && e.path().extension().and_then(|s| s.to_str()) == Some("rs")
         })
         .filter_map(|e| {
             let content = std::fs::read_to_string(e.path()).ok()?;
@@ -165,7 +164,10 @@ fn match_specta_patterns(
 /// Returns `None` if no `plugins.typegen` section is present.
 fn discover_typegen(tauri_config_path: &Path, src_tauri_dir: &Path) -> Option<DiscoveredGenerator> {
     let content = std::fs::read_to_string(tauri_config_path).ok()?;
-    let ext = tauri_config_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let ext = tauri_config_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
 
     // Returns None if plugins.typegen section doesn't exist; Some(None) if section exists but no outputPath
     let output_path_str = read_typegen_section_output_path(&content, ext)?;
@@ -193,11 +195,21 @@ fn read_typegen_section_output_path(content: &str, ext: &str) -> Option<Option<S
     if ext == "toml" {
         let val: toml::Value = content.parse().ok()?;
         let typegen = val.get("plugins")?.get("typegen")?;
-        Some(typegen.get("outputPath").and_then(|v| v.as_str()).map(ToString::to_string))
+        Some(
+            typegen
+                .get("outputPath")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string),
+        )
     } else {
         let val: serde_json::Value = serde_json::from_str(content).ok()?;
         let typegen = val.get("plugins")?.get("typegen")?;
-        Some(typegen.get("outputPath").and_then(|v| v.as_str()).map(ToString::to_string))
+        Some(
+            typegen
+                .get("outputPath")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string),
+        )
     }
 }
 
@@ -506,10 +518,7 @@ TS_RS_EXPORT_DIR = { value = "./src/bindings_type", relative = true }"#,
 
     #[test]
     fn test_ts_rs_not_found_without_dep_or_config() {
-        assert_discovery(
-            &[("Cargo.toml", "[dependencies]\nserde = \"1\"")],
-            &[],
-        );
+        assert_discovery(&[("Cargo.toml", "[dependencies]\nserde = \"1\"")], &[]);
     }
 
     // ─── Typegen ─────────────────────────────────────────────────────────────

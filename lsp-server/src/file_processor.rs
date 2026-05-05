@@ -77,7 +77,10 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
 }
 
 /// Add a command schema only if no higher-priority (non-RustSource) schema already exists.
-fn add_command_schema_if_higher_priority(schema: crate::indexer::CommandSchema, project_index: &ProjectIndex) {
+fn add_command_schema_if_higher_priority(
+    schema: crate::indexer::CommandSchema,
+    project_index: &ProjectIndex,
+) {
     if !project_index
         .get_schema(&schema.command_name)
         .is_some_and(|e| e.generator != GeneratorKind::RustSource)
@@ -87,7 +90,10 @@ fn add_command_schema_if_higher_priority(schema: crate::indexer::CommandSchema, 
 }
 
 /// Add an event schema only if no higher-priority (non-RustSource) schema already exists.
-fn add_event_schema_if_higher_priority(schema: crate::indexer::EventSchema, project_index: &ProjectIndex) {
+fn add_event_schema_if_higher_priority(
+    schema: crate::indexer::EventSchema,
+    project_index: &ProjectIndex,
+) {
     if !project_index
         .get_event_schema(&schema.event_name)
         .is_some_and(|e| e.generator != GeneratorKind::RustSource)
@@ -169,8 +175,14 @@ mod tests {
         let content = load_fixture("bindings/ts_rs_types.ts");
         process_file_content(&path, &content, &index);
 
-        assert!(index.type_aliases.contains_key("UserProfile"), "UserProfile alias should be in index");
-        assert!(index.type_aliases.contains_key("TaskState"), "TaskState alias should be in index");
+        assert!(
+            index.type_aliases.contains_key("UserProfile"),
+            "UserProfile alias should be in index"
+        );
+        assert!(
+            index.type_aliases.contains_key("TaskState"),
+            "TaskState alias should be in index"
+        );
     }
 }
 
