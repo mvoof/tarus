@@ -96,8 +96,14 @@ fn handle_command_action(
                 },
                 edits: vec![OneOf::Left(TextEdit {
                     range: Range {
-                        start: Position { line: insert_line, character: 0 },
-                        end: Position { line: insert_line, character: 0 },
+                        start: Position {
+                            line: insert_line,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: insert_line,
+                            character: 0,
+                        },
                     },
                     new_text,
                 })],
@@ -206,7 +212,7 @@ fn find_insertion_line(content: &str) -> usize {
 }
 
 fn rank_and_limit(mut candidates: Vec<RustFileCandidate>) -> Vec<RustFileCandidate> {
-    candidates.sort_by(|a, b| b.priority.cmp(&a.priority));
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.priority));
     candidates.into_iter().take(5).collect()
 }
 
