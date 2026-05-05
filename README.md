@@ -127,7 +127,6 @@ TARUS reads generated bindings to provide structural type checking for:
 ## Documentation
 
 - **[Changelog](./CHANGELOG.md)** — Version history and release notes.
-- **[Architecture Guide](./docs/ARCHITECTURE.md)** — Deep dive into Tree-sitter and LSP internals.
 - **[Contributing](./CONTRIBUTING.md)** — Guidelines for building and testing.
 
 ## License
