@@ -75,7 +75,12 @@ impl ProjectIndex {
             let locs = entry.value();
             let _ = writeln!(report_message, "  {key:?} ({} loc(s))", locs.len());
             for loc in locs {
-                let _ = writeln!(report_message, "    - {} {:?}", loc.path.display(), loc.range);
+                let _ = writeln!(
+                    report_message,
+                    "    - {} {:?}",
+                    loc.path.display(),
+                    loc.range
+                );
             }
         }
 
@@ -86,7 +91,12 @@ impl ProjectIndex {
             report_message.push_str("   (File Map is Empty)\n");
         } else {
             for entry in &self.file_map {
-                let _ = writeln!(report_message, "  {} ({} key(s))", entry.key().display(), entry.value().len());
+                let _ = writeln!(
+                    report_message,
+                    "  {} ({} key(s))",
+                    entry.key().display(),
+                    entry.value().len()
+                );
                 for k in entry.value() {
                     let _ = writeln!(report_message, "    - {k:?}");
                 }

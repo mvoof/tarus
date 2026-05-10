@@ -33,9 +33,10 @@ fn setup_ts_query(content: &str, query_str: &str) -> Option<(tree_sitter::Tree, 
 /// inside an `export const commands = { ... }` block.
 #[must_use]
 pub fn parse_specta_bindings(content: &str, source_path: &Path) -> Vec<CommandSchema> {
-    let Some((tree, query)) =
-        setup_ts_query(content, include_str!("queries/bindings_specta_commands.scm"))
-    else {
+    let Some((tree, query)) = setup_ts_query(
+        content,
+        include_str!("queries/bindings_specta_commands.scm"),
+    ) else {
         return Vec::new();
     };
 
@@ -151,24 +152,15 @@ fn unwrap_return_type_node(node: tree_sitter::Node<'_>, content: &str) -> String
         .to_string()
 }
 
-/// Parse a ts-rs generated file and return a map of `TypeName -> definition`.
-///
-/// Looks for lines like:
-/// ```text
-/// export type UserProfile = { id: number; name: string };
-/// ```
-#[must_use]
-pub fn parse_ts_rs_types(content: &str) -> HashMap<String, String> {
-    parse_type_aliases_and_interfaces(content, false)
-}
-
-/// Parse a typegen-generated file and return a map of `TypeName -> definition`.
+/// Parse a TypeScript bindings file and return a map of `TypeName -> definition`.
 ///
 /// Handles both:
-/// - `export type Name = ...;`  (inline type aliases)
-/// - `export interface Name { field: type; ... }` (multi-line interface blocks)
+/// - `export type Name = ...;` (type aliases)
+/// - `export interface Name { ... }` (interfaces)
+///
+/// This is a unified parser used by Specta, ts-rs, and tauri-typegen.
 #[must_use]
-pub fn parse_typegen_types(content: &str) -> HashMap<String, String> {
+pub fn parse_typescript_types(content: &str) -> HashMap<String, String> {
     parse_type_aliases_and_interfaces(content, true)
 }
 

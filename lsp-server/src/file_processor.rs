@@ -125,16 +125,20 @@ fn process_bindings_file(
             for schema in bindings_reader::parse_specta_events(content, &path_buf) {
                 project_index.add_event_schema(schema);
             }
+
+            for (name, def) in bindings_reader::parse_typescript_types(content) {
+                project_index.add_type_alias(name, def, path.to_path_buf());
+            }
         }
 
         GeneratorKind::TsRs => {
-            for (name, def) in bindings_reader::parse_ts_rs_types(content) {
+            for (name, def) in bindings_reader::parse_typescript_types(content) {
                 project_index.add_type_alias(name, def, path.to_path_buf());
             }
         }
 
         GeneratorKind::Typegen => {
-            for (name, def) in bindings_reader::parse_typegen_types(content) {
+            for (name, def) in bindings_reader::parse_typescript_types(content) {
                 project_index.add_type_alias(name, def, path.to_path_buf());
             }
 

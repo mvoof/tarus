@@ -144,13 +144,8 @@ fn match_specta_patterns(
 
         if ext_ok {
             let resolved = normalize_path(&src_tauri_dir.join(path_str));
-            let kind = if method == SPECTA_EXPORT_METHOD {
-                GeneratorKind::Specta
-            } else {
-                GeneratorKind::TsRs
-            };
             out.push(DiscoveredGenerator {
-                kind,
+                kind: GeneratorKind::Specta,
                 output_path: resolved,
                 is_directory: false,
             });
@@ -453,7 +448,7 @@ mod tests {
             &[
                 (GeneratorKind::Specta, "src/admin.ts"),
                 (GeneratorKind::Specta, "src/client.ts"),
-                (GeneratorKind::TsRs, "src/shared.ts"),
+                (GeneratorKind::Specta, "src/shared.ts"),
             ],
         );
     }
@@ -467,7 +462,7 @@ mod tests {
                 "src/main.rs",
                 r#"use specta_typescript::Typescript; fn main() { Typescript::default().export_to("../src/bindings.ts", &types); }"#,
             )],
-            &[(GeneratorKind::TsRs, "src/bindings.ts")],
+            &[(GeneratorKind::Specta, "src/bindings.ts")],
         );
     }
 

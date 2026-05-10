@@ -57,9 +57,9 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
             parser.set_language(&ts_lang).map_err(|e| {
                 ParseError::LanguageError(format!("Failed to set Rust language: {e}"))
             })?;
-            let tree = parser.parse(content, None).ok_or_else(|| {
-                ParseError::SyntaxError("Failed to parse Rust file".to_string())
-            })?;
+            let tree = parser
+                .parse(content, None)
+                .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
             extract_rust_findings(tree.root_node(), content, &ts_lang)?
         }
         Some(lang_val @ (LangType::TypeScript | LangType::JavaScript | LangType::Angular)) => {
@@ -120,8 +120,7 @@ pub fn parse_rust_full(content: &str, path: &Path) -> ParseResult<RustFileIndex>
         rust_type_extractor::extract_command_schemas_from_tree(root, content, path);
 
     // 3. Extract event schemas
-    let event_schemas =
-        rust_type_extractor::extract_event_schemas_from_tree(root, content, path);
+    let event_schemas = rust_type_extractor::extract_event_schemas_from_tree(root, content, path);
 
     Ok(RustFileIndex {
         file_index: FileIndex {

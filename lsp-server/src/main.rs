@@ -114,7 +114,8 @@ impl Backend {
 
         if let Some(settings) = iter.next() {
             if let Some(is_enabled) = settings.as_bool() {
-                self.is_developer_mode_active.store(is_enabled, Ordering::Relaxed);
+                self.is_developer_mode_active
+                    .store(is_enabled, Ordering::Relaxed);
                 self.client
                     .log_message(
                         MessageType::INFO,
@@ -145,12 +146,13 @@ impl Backend {
         let is_dev_mode = self.is_developer_mode_active.clone();
 
         tokio::spawn(async move {
-            client.log_message(MessageType::INFO, "🚀 Starting background indexing...").await;
+            client
+                .log_message(MessageType::INFO, "🚀 Starting background indexing...")
+                .await;
 
-            let files =
-                tokio::task::spawn_blocking(move || scan_workspace_files(&root))
-                    .await
-                    .unwrap_or_default();
+            let files = tokio::task::spawn_blocking(move || scan_workspace_files(&root))
+                .await
+                .unwrap_or_default();
 
             for path in files {
                 file_processor::process_file_index(path, &project_index);
@@ -168,7 +170,9 @@ impl Backend {
                 client.log_message(MessageType::INFO, report).await;
             }
 
-            client.log_message(MessageType::INFO, "🏁 Indexing complete".to_string()).await;
+            client
+                .log_message(MessageType::INFO, "🏁 Indexing complete".to_string())
+                .await;
         });
     }
 }
@@ -229,10 +233,11 @@ impl LanguageServer for Backend {
         };
 
         let root_for_generators = root.clone();
-        let generators =
-            tokio::task::spawn_blocking(move || config_reader::discover_generators(&root_for_generators))
-                .await
-                .unwrap_or_default();
+        let generators = tokio::task::spawn_blocking(move || {
+            config_reader::discover_generators(&root_for_generators)
+        })
+        .await
+        .unwrap_or_default();
 
         if generators.is_empty() {
             self.client
@@ -299,7 +304,8 @@ impl LanguageServer for Backend {
 
         let result = capabilities::references::handle_references(params, &self.project_index);
 
-        self.log_dev_result(result.as_ref().map(Vec::len), "references").await;
+        self.log_dev_result(result.as_ref().map(Vec::len), "references")
+            .await;
 
         Ok(result)
     }
@@ -312,7 +318,8 @@ impl LanguageServer for Backend {
 
         let result = capabilities::code_lens::handle_code_lens(params, &self.project_index);
 
-        self.log_dev_result(result.as_ref().map(Vec::len), "code lenses").await;
+        self.log_dev_result(result.as_ref().map(Vec::len), "code lenses")
+            .await;
 
         Ok(result)
     }
@@ -329,7 +336,8 @@ impl LanguageServer for Backend {
 
         let result = capabilities::hover::handle_hover(params, &self.project_index);
 
-        self.log_dev_result(result.as_ref().map(|_| 1), "hover tooltip").await;
+        self.log_dev_result(result.as_ref().map(|_| 1), "hover tooltip")
+            .await;
 
         Ok(result)
     }
@@ -351,7 +359,8 @@ impl LanguageServer for Backend {
             workspace_root.as_ref(),
         );
 
-        self.log_dev_result(result.as_ref().map(Vec::len), "code actions").await;
+        self.log_dev_result(result.as_ref().map(Vec::len), "code actions")
+            .await;
 
         Ok(result)
     }
@@ -400,8 +409,11 @@ impl LanguageServer for Backend {
             &self.document_cache,
         );
 
-        self.log_dev_result(result.as_ref().map(completion_response_len), "completion items")
-            .await;
+        self.log_dev_result(
+            result.as_ref().map(completion_response_len),
+            "completion items",
+        )
+        .await;
 
         Ok(result)
     }

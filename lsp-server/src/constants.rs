@@ -42,9 +42,9 @@ pub const PRIORITY_DEFAULT: u8 = 50;
 // Specta/ts-rs discovery method names
 // ---------------------------------------------------------------------------
 
-/// `specta_typescript` export method name (standalone specta-typescript crate)
-pub const SPECTA_EXPORT_METHOD: &str = "export";
 /// `tauri-specta` export method name
+pub const SPECTA_EXPORT_METHOD: &str = "export";
+/// `specta_typescript` export method name (standalone specta-typescript crate)
 pub const SPECTA_EXPORT_TO_METHOD: &str = "export_to";
 /// Specta bindings variable name in generated TS
 pub const SPECTA_COMMANDS_VAR: &str = "commands";

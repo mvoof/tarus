@@ -5,7 +5,7 @@ mod common_paths;
 
 use common_fixtures::load_fixture;
 use common_paths::test_path;
-use lsp_server::bindings_reader::{parse_specta_bindings, parse_ts_rs_types, parse_typegen_types};
+use lsp_server::bindings_reader::{parse_specta_bindings, parse_typescript_types};
 use lsp_server::file_processor::process_file_content;
 use lsp_server::indexer::{DiscoveredGenerator, GeneratorKind, ProjectIndex};
 use lsp_server::utils::camel_to_snake;
@@ -102,7 +102,7 @@ fn test_parse_specta_multi_params() {
 #[test]
 fn test_parse_ts_rs_type_aliases() {
     let content = load_fixture("bindings/ts_rs_types.ts");
-    let aliases = parse_ts_rs_types(&content);
+    let aliases = parse_typescript_types(&content);
 
     assert!(
         aliases.contains_key("UserProfile"),
@@ -122,7 +122,7 @@ fn test_parse_ts_rs_type_aliases() {
 #[test]
 fn test_parse_typegen_export_type_lines() {
     let content = load_fixture("bindings/typegen_bindings.ts");
-    let aliases = parse_typegen_types(&content);
+    let aliases = parse_typescript_types(&content);
 
     assert!(aliases.contains_key("SimpleUser"), "Should find SimpleUser");
     assert!(
@@ -135,7 +135,7 @@ fn test_parse_typegen_export_type_lines() {
 #[test]
 fn test_parse_typegen_export_interface_blocks() {
     let content = load_fixture("bindings/typegen_bindings.ts");
-    let aliases = parse_typegen_types(&content);
+    let aliases = parse_typescript_types(&content);
 
     // export interface UserProfile { id: number; name: string; ... }
     assert!(
@@ -160,7 +160,7 @@ fn test_parse_typegen_export_interface_blocks() {
 #[test]
 fn test_parse_typegen_interface_skips_index_signatures() {
     let content = load_fixture("bindings/typegen_bindings.ts");
-    let aliases = parse_typegen_types(&content);
+    let aliases = parse_typescript_types(&content);
 
     // GreetParams has `[key: string]: unknown` which should be skipped
     assert!(
@@ -192,7 +192,7 @@ export interface SimpleModel {
 }
 "#;
 
-    let aliases = parse_typegen_types(content);
+    let aliases = parse_typescript_types(content);
     assert!(aliases.contains_key("SimpleModel"));
     let def = &aliases["SimpleModel"];
     assert!(def.contains("id: number"));

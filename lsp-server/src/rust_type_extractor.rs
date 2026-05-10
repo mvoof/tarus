@@ -39,10 +39,14 @@ pub fn rust_type_to_ts(rust_type: &str) -> String {
         RustType::Unit => "void".to_string(),
         RustType::Result => extract_first_generic_arg_from_type(t)
             .map_or_else(|| t.to_string(), |ok| rust_type_to_ts(&ok)),
-        RustType::Option => extract_first_generic_arg_from_type(t)
-            .map_or_else(|| t.to_string(), |inner| format!("{} | null", rust_type_to_ts(&inner))),
-        RustType::Vec => extract_first_generic_arg_from_type(t)
-            .map_or_else(|| t.to_string(), |inner| format!("{}[]", rust_type_to_ts(&inner))),
+        RustType::Option => extract_first_generic_arg_from_type(t).map_or_else(
+            || t.to_string(),
+            |inner| format!("{} | null", rust_type_to_ts(&inner)),
+        ),
+        RustType::Vec => extract_first_generic_arg_from_type(t).map_or_else(
+            || t.to_string(),
+            |inner| format!("{}[]", rust_type_to_ts(&inner)),
+        ),
         RustType::Other => t.to_string(),
     }
 }
@@ -60,8 +64,8 @@ enum RustType {
 
 fn classify_rust_type(t: &str) -> RustType {
     match t {
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
-        | "i128" | "isize" | "f32" | "f64" => RustType::Number,
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
+        | "isize" | "f32" | "f64" => RustType::Number,
         "String" | "&str" => RustType::Str,
         "bool" => RustType::Bool,
         "()" => RustType::Unit,
@@ -292,10 +296,7 @@ fn try_extract_event_schemas_from_node(
 /// - Boolean literal → "boolean"
 /// - Struct expression → extract struct name
 /// - Variable reference → look up in function params, then local `let` bindings
-fn resolve_emit_payload_type(
-    node: tree_sitter::Node<'_>,
-    content: &str,
-) -> Option<String> {
+fn resolve_emit_payload_type(node: tree_sitter::Node<'_>, content: &str) -> Option<String> {
     let text = node.utf8_text(content.as_bytes()).ok()?;
 
     match node.kind() {

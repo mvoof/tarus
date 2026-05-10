@@ -42,7 +42,8 @@ pub fn handle_completion(
         .or_else(|| std::fs::read_to_string(&path).ok())?;
 
     let lines: Vec<&str> = content.lines().collect();
-    let line_idx = usize::try_from(params.text_document_position.position.line).unwrap_or(usize::MAX);
+    let line_idx =
+        usize::try_from(params.text_document_position.position.line).unwrap_or(usize::MAX);
     if line_idx >= lines.len() {
         return None;
     }
