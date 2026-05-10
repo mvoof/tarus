@@ -134,8 +134,7 @@ pub(super) fn parse_frontend(
     let mut matches = cursor.matches(&query, root, bytes);
 
     while let Some(m) = matches.next() {
-        if let Some(f) =
-            process_first_arg_pattern(m, &caps, bytes, &aliases, content, line_offset)
+        if let Some(f) = process_first_arg_pattern(m, &caps, bytes, &aliases, content, line_offset)
         {
             findings.push(f);
         }
@@ -203,7 +202,8 @@ fn process_first_arg_pattern(
         point_to_position(func_cap.node.end_position()),
         line_offset,
     ));
-    let type_arg_info = extract_type_argument_info(m, caps.call_generic, caps.call_await_generic, content);
+    let type_arg_info =
+        extract_type_argument_info(m, caps.call_generic, caps.call_await_generic, content);
     let return_type = type_arg_info.as_ref().map(|i| i.type_text.clone());
     let type_arg_range = type_arg_info.map(|i| adjust_range(i.type_arg_range, line_offset));
 

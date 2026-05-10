@@ -158,7 +158,10 @@ fn compute_structural_diagnostics(
             if is_unused {
                 Some((
                     DiagnosticSeverity::WARNING,
-                    format!("{entity_label} '{}' is defined but never {usage_label}", key.name),
+                    format!(
+                        "{entity_label} '{}' is defined but never {usage_label}",
+                        key.name
+                    ),
                 ))
             } else {
                 None
@@ -249,8 +252,7 @@ fn check_param_keys(
     // BTreeSet gives deterministic ordering for diagnostic messages
     let expected: std::collections::BTreeSet<&str> =
         schema.params.iter().map(|p| p.name.as_str()).collect();
-    let actual: std::collections::BTreeSet<&str> =
-        call_keys.iter().map(String::as_str).collect();
+    let actual: std::collections::BTreeSet<&str> = call_keys.iter().map(String::as_str).collect();
 
     // Missing required params (present in schema, absent in call)
     let missing: Vec<&str> = expected.difference(&actual).copied().collect();

@@ -3,8 +3,8 @@
 use crate::syntax::{Behavior, EntityType};
 
 use super::types::{DiagnosticInfo, IndexKey, LocationInfo, NameLocation};
-use std::sync::Arc;
 use super::ProjectIndex;
+use std::sync::Arc;
 
 impl ProjectIndex {
     /// Get all known names for a specific entity type (for completion)

@@ -97,6 +97,9 @@ mod tests {
 
         index.remove_type_aliases_for_file(&path);
 
-        assert!(!index.type_aliases.contains_key("UserProfile"), "Alias should be removed");
+        assert!(
+            !index.type_aliases.contains_key("UserProfile"),
+            "Alias should be removed"
+        );
     }
 }

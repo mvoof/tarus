@@ -132,18 +132,16 @@ pub fn parse_fixture(input: &str) -> FixtureData {
                     index.add_schema(schema);
                 }
 
-                let evt_schemas =
-                    lsp_server::bindings_reader::parse_specta_events(&content, &path);
+                let evt_schemas = lsp_server::bindings_reader::parse_specta_events(&content, &path);
                 for schema in evt_schemas {
                     index.add_event_schema(schema);
                 }
             }
 
-            // Parse type aliases (ts-rs and typegen)
+            // Parse type aliases (Specta, ts-rs, and typegen)
             let aliases = match gen_kind {
-                GeneratorKind::TsRs => lsp_server::bindings_reader::parse_ts_rs_types(&content),
-                GeneratorKind::Typegen => {
-                    lsp_server::bindings_reader::parse_typegen_types(&content)
+                GeneratorKind::Specta | GeneratorKind::TsRs | GeneratorKind::Typegen => {
+                    lsp_server::bindings_reader::parse_typescript_types(&content)
                 }
                 _ => std::collections::HashMap::new(),
             };
