@@ -105,6 +105,8 @@ invoke("gre$0et");
         expect![[r#"
             ### ⚙️ Command: `greet`
 
+            **Returns:** `void`
+
             **Definition:**
             - 🦀 `backend.rs:2`
 

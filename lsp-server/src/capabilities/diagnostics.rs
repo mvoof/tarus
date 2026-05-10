@@ -359,9 +359,9 @@ fn check_return_type(
     let schema = project_index.get_schema(command_name)?;
 
     // RustSource schemas are allowed for return type checks only when the return type
-    // has a known binding (type alias from ts-rs/specta/typegen), giving us confidence.
+    // is a known type (alias or primitive), giving us confidence.
     if matches!(schema.generator, GeneratorKind::RustSource)
-        && !project_index.type_aliases.contains_key(&schema.return_type)
+        && !is_known_type(&schema.return_type, project_index)
     {
         return None;
     }
@@ -412,11 +412,9 @@ fn check_event_payload_type(
 
     let schema = project_index.get_event_schema(event_name)?;
 
-    // RustSource schemas are allowed only when the payload type has a known binding
+    // RustSource schemas are allowed only when the payload type is a known type
     if matches!(schema.generator, GeneratorKind::RustSource)
-        && !project_index
-            .type_aliases
-            .contains_key(&schema.payload_type)
+        && !is_known_type(&schema.payload_type, project_index)
     {
         return None;
     }
@@ -445,6 +443,34 @@ fn check_event_payload_type(
         },
         project_index,
     )
+}
+
+/// Check if a TypeScript type string is "known" (either a primitive or a registered alias).
+/// Recursively handles array notations.
+pub(crate) fn is_known_type(ts_type: &str, project_index: &ProjectIndex) -> bool {
+    let t = ts_type.trim();
+
+    // 1. Exact alias match
+    if project_index.type_aliases.contains_key(t) {
+        return true;
+    }
+
+    // 2. Primitives
+    if matches!(t, "string" | "number" | "boolean" | "any" | "void" | "null") {
+        return true;
+    }
+
+    // 3. Array notation: T[]
+    if let Some(inner) = t.strip_suffix("[]") {
+        return is_known_type(inner, project_index);
+    }
+
+    // 4. Array notation: Array<T>
+    if let Some(inner) = t.strip_prefix("Array<").and_then(|s| s.strip_suffix('>')) {
+        return is_known_type(inner, project_index);
+    }
+
+    false
 }
 
 /// Normalize a TypeScript type string to a canonical form for comparison.

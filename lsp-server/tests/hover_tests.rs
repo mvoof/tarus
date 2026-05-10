@@ -25,6 +25,8 @@ invoke("greet");
         expect![[r#"
             ### ⚙️ Command: `greet`
 
+            **Returns:** `void`
+
             **Definition:**
             - 🦀 `backend.rs:2`
 
@@ -51,6 +53,8 @@ invoke("gre$0et");
 "#,
         expect![[r#"
             ### ⚙️ Command: `greet`
+
+            **Returns:** `void`
 
             **Definition:**
             - 🦀 `backend.rs:2`
@@ -133,6 +137,8 @@ fn gre$0et() {}
 "#,
         expect![[r#"
             ### ⚙️ Command: `greet`
+
+            **Returns:** `void`
 
             **Definition:**
             - 🦀 `backend.rs:2`

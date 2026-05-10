@@ -404,7 +404,9 @@ invoke("$0greet", { bad_key: 42 });
 #[tauri::command]
 fn greet(name: String) -> String { name }
 "#,
-        expect!["(none)"],
+        expect![[
+            r#"HINT 1:8..1:13 "invoke('greet') is missing return type, expected 'string'" [tarus/return-type-missing]"#
+        ]],
     );
 }
 
@@ -614,5 +616,28 @@ fn emit_event(app: &AppHandle) {
 }
 "#,
         expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_event_payload_vec_alias_passed_by_ref() {
+    helpers::check_diagnostics(
+        r#"
+//- /backend.rs
+fn run(app: AppHandle) {
+    let forecast: Vec<WeatherForecastEntry> = vec![];
+    app.emit("weather", &forecast);
+}
+
+//- /bindings.ts [specta]
+export interface WeatherForecastEntry { time: number; }
+
+//- /frontend.ts
+import { listen } from "@tauri-apps/api/event";
+listen("$0weather", (e) => {});
+"#,
+        expect![[
+            r#"HINT 1:8..1:15 "listen('weather') is missing payload type, expected 'WeatherForecastEntry[]'" [tarus/event-payload-missing]"#
+        ]],
     );
 }
