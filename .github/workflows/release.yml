@@ -14,6 +14,33 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Release Notes
+        id: extract_notes
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          VERSION="${VERSION%-pre-release}"
+          VERSION="${VERSION%-preview}"
+          echo "Extracting notes for version: $VERSION"
+          
+          # Use awk to extract the section
+          # It looks for '### [VERSION]' and prints until the next '### ' or EOF
+          awk -v ver="[$VERSION]" '/### / { if (p) { exit }; if ($2 == ver) { p=1; next } } p { print }' CHANGELOG.md > release_notes.md
+          
+          # Check if we actually extracted something
+          if [ ! -s release_notes.md ]; then
+            echo "No release notes found in CHANGELOG.md for version $VERSION"
+            echo "notes=" >> $GITHUB_OUTPUT
+          else
+            # We need to escape multiline output for GITHUB_OUTPUT
+            echo "notes<<EOF" >> $GITHUB_OUTPUT
+            cat release_notes.md >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
       - name: Download all Artifacts
         uses: actions/download-artifact@v4
         with:
@@ -31,6 +58,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
-          generate_release_notes: true
+          body: ${{ steps.extract_notes.outputs.notes }}
+          generate_release_notes: ${{ steps.extract_notes.outputs.notes == '' }}
           draft: false
           prerelease: ${{ inputs.prerelease }}
