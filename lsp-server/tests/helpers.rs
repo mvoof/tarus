@@ -97,6 +97,10 @@ pub fn parse_fixture(input: &str) -> FixtureData {
                 rust_schemas.push(rest.to_string());
             } else if let Some(rest) = trimmed.strip_prefix("$EVENT_SCHEMA ") {
                 event_schemas.push(rest.to_string());
+            } else if let Some(rest) = trimmed.strip_prefix("$RUST_EVENT_SCHEMA ") {
+                let mut schema = parse_event_schema_directive(rest);
+                schema.generator = GeneratorKind::RustSource;
+                index.add_event_schema(schema);
             } else if let Some(rest) = trimmed.strip_prefix("$TYPE_ALIAS ") {
                 type_aliases.push(rest.to_string());
             } else {
@@ -160,13 +164,25 @@ pub fn parse_fixture(input: &str) -> FixtureData {
         }
 
         // Always parse with tree_parser (even bindings files get normal parsing too)
-        let parse_result = tree_parser::parse(&path, &content);
-        match parse_result {
-            Ok(file_index) => {
-                index.add_file(file_index);
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            if let Ok(rust_index) = lsp_server::tree_parser::parse_rust_full(&content, &path) {
+                index.add_file(rust_index.file_index);
+                for schema in rust_index.command_schemas {
+                    index.add_schema(schema);
+                }
+                for schema in rust_index.event_schemas {
+                    index.add_event_schema(schema);
+                }
             }
-            Err(e) => {
-                index.set_parse_error(path.clone(), format!("{e:?}"));
+        } else {
+            let parse_result = tree_parser::parse(&path, &content);
+            match parse_result {
+                Ok(file_index) => {
+                    index.add_file(file_index);
+                }
+                Err(e) => {
+                    index.set_parse_error(path.clone(), format!("{e:?}"));
+                }
             }
         }
 

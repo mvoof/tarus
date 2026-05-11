@@ -296,6 +296,8 @@ fn try_extract_event_schemas_from_node(
 /// - Boolean literal → "boolean"
 /// - Struct expression → extract struct name
 /// - Variable reference → look up in function params, then local `let` bindings
+/// - Reference expression (&val) → recurse
+/// - Parenthesized expression ((val)) → recurse
 fn resolve_emit_payload_type(node: tree_sitter::Node<'_>, content: &str) -> Option<String> {
     let text = node.utf8_text(content.as_bytes()).ok()?;
 
@@ -321,6 +323,14 @@ fn resolve_emit_payload_type(node: tree_sitter::Node<'_>, content: &str) -> Opti
             }
 
             resolve_local_variable_type(node, var_name, content)
+        }
+        "reference_expression" => {
+            let inner = node.child_by_field_name("value")?;
+            resolve_emit_payload_type(inner, content)
+        }
+        "parenthesized_expression" => {
+            let inner = node.named_child(0)?;
+            resolve_emit_payload_type(inner, content)
         }
         _ => None,
     }

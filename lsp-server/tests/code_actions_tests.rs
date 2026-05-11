@@ -103,6 +103,29 @@ fn emit_event(app: &AppHandle) {
     );
 }
 
+#[test]
+fn code_action_event_payload_missing_array() {
+    helpers::check_code_actions(
+        r#"
+//- /backend.rs
+fn run(app: AppHandle) {
+    let forecast: Vec<WeatherForecastEntry> = vec![];
+    app.emit("weather", &forecast);
+}
+
+//- /bindings.ts [specta]
+export interface WeatherForecastEntry { time: number; }
+
+//- /frontend.ts
+import { listen } from "@tauri-apps/api/event";
+listen("$0weather", (e) => {});
+"#,
+        expect![[r#"
+            "Add payload type 'WeatherForecastEntry[]'" [quickfix]
+              edit /frontend.ts 1:6 insert "<WeatherForecastEntry[]>""#]],
+    );
+}
+
 // ===========================================================================
 // No bindings → no type actions
 // ===========================================================================

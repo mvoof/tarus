@@ -299,9 +299,7 @@ fn make_event_payload_action(
     let schema = project_index.get_event_schema(event_name)?;
 
     if matches!(schema.generator, GeneratorKind::RustSource)
-        && !project_index
-            .type_aliases
-            .contains_key(&schema.payload_type)
+        && !super::diagnostics::is_known_type(&schema.payload_type, project_index)
     {
         return None;
     }
@@ -332,7 +330,7 @@ fn make_return_type_action(
     let schema = project_index.get_schema(command_name)?;
 
     if matches!(schema.generator, GeneratorKind::RustSource)
-        && !project_index.type_aliases.contains_key(&schema.return_type)
+        && !super::diagnostics::is_known_type(&schema.return_type, project_index)
     {
         return None;
     }
