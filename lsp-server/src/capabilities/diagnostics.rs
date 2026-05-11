@@ -446,27 +446,56 @@ fn check_event_payload_type(
 }
 
 /// Check if a TypeScript type string is "known" (either a primitive or a registered alias).
-/// Recursively handles array notations.
+/// Recursively handles array notations and unions.
 pub(crate) fn is_known_type(ts_type: &str, project_index: &ProjectIndex) -> bool {
-    let t = ts_type.trim();
+    let type_ts = ts_type.trim();
+
+    // 0. Handle top-level unions (respecting <...>)
+    let mut depth = 0;
+    let mut last_split = 0;
+    let mut parts = Vec::new();
+
+    for (i, c) in type_ts.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            '|' if depth == 0 => {
+                parts.push(&type_ts[last_split..i]);
+                last_split = i + 1;
+            }
+            _ => {}
+        }
+    }
+
+    if !parts.is_empty() {
+        parts.push(&type_ts[last_split..]);
+
+        return parts.iter().all(|part| is_known_type(part, project_index));
+    }
 
     // 1. Exact alias match
-    if project_index.type_aliases.contains_key(t) {
+    if project_index.type_aliases.contains_key(type_ts) {
         return true;
     }
 
     // 2. Primitives
-    if matches!(t, "string" | "number" | "boolean" | "any" | "void" | "null") {
+    if matches!(
+        type_ts,
+        "string" | "number" | "boolean" | "any" | "void" | "null" | "undefined"
+    ) {
         return true;
     }
 
     // 3. Array notation: T[]
-    if let Some(inner) = t.strip_suffix("[]") {
+    if let Some(inner) = type_ts.strip_suffix("[]") {
         return is_known_type(inner, project_index);
     }
 
     // 4. Array notation: Array<T>
-    if let Some(inner) = t.strip_prefix("Array<").and_then(|s| s.strip_suffix('>')) {
+    if let Some(inner) = type_ts
+        .strip_prefix("Array<")
+        .and_then(|s| s.strip_suffix('>'))
+    {
         return is_known_type(inner, project_index);
     }
 
@@ -505,4 +534,41 @@ pub fn types_match(ts_type: &str, expected: &str, project_index: &ProjectIndex) 
     let resolved_expected = normalize_ts_type(&resolve(expected));
 
     resolved_actual == resolved_expected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer::ProjectIndex;
+
+    #[test]
+    fn test_is_known_type() {
+        let project_index = ProjectIndex::new();
+
+        // Primitives
+        assert!(is_known_type("string", &project_index));
+        assert!(is_known_type("number", &project_index));
+        assert!(is_known_type("boolean", &project_index));
+        assert!(is_known_type("any", &project_index));
+        assert!(is_known_type("void", &project_index));
+        assert!(is_known_type("null", &project_index));
+        assert!(
+            is_known_type("undefined", &project_index),
+            "undefined should be a known primitive"
+        );
+
+        // Arrays
+        assert!(is_known_type("string[]", &project_index));
+        assert!(is_known_type("Array<number>", &project_index));
+        assert!(is_known_type("Array<string | null>", &project_index));
+
+        // Unions
+        assert!(is_known_type("string | null", &project_index));
+        assert!(is_known_type("number | undefined", &project_index));
+        assert!(is_known_type("string | number | boolean", &project_index));
+
+        // Unknown
+        assert!(!is_known_type("UnknownType", &project_index));
+        assert!(!is_known_type("string | UnknownType", &project_index));
+    }
 }
