@@ -95,21 +95,45 @@ Efficiency tools for common tasks:
 
 ---
 
-## Integration
+## Support and Integration
 
 ### Language Support
 
-- **Backend**: Rust
-- **Frontend**: TypeScript, JavaScript
-- **Frameworks**: React, Vue 3, Svelte, Angular
+- **Backend**: Rust (`#[tauri::command]`, `AppHandle::emit`, `Window::listen`)
+- **Frontend**: TypeScript, JavaScript, JSX, TSX
+- **Frameworks**: React, Vue 3 (SFC), Svelte, Angular
 
-### Type Generators
+### Type Generator Support
 
-TARUS supports automatic discovery of generated bindings from:
+TARUS reads generated bindings to provide structural type checking for:
 
-- **tauri-specta**
+- **tauri-specta** (both `.export()` and standalone `.export_to()`)
+- **specta** / **specta-typescript** (standalone `.export_to()`)
 - **ts-rs**
 - **tauri-typegen**
+
+#### Supported Features
+
+- **Hybrid Type Checking**: Tarus provides protection even without generated bindings:
+  - **Zero-Config (RustSource)**: For basic types (`string`, `number`, `boolean`, `any`, `null`, `undefined`), arrays, and unions (like `Option<T>` → `T | null`), Tarus extracts information directly from Rust source code to provide instant validation.
+
+  - **Full Structural Safety**: For custom structs and complex interfaces, Tarus integrates with binding generators (Specta, ts-rs, Typegen) to ensure your TypeScript objects match your Rust data models exactly.
+
+- **TypeScript Definitions**: Full support for both `export type` aliases and `export interface` blocks.
+- **Collection Types**: Recursive support for array notation (e.g., `User[]`, `Array<User>`, `Vec<T>` → `T[]`).
+- **Rust Type Detection**: For event payloads (`app.emit(...)`), Tarus identifies types through:
+  - **Explicit type annotations**: `let data: MyType = ...;`
+  - **Direct struct instantiation**: `let data = MyType { ... };`
+  - **Expression Resolution**: Correctly handles references (`&data`) and parenthesized expressions.
+
+> [!IMPORTANT]
+> **Type Inference Limitations:** Tarus uses **Tree-sitter** for surgical AST analysis rather than being a full language compiler. It does not perform deep semantic analysis or cross-function type inference. To enable diagnostics for event payloads, the type must be explicitly declared at the emission site (e.g., via type annotation or direct struct instantiation).
+
+---
+
+## Documentation
+
+- **[Changelog](./CHANGELOG.md)** — Version history and release notes.
 
 ---
 
