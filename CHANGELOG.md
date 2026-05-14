@@ -1,35 +1,47 @@
 ## Change Log
 
+### [0.9.0] - 2026-05-14
+
+- **Enhanced Type Support**
+  - **Complex Types:** Now supports union types (e.g., `string | null`). This allows for accurate checking of Rust's `Option<T>` and optional TypeScript fields, including `undefined`.
+  - **Full Array Support:** Improved validation for arrays (both `T[]` and `Array<T>`). You'll now get precise diagnostics and Quick Fixes when working with lists of data.
+  - **Deep Nesting:** Better handling of complex nested types like `Array<string | null>`, ensuring your data is validated correctly at any depth.
+
+- **Generator Improvements**
+  - **Unified Parsing:** We've merged the type processing for `ts-rs`, `Specta`, and `tauri-typegen`. Support for `interface` is now more consistent across all tools.
+  - **Specta Fixes:** Resolved an issue where some Specta-generated files weren't recognized. Your type aliases are now indexed reliably.
+
+- **Rust Enhancements**
+  - **Pass-by-Reference:** Improved type detection for Rust `emit` calls when data is passed by reference (e.g., `&payload`).
+
+- **Bug Fixes & Stability**
+  - Fixed a bug where type checking would stop working for arrays of custom interfaces.
+  - Hover tooltips now accurately display return types discovered from your Rust source code.
+  - Internal tests now better reflect real-world projects, ensuring a more stable experience.
+
 ### [0.8.0] - 2026-05-05
 
 - **Code quality & maintainability**
-
   - Removed ~200 lines of duplicated parsing logic across Rust and TypeScript parsers
   - Split several large functions (50–100+ lines each) into smaller, focused helpers
   - Extracted shared utilities to eliminate copy-paste in query setup, schema building,  
     and symbol construction
   - Moved CodeLens logic into its own file to reduce the size of the central index module
-  - Replaced magic strings scattered across the codebase with named constants  
-
+  - Replaced magic strings scattered across the codebase with named constants
 
 - **Bug fixes**
-
   - `string[]` and `Array<string>` are now treated as the same type in diagnostics
   - Fixed a dead code path in language detection that could never be reached
-  - Removed an unsafe `unwrap()` call during file parsing  
-
+  - Removed an unsafe `unwrap()` call during file parsing
 
 - **Performance**
-
-  - Name completion no longer copies the full list on every keystroke — uses  shared  
+  - Name completion no longer copies the full list on every keystroke — uses shared  
     reference instead
   - Hover info for commands/events no longer re-allocates data on each request
   - Regex/pattern tables for Rust and TypeScript parsers are now built once at startup  
-  instead of on every file parse  
-
+    instead of on every file parse
 
 - **Reliability**
-
   - Code actions no longer freeze the editor while scanning Rust source files
   - Test cleanup now runs correctly even when a test crashes midway
 
