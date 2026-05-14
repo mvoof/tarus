@@ -1,8 +1,11 @@
 <div align="center">
    <img src="https://raw.githubusercontent.com/mvoof/tarus/main/assets/icon.png" alt="TARUS Logo" width="120"/>
    <h1>TARUS</h1>
-   <p><b>The Missing Link for TAURI® Development</b></p>
-   <p>Bridge the gap between Rust and TypeScript with zero configuration.</p>
+
+   <p>
+    <b>The Missing Link for TAURI® Development</b><br>
+    Bridge the gap between Rust and TypeScript with zero configuration.
+   </p>
 
 [![Marketplace](https://vsmarketplacebadges.dev/version-short/mvoof.tarus-vscode-extension.svg?style=flat-square&label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![Installs](https://vsmarketplacebadges.dev/installs-short/mvoof.tarus-vscode-extension.svg?style=flat-square)](https://marketplace.visualstudio.com/items?itemName=mvoof.tarus-vscode-extension) [![TAURI v2.0](https://img.shields.io/badge/TAURI-v2.0-blue?style=flat-square)](https://tauri.app) [![License](https://img.shields.io/github/license/mvoof/tarus?style=flat-square)](LICENSE) [![GitHub Stars](https://img.shields.io/github/stars/mvoof/tarus?style=flat-square)](https://github.com/mvoof/tarus/stargazers)
 
@@ -128,12 +131,6 @@ TARUS reads generated bindings to provide structural type checking for:
 
 > [!IMPORTANT]
 > **Type Inference Limitations:** Tarus uses **Tree-sitter** for surgical AST analysis rather than being a full language compiler. It does not perform deep semantic analysis or cross-function type inference. To enable diagnostics for event payloads, the type must be explicitly declared at the emission site (e.g., via type annotation or direct struct instantiation).
-
----
-
-## Documentation
-
-- **[Changelog](./CHANGELOG.md)** — Version history and release notes.
 
 ---
 
