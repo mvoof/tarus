@@ -70,6 +70,7 @@ struct FrontendCaptures {
     arg_value_second: Option<u32>,
     imported_name: Option<u32>,
     local_alias: Option<u32>,
+    import_source: Option<u32>,
     call_generic: Option<u32>,
     call_await_generic: Option<u32>,
     specta_method_name: Option<u32>,
@@ -87,6 +88,7 @@ impl FrontendCaptures {
             arg_value_second: query.capture_index_for_name("arg_value_second"),
             imported_name: query.capture_index_for_name("imported_name"),
             local_alias: query.capture_index_for_name("local_alias"),
+            import_source: query.capture_index_for_name("import_source"),
             call_generic: query.capture_index_for_name("call_generic"),
             call_await_generic: query.capture_index_for_name("call_await_generic"),
             specta_method_name: query.capture_index_for_name("specta_method_name"),
@@ -152,34 +154,48 @@ pub(super) fn parse_frontend(
     Ok(findings)
 }
 
-fn collect_aliases(
+fn collect_aliases<'a>(
     query: &Query,
     root: tree_sitter::Node<'_>,
-    bytes: &[u8],
+    bytes: &'a [u8],
     caps: &FrontendCaptures,
-) -> HashMap<String, String> {
+) -> HashMap<&'a str, &'a str> {
     let mut aliases = HashMap::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, root, bytes);
 
     while let Some(m) = matches.next() {
-        let imp = find_capture(m, caps.imported_name);
-        let loc = find_capture(m, caps.local_alias);
-        if let (Some(imp_cap), Some(loc_cap)) = (imp, loc) {
-            let imported = imp_cap.node.utf8_text(bytes).unwrap_or_default();
-            let local = loc_cap.node.utf8_text(bytes).unwrap_or_default();
-            aliases.insert(local.to_string(), imported.to_string());
+        let src_cap = find_capture(m, caps.import_source);
+
+        if let Some(src_node) = src_cap {
+            let source = src_node.node.utf8_text(bytes).unwrap_or_default();
+
+            if source.starts_with("@tauri-apps/") {
+                let imp = find_capture(m, caps.imported_name);
+                let loc = find_capture(m, caps.local_alias);
+
+                if let (Some(imp_cap), Some(loc_cap)) = (imp, loc) {
+                    let imported = imp_cap.node.utf8_text(bytes).unwrap_or_default();
+                    let local = loc_cap.node.utf8_text(bytes).unwrap_or_default();
+
+                    aliases.insert(local, imported);
+                } else if let Some(imp_cap) = imp {
+                    let imported = imp_cap.node.utf8_text(bytes).unwrap_or_default();
+
+                    aliases.insert(imported, imported);
+                }
+            }
         }
     }
 
     aliases
 }
 
-fn process_first_arg_pattern(
+fn process_first_arg_pattern<'a>(
     m: &tree_sitter::QueryMatch<'_, '_>,
     caps: &FrontendCaptures,
-    bytes: &[u8],
-    aliases: &HashMap<String, String>,
+    bytes: &'a [u8],
+    aliases: &HashMap<&'a str, &'a str>,
     content: &str,
     line_offset: usize,
 ) -> Option<Finding> {
@@ -188,7 +204,7 @@ fn process_first_arg_pattern(
 
     let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
     let arg_value = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-    let original_name = aliases.get(func_name).map_or(func_name, String::as_str);
+    let original_name = *aliases.get(func_name)?;
 
     let pattern = ALL_FRONTEND_PATTERNS
         .iter()
@@ -220,11 +236,11 @@ fn process_first_arg_pattern(
     })
 }
 
-fn process_second_arg_pattern(
+fn process_second_arg_pattern<'a>(
     m: &tree_sitter::QueryMatch<'_, '_>,
     caps: &FrontendCaptures,
-    bytes: &[u8],
-    aliases: &HashMap<String, String>,
+    bytes: &'a [u8],
+    aliases: &HashMap<&'a str, &'a str>,
     line_offset: usize,
 ) -> Option<Finding> {
     let func_cap = find_capture(m, caps.func_name_second)?;
@@ -232,7 +248,7 @@ fn process_second_arg_pattern(
 
     let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
     let arg_value = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-    let original_name = aliases.get(func_name).map_or(func_name, String::as_str);
+    let original_name = *aliases.get(func_name)?;
 
     let pattern = ALL_FRONTEND_PATTERNS
         .iter()

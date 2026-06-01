@@ -3,19 +3,31 @@
 
 ; === IMPORTS ===
 
-; Import specifiers to track aliases
-; import { invoke as myInvoke } from '@tauri-apps/api'
-(import_specifier
-  name: (identifier) @imported_name
-  alias: (identifier) @local_alias
-) @import_alias
+; Import specifiers with alias and source
+(import_statement
+  (import_clause
+    (named_imports
+      (import_specifier
+        name: (identifier) @imported_name
+        alias: (identifier) @local_alias
+      )
+    )
+  )
+  source: (string (string_fragment) @import_source)
+)
 
-; Simple imports without alias
-; import { invoke } from '@tauri-apps/api'
-(import_specifier
-  name: (identifier) @imported_simple
-  !alias
-) @import_simple
+; Simple imports without alias and with source
+(import_statement
+  (import_clause
+    (named_imports
+      (import_specifier
+        name: (identifier) @imported_name
+        !alias
+      )
+    )
+  )
+  source: (string (string_fragment) @import_source)
+)
 
 ; === SIMPLE CALLS (no generics) ===
 
