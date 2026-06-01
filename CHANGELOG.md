@@ -1,5 +1,9 @@
 ## Change Log
 
+### [0.9.1] - 2026-06-01
+
+- **Bug fixes:** Fixed an issue with false positives for functions whose names match standard Tauri v2 functions (invoke, emit, listen, once, emitTo)
+
 ### [0.9.0] - 2026-05-14
 
 - **Enhanced Type Support**
