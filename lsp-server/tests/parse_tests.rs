@@ -145,6 +145,65 @@ async function fetchData() {
 }
 
 #[test]
+fn parse_ts_no_tauri_import() {
+    helpers::check_parse(
+        r#"
+//- /app.ts
+function invoke(cmd: string, args?: any) {}
+function emit(event: string, payload?: any) {}
+function listen(event: string, handler: any) {}
+function once(event: string, handler: any) {}
+function emitTo(target: string, event: string, payload?: any) {}
+
+async function test_local() {
+    await invoke("greet", { name: "Alice" });
+    emit("status-changed", { status: "active" });
+    listen("user-notification", (e) => {});
+    once("single-event", (e) => {});
+    emitTo("window", "custom-event", { data: 123 });
+}
+
+import { invoke as i, emit as e, listen as l, once as o, emitTo as et } from "./unrelated-lib";
+
+async function test_imported() {
+    await i("greet", { name: "Alice" });
+    e("status-changed", { status: "active" });
+    l("user-notification", (e) => {});
+    o("single-event", (e) => {});
+    et("window", "custom-event", { data: 123 });
+}
+"#,
+        expect![[r#""#]],
+    );
+}
+
+#[test]
+fn parse_ts_all_tauri_imports() {
+    helpers::check_parse(
+        r#"
+//- /app.ts
+import { invoke } from "@tauri-apps/api/core";
+import { emit, listen, once, emitTo } from "@tauri-apps/api/event";
+
+async function test() {
+    await invoke("greet", { name: "Alice" });
+    emit("status-changed", { status: "active" });
+    listen("user-notification", (e) => {});
+    once("single-event", (e) => {});
+    emitTo("window", "custom-event", { data: 123 });
+}
+"#,
+        expect![[r#"
+            /app.ts:
+              Command Call "greet" 4:18..4:23
+              Event Emit "status-changed" 5:10..5:24
+              Event Listen "user-notification" 6:12..6:29
+              Event Listen "single-event" 7:10..7:22
+              Event Emit "custom-event" 8:22..8:34"#]],
+    );
+}
+
+#[test]
 fn parse_ts_generic_invoke() {
     helpers::check_parse(
         r#"
