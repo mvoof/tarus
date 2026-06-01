@@ -154,12 +154,12 @@ pub(super) fn parse_frontend(
     Ok(findings)
 }
 
-fn collect_aliases(
+fn collect_aliases<'a>(
     query: &Query,
     root: tree_sitter::Node<'_>,
-    bytes: &[u8],
+    bytes: &'a [u8],
     caps: &FrontendCaptures,
-) -> HashMap<String, String> {
+) -> HashMap<&'a str, &'a str> {
     let mut aliases = HashMap::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, root, bytes);
@@ -178,11 +178,11 @@ fn collect_aliases(
                     let imported = imp_cap.node.utf8_text(bytes).unwrap_or_default();
                     let local = loc_cap.node.utf8_text(bytes).unwrap_or_default();
 
-                    aliases.insert(local.to_string(), imported.to_string());
+                    aliases.insert(local, imported);
                 } else if let Some(imp_cap) = imp {
                     let imported = imp_cap.node.utf8_text(bytes).unwrap_or_default();
 
-                    aliases.insert(imported.to_string(), imported.to_string());
+                    aliases.insert(imported, imported);
                 }
             }
         }
@@ -191,11 +191,11 @@ fn collect_aliases(
     aliases
 }
 
-fn process_first_arg_pattern(
+fn process_first_arg_pattern<'a>(
     m: &tree_sitter::QueryMatch<'_, '_>,
     caps: &FrontendCaptures,
-    bytes: &[u8],
-    aliases: &HashMap<String, String>,
+    bytes: &'a [u8],
+    aliases: &HashMap<&'a str, &'a str>,
     content: &str,
     line_offset: usize,
 ) -> Option<Finding> {
@@ -204,7 +204,7 @@ fn process_first_arg_pattern(
 
     let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
     let arg_value = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-    let original_name = aliases.get(func_name)?;
+    let original_name = *aliases.get(func_name)?;
 
     let pattern = ALL_FRONTEND_PATTERNS
         .iter()
@@ -236,11 +236,11 @@ fn process_first_arg_pattern(
     })
 }
 
-fn process_second_arg_pattern(
+fn process_second_arg_pattern<'a>(
     m: &tree_sitter::QueryMatch<'_, '_>,
     caps: &FrontendCaptures,
-    bytes: &[u8],
-    aliases: &HashMap<String, String>,
+    bytes: &'a [u8],
+    aliases: &HashMap<&'a str, &'a str>,
     line_offset: usize,
 ) -> Option<Finding> {
     let func_cap = find_capture(m, caps.func_name_second)?;
@@ -248,7 +248,7 @@ fn process_second_arg_pattern(
 
     let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
     let arg_value = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-    let original_name = aliases.get(func_name)?;
+    let original_name = *aliases.get(func_name)?;
 
     let pattern = ALL_FRONTEND_PATTERNS
         .iter()
