@@ -47,7 +47,7 @@ struct Backend {
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
     /// Cache of open document contents for completion and other features
     document_cache: Arc<DashMap<PathBuf, String>>,
-    /// Set to true after Pass 1 (constant collection) completes so did_open/did_change
+    /// Set to true after Pass 1 (constant collection) completes so `did_open/did_change`missing backticks
     /// can use the full global constants map for cross-file resolution.
     constants_ready: Arc<AtomicBool>,
 }
