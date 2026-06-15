@@ -3,99 +3,74 @@
 > [!NOTE]
 > Please prefer English language for all communication.
 
-**Contributions are welcome!**
+## Creating an issue
 
-Please follow the steps below to keep the history clean and make reviews easier:
+Before creating an issue please ensure that the problem is not [already reported](https://github.com/mvoof/tarus/issues).
 
-1.  **Fork the repository**
-    Create a fork of the main repository in your own GitHub account.
+## How to Contribute
 
-2.  **Clone your fork:**
+1. **Fork and Clone the Repository**
 
-    ```bash
-    git clone https://github.com/mvoof/tarus.git
-    cd tarus
-    ```
+   First, create your own copy of the repository by clicking the "Fork" button on GitHub. Then, clone your fork to your local machine:
 
-3.  **Add the upstream repository:**
+   ```sh
+   git clone https://github.com/your-username/tarus.git
+   cd tarus
+   ```
 
-    ```bash
-    git remote add upstream https://github.com/mvoof/tarus.git
-    ```
+2. **Create a New Branch**
 
-    **Verify:**
+   ```sh
+   git checkout -b feature/short-description
+   ```
 
-    ```bash
-    git remote -v
-    ```
+3. **Make Changes**
 
-4.  **Create a feature branch:**
+   Implement your feature or fix the bug. Be sure to follow the project's coding style and add tests if necessary.
 
-    ```bash
-    git fetch upstream
-    git checkout -b feature/amazing-feature upstream/main
-    ```
+4. **Commit Changes**
 
-5.  **Make changes and commit:**
+   Before committing, ensure your code is clean and functional:
+   - Run linting and formatting: `npm run lint` and `npm run format`
+   - Build the extension: `npm run vscode:prepublish`
+   - Run tests: `cargo test --manifest-path lsp-server/Cargo.toml`
+   - Check for warnings: `cargo clippy --manifest-path lsp-server/Cargo.toml`
 
-    ```bash
-    git commit -m "Add amazing feature"
-    ```
+   Once verified, commit your changes:
 
-6.  **Keep your branch up to date (rebase):**
-    Before pushing or opening a Pull Request, rebase your branch onto the latest main.
+   ```sh
+   git add .
+   git commit -m "feat: add new super feature"
+   ```
 
-    ```bash
-    git fetch upstream
-    git checkout feature/amazing-feature
-    git rebase upstream/main
-    ```
+5. **Keep Your Branch Up to Date**
 
-    **If conflicts occur:**
+   Before pushing, make sure your branch is rebased on top of the latest `main` to avoid merge conflicts and keep the history clean:
 
-    ```bash
-    git status
-    ## resolve conflicts
-    git add <files>
-    git rebase --continue
-    ```
+   ```sh
+   git fetch origin
+   git rebase origin/main
+   ```
 
-    **To abort the rebase if needed:**
+   If conflicts arise, resolve them, then continue:
 
-    ```bash
-    git rebase --abort
-    ```
+   ```sh
+   git rebase --continue
+   ```
 
-7.  **Push your branch to your fork**
+6. **Push Changes**
 
-    **First push:**
+   ```sh
+   git push -u origin feature/short-description
+   ```
 
-    ```bash
-    git push origin feature/amazing-feature
-    ```
+   If you had to rebase after already pushing, use `--force-with-lease`:
 
-    **If you already pushed before and rebased:**
+   ```sh
+   git push --force-with-lease
+   ```
 
-    ```bash
-    git push --force-with-lease origin feature/amazing-feature
-    ```
-
-8.  **Open a Pull Request:**
-    - Base repository: [mvoof/tarus](https://github.com/mvoof/tarus.git)
-    - Base branch: **main**
-    - Compare branch: your-username:feature/amazing-feature
-
-    Make sure:
-    - the branch is rebased onto the latest main
-    - CI checks pass
-    - there are no unresolved conflicts
-
-## Important rules
-
-- rebase only your own feature branches
-- never rebase main
-- do not push directly to main
-- one feature branch per Pull Request
+7. **Create a Pull Request**
 
 ## Commit messages
 
@@ -118,42 +93,4 @@ Commit messages should follow the [Conventional Commits](https://conventionalcom
 - `test`: change that only adds or corrects tests
 - `revert`: change that reverts previous commits
 
-## Development
-
-This extension consists of a Node.js Client (VS Code Extension) and a Rust Language Server.
-
-### Setup & Build
-
-1.  **Clone the repository:**
-
-    ```bash
-    git clone https://github.com/mvoof/tarus
-    cd tarus
-    npm install
-    ```
-
-2.  **Build everything (Client + Server): This command compiles the TypeScript client, builds the Rust binary (release mode), and copies it to the correct bin folder:**
-
-    ```bash
-    npm run vscode:prepublish
-    ```
-
-    then run the extension from VSIX file:
-
-    ```bash
-    cd extension
-    vsce package
-    ```
-
-3.  **Run in Debug Mode:**
-
-- Open the project in VS Code.
-- Press F5.
-  This will launch a new "Extension Development Host" window with Tarus active.
-
-### Formatting & Linting
-
-```bash
- npm run format      # Format TS/JSON files
- npm run lint:fix    # Fix ESLint errors
-```
+If you have any questions or need help, feel free to open an issue or ask in the discussions section. We appreciate your contributions!
