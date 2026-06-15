@@ -104,6 +104,7 @@ pub(super) fn parse_frontend(
     content: &str,
     lang: LangType,
     line_offset: usize,
+    global_constants: &HashMap<String, String>,
 ) -> ParseResult<Vec<Finding>> {
     let ts_lang: Language = match lang {
         LangType::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
@@ -130,17 +131,27 @@ pub(super) fn parse_frontend(
     // First pass: collect import aliases
     let aliases = collect_aliases(&query, root, bytes, &caps);
 
+    // Extract constants from this file and merge global constants as fallback
+    let is_js = matches!(lang, LangType::JavaScript);
+    let mut constants = crate::utils::extract_js_constants(root, content, is_js);
+    for (k, v) in global_constants {
+        constants.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+
     // Second pass: collect function calls
     let mut findings = Vec::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, bytes);
 
     while let Some(m) = matches.next() {
-        if let Some(f) = process_first_arg_pattern(m, &caps, bytes, &aliases, content, line_offset)
+        if let Some(f) =
+            process_first_arg_pattern(m, &caps, bytes, &aliases, &constants, content, line_offset)
         {
             findings.push(f);
         }
-        if let Some(f) = process_second_arg_pattern(m, &caps, bytes, &aliases, line_offset) {
+        if let Some(f) =
+            process_second_arg_pattern(m, &caps, bytes, &aliases, &constants, line_offset)
+        {
             findings.push(f);
         }
         if let Some(f) = process_specta_call(m, &caps, bytes, content, line_offset) {
@@ -196,6 +207,7 @@ fn process_first_arg_pattern<'a>(
     caps: &FrontendCaptures,
     bytes: &'a [u8],
     aliases: &HashMap<&'a str, &'a str>,
+    constants: &HashMap<String, String>,
     content: &str,
     line_offset: usize,
 ) -> Option<Finding> {
@@ -203,17 +215,74 @@ fn process_first_arg_pattern<'a>(
     let arg_cap = find_capture(m, caps.arg_value)?;
 
     let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
-    let arg_value = arg_cap.node.utf8_text(bytes).unwrap_or_default();
     let original_name = *aliases.get(func_name)?;
 
     let pattern = ALL_FRONTEND_PATTERNS
         .iter()
         .find(|p| p.name == original_name && p.arg_position == ArgPosition::First)?;
 
-    let range = Range {
+    if original_name == "invoke" && arg_cap.node.kind() != "string" {
+        return None;
+    }
+
+    let mut resolved_arg = arg_cap
+        .node
+        .utf8_text(bytes)
+        .unwrap_or_default()
+        .to_string();
+    if arg_cap.node.kind() == "string" {
+        if let Some(fragment) = arg_cap.node.named_child(0) {
+            resolved_arg = fragment.utf8_text(bytes).unwrap_or_default().to_string();
+        } else {
+            // fallback: strip first and last quotes
+            if (resolved_arg.starts_with('"') && resolved_arg.ends_with('"')
+                || resolved_arg.starts_with('\'') && resolved_arg.ends_with('\'')
+                || resolved_arg.starts_with('`') && resolved_arg.ends_with('`'))
+                && resolved_arg.len() >= 2
+            {
+                resolved_arg = resolved_arg[1..resolved_arg.len() - 1].to_string();
+            }
+        }
+    } else {
+        let mut resolved = false;
+        if let Some(resolved_val) = constants.get(&resolved_arg) {
+            resolved_arg.clone_from(resolved_val);
+            resolved = true;
+        } else {
+            let lookup_key = if resolved_arg.contains('.') {
+                resolved_arg
+                    .split('.')
+                    .next_back()
+                    .unwrap_or(resolved_arg.as_str())
+            } else {
+                resolved_arg.as_str()
+            };
+            if let Some(resolved_val) = constants.get(lookup_key) {
+                resolved_arg.clone_from(resolved_val);
+                resolved = true;
+            }
+        }
+        if !resolved {
+            resolved_arg.clear();
+        }
+    }
+
+    if resolved_arg.is_empty() {
+        return None;
+    }
+
+    let mut range = Range {
         start: point_to_position(arg_cap.node.start_position()),
         end: point_to_position(arg_cap.node.end_position()),
     };
+    if arg_cap.node.kind() == "string" {
+        if let Some(fragment) = arg_cap.node.named_child(0) {
+            range = Range {
+                start: point_to_position(fragment.start_position()),
+                end: point_to_position(fragment.end_position()),
+            };
+        }
+    }
     let call_name_end = Some(adjust_position(
         point_to_position(func_cap.node.end_position()),
         line_offset,
@@ -228,7 +297,7 @@ fn process_first_arg_pattern<'a>(
         call_name_end,
         type_arg_range,
         ..Finding::new(
-            arg_value.to_string(),
+            resolved_arg,
             pattern.entity,
             pattern.behavior,
             adjust_range(range, line_offset),
@@ -241,26 +310,80 @@ fn process_second_arg_pattern<'a>(
     caps: &FrontendCaptures,
     bytes: &'a [u8],
     aliases: &HashMap<&'a str, &'a str>,
+    constants: &HashMap<String, String>,
     line_offset: usize,
 ) -> Option<Finding> {
     let func_cap = find_capture(m, caps.func_name_second)?;
     let arg_cap = find_capture(m, caps.arg_value_second)?;
 
     let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
-    let arg_value = arg_cap.node.utf8_text(bytes).unwrap_or_default();
     let original_name = *aliases.get(func_name)?;
 
     let pattern = ALL_FRONTEND_PATTERNS
         .iter()
         .find(|p| p.name == original_name && p.arg_position == ArgPosition::Second)?;
 
-    let range = Range {
+    let mut resolved_arg = arg_cap
+        .node
+        .utf8_text(bytes)
+        .unwrap_or_default()
+        .to_string();
+    if arg_cap.node.kind() == "string" {
+        if let Some(fragment) = arg_cap.node.named_child(0) {
+            resolved_arg = fragment.utf8_text(bytes).unwrap_or_default().to_string();
+        } else {
+            // fallback: strip first and last quotes
+            if (resolved_arg.starts_with('"') && resolved_arg.ends_with('"')
+                || resolved_arg.starts_with('\'') && resolved_arg.ends_with('\'')
+                || resolved_arg.starts_with('`') && resolved_arg.ends_with('`'))
+                && resolved_arg.len() >= 2
+            {
+                resolved_arg = resolved_arg[1..resolved_arg.len() - 1].to_string();
+            }
+        }
+    } else {
+        let mut resolved = false;
+        if let Some(resolved_val) = constants.get(&resolved_arg) {
+            resolved_arg.clone_from(resolved_val);
+            resolved = true;
+        } else {
+            let lookup_key = if resolved_arg.contains('.') {
+                resolved_arg
+                    .split('.')
+                    .next_back()
+                    .unwrap_or(resolved_arg.as_str())
+            } else {
+                resolved_arg.as_str()
+            };
+            if let Some(resolved_val) = constants.get(lookup_key) {
+                resolved_arg.clone_from(resolved_val);
+                resolved = true;
+            }
+        }
+        if !resolved {
+            resolved_arg.clear();
+        }
+    }
+
+    if resolved_arg.is_empty() {
+        return None;
+    }
+
+    let mut range = Range {
         start: point_to_position(arg_cap.node.start_position()),
         end: point_to_position(arg_cap.node.end_position()),
     };
+    if arg_cap.node.kind() == "string" {
+        if let Some(fragment) = arg_cap.node.named_child(0) {
+            range = Range {
+                start: point_to_position(fragment.start_position()),
+                end: point_to_position(fragment.end_position()),
+            };
+        }
+    }
 
     Some(Finding::new(
-        arg_value.to_string(),
+        resolved_arg,
         pattern.entity,
         pattern.behavior,
         adjust_range(range, line_offset),

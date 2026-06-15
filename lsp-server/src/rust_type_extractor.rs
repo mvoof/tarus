@@ -261,13 +261,61 @@ fn try_extract_event_schemas_from_node(
     let event_name_idx = query.capture_index_for_name("event_name");
     let payload_arg_idx = query.capture_index_for_name("payload_arg");
 
+    let constants = crate::utils::extract_rust_constants(root, content);
+
     let mut schemas = Vec::new();
     let mut seen_events = std::collections::HashSet::new();
     let mut matches = cursor.matches(&query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
-        let event_name = capture_text(m, event_name_idx, content.as_bytes());
-        if event_name.is_empty() || !seen_events.insert(event_name.to_string()) {
+        let event_cap = find_capture(m, event_name_idx);
+        let mut resolved_event = String::new();
+        if let Some(cap) = event_cap {
+            let raw_name = cap.node.utf8_text(content.as_bytes()).unwrap_or_default();
+            resolved_event = raw_name.to_string();
+            if cap.node.kind() == "string_literal" {
+                if let Some(content_node) = cap.node.child_by_field_name("content") {
+                    resolved_event = content_node
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or_default()
+                        .to_string();
+                } else if let Some(content_node) = cap.node.named_child(0) {
+                    resolved_event = content_node
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or_default()
+                        .to_string();
+                } else if resolved_event.starts_with('"')
+                    && resolved_event.ends_with('"')
+                    && resolved_event.len() >= 2
+                {
+                    resolved_event = resolved_event[1..resolved_event.len() - 1].to_string();
+                }
+            } else {
+                let mut resolved = false;
+                if let Some(resolved_val) = constants.get(&resolved_event) {
+                    resolved_event.clone_from(resolved_val);
+                    resolved = true;
+                } else {
+                    let lookup_key = if resolved_event.contains("::") {
+                        resolved_event
+                            .split("::")
+                            .last()
+                            .unwrap_or(resolved_event.as_str())
+                    } else {
+                        resolved_event.as_str()
+                    };
+                    if let Some(resolved_val) = constants.get(lookup_key) {
+                        resolved_event.clone_from(resolved_val);
+                        resolved = true;
+                    }
+                }
+                if !resolved {
+                    resolved_event.clear();
+                }
+            }
+        }
+
+        if resolved_event.is_empty() || !seen_events.insert(resolved_event.clone()) {
             continue;
         }
 
@@ -277,7 +325,7 @@ fn try_extract_event_schemas_from_node(
 
         if payload_type != "unknown" {
             schemas.push(EventSchema {
-                event_name: event_name.to_string(),
+                event_name: resolved_event,
                 payload_type,
                 source_path: source_path.to_path_buf(),
                 generator: GeneratorKind::RustSource,

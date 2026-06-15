@@ -1,6 +1,83 @@
 //! Shared utility functions
 
+use std::sync::LazyLock;
+use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::{Position, Range};
+use tree_sitter::{Query, QueryCursor};
+
+static RUST_CONSTANTS_QUERY: LazyLock<Query> = LazyLock::new(|| {
+    let ts_lang = tree_sitter_rust::LANGUAGE.into();
+    Query::new(
+        &ts_lang,
+        r"
+        (const_item
+          name: (identifier) @name
+          value: (string_literal
+            (string_content) @value)
+        )
+        (static_item
+          name: (identifier) @name
+          value: (string_literal
+            (string_content) @value)
+        )
+        ",
+    )
+    .expect("Failed to parse Rust constants query")
+});
+
+static JS_CONSTANTS_QUERY: LazyLock<Query> = LazyLock::new(|| {
+    let ts_lang = tree_sitter_javascript::LANGUAGE.into();
+    Query::new(
+        &ts_lang,
+        r"
+        (variable_declarator
+          name: (identifier) @name
+          value: (string (string_fragment) @value)
+        )
+        (variable_declarator
+          name: (identifier) @object_name
+          value: (object
+            (pair
+              key: (property_identifier) @prop_name
+              value: (string (string_fragment) @value)
+            )
+          )
+        )
+        ",
+    )
+    .expect("Failed to parse JS constants query")
+});
+
+static TS_CONSTANTS_QUERY: LazyLock<Query> = LazyLock::new(|| {
+    let ts_lang = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+    Query::new(
+        &ts_lang,
+        r"
+        (variable_declarator
+          name: (identifier) @name
+          value: [
+            (string (string_fragment) @value)
+            (as_expression (string (string_fragment) @value))
+            (type_assertion (string (string_fragment) @value))
+          ]
+        )
+        (variable_declarator
+          name: (identifier) @object_name
+          value: (object
+            (pair
+              key: (property_identifier) @prop_name
+              value: [
+                (string (string_fragment) @value)
+                (as_expression (string (string_fragment) @value))
+                (type_assertion (string (string_fragment) @value))
+              ]
+            )
+          )
+        )
+        ",
+    )
+    .expect("Failed to parse TS constants query")
+});
 
 /// Find a tree-sitter capture by its `Option<u32>` index within a match.
 ///
@@ -11,6 +88,126 @@ pub fn find_capture<'a>(
     idx: Option<u32>,
 ) -> Option<&'a tree_sitter::QueryCapture<'a>> {
     idx.and_then(|i| m.captures.iter().find(|c| c.index == i))
+}
+
+/// Extract constant definitions from a Rust AST root node
+#[must_use]
+pub fn extract_rust_constants(
+    root: tree_sitter::Node<'_>,
+    content: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut constants = std::collections::HashMap::new();
+    let mut cursor = QueryCursor::new();
+    let bytes = content.as_bytes();
+    let mut matches = cursor.matches(&RUST_CONSTANTS_QUERY, root, bytes);
+    let name_idx = RUST_CONSTANTS_QUERY.capture_index_for_name("name");
+    let value_idx = RUST_CONSTANTS_QUERY.capture_index_for_name("value");
+    while let Some(m) = matches.next() {
+        if let (Some(name_cap), Some(val_cap)) =
+            (find_capture(m, name_idx), find_capture(m, value_idx))
+        {
+            let name = name_cap
+                .node
+                .utf8_text(bytes)
+                .unwrap_or_default()
+                .to_string();
+            let value = val_cap
+                .node
+                .utf8_text(bytes)
+                .unwrap_or_default()
+                .to_string();
+            constants.insert(name, value);
+        }
+    }
+    constants
+}
+
+/// Extract constant definitions from a JavaScript/TypeScript AST root node
+#[must_use]
+pub fn extract_js_constants(
+    root: tree_sitter::Node<'_>,
+    content: &str,
+    is_javascript: bool,
+) -> std::collections::HashMap<String, String> {
+    let mut constants = std::collections::HashMap::new();
+    let query = if is_javascript {
+        &*JS_CONSTANTS_QUERY
+    } else {
+        &*TS_CONSTANTS_QUERY
+    };
+    let mut cursor = QueryCursor::new();
+    let bytes = content.as_bytes();
+    let mut matches = cursor.matches(query, root, bytes);
+    let name_idx = query.capture_index_for_name("name");
+    let object_name_idx = query.capture_index_for_name("object_name");
+    let prop_name_idx = query.capture_index_for_name("prop_name");
+    let value_idx = query.capture_index_for_name("value");
+
+    while let Some(m) = matches.next() {
+        if let Some(val_cap) = find_capture(m, value_idx) {
+            let value = val_cap
+                .node
+                .utf8_text(bytes)
+                .unwrap_or_default()
+                .to_string();
+
+            if let Some(name_cap) = find_capture(m, name_idx) {
+                let name = name_cap
+                    .node
+                    .utf8_text(bytes)
+                    .unwrap_or_default()
+                    .to_string();
+                constants.insert(name, value);
+            } else if let (Some(obj_cap), Some(prop_cap)) = (
+                find_capture(m, object_name_idx),
+                find_capture(m, prop_name_idx),
+            ) {
+                let obj_name = obj_cap.node.utf8_text(bytes).unwrap_or_default();
+                let prop_name = prop_cap.node.utf8_text(bytes).unwrap_or_default();
+                let full_key = format!("{obj_name}.{prop_name}");
+                constants.insert(full_key, value.clone());
+                constants.insert(prop_name.to_string(), value);
+            }
+        }
+    }
+    constants
+}
+
+/// Extract constant definitions from Rust source content (parses content internally)
+#[must_use]
+pub fn extract_rust_constants_from_content(
+    content: &str,
+) -> std::collections::HashMap<String, String> {
+    let ts_lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return std::collections::HashMap::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return std::collections::HashMap::new();
+    };
+    extract_rust_constants(tree.root_node(), content)
+}
+
+/// Extract constant definitions from JS/TS source content (parses content internally)
+#[must_use]
+pub fn extract_js_constants_from_content(
+    content: &str,
+    is_javascript: bool,
+) -> std::collections::HashMap<String, String> {
+    let ts_lang: tree_sitter::Language = if is_javascript {
+        tree_sitter_javascript::LANGUAGE.into()
+    } else {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+    };
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return std::collections::HashMap::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return std::collections::HashMap::new();
+    };
+    extract_js_constants(tree.root_node(), content, is_javascript)
 }
 
 /// Extract UTF-8 text from a tree-sitter capture by index.

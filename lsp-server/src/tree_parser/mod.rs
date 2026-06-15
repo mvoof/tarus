@@ -21,6 +21,7 @@ pub use lang_config::LangType;
 use crate::indexer::{CommandSchema, EventSchema, FileIndex};
 use crate::rust_type_extractor;
 use crate::syntax::{ParseError, ParseResult};
+use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Language, Parser};
 
@@ -38,7 +39,12 @@ use sfc_parser::extract_script_blocks;
 /// # Panics
 ///
 /// Panics if language detection succeeds but lang is None (should never happen due to match guards)
-pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
+#[allow(clippy::implicit_hasher)] // callers always use the default hasher
+pub fn parse(
+    path: &Path,
+    content: &str,
+    global_constants: &HashMap<String, String>,
+) -> ParseResult<FileIndex> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
     // Check for Angular: content-based detection for .ts files
@@ -60,17 +66,22 @@ pub fn parse(path: &Path, content: &str) -> ParseResult<FileIndex> {
             let tree = parser
                 .parse(content, None)
                 .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
-            extract_rust_findings(tree.root_node(), content, &ts_lang)?
+            extract_rust_findings(tree.root_node(), content, &ts_lang, global_constants)?
         }
         Some(lang_val @ (LangType::TypeScript | LangType::JavaScript | LangType::Angular)) => {
-            parse_frontend(content, lang_val, 0)?
+            parse_frontend(content, lang_val, 0, global_constants)?
         }
         Some(LangType::Vue | LangType::Svelte) => {
             let blocks = extract_script_blocks(content);
             let mut all_findings = Vec::new();
 
             for (script_content, line_offset) in blocks {
-                let findings = parse_frontend(&script_content, LangType::TypeScript, line_offset)?;
+                let findings = parse_frontend(
+                    &script_content,
+                    LangType::TypeScript,
+                    line_offset,
+                    global_constants,
+                )?;
                 all_findings.extend(findings);
             }
 
@@ -99,7 +110,12 @@ pub struct RustFileIndex {
 /// # Errors
 ///
 /// Returns error if tree-sitter fails to parse the file or query execution fails
-pub fn parse_rust_full(content: &str, path: &Path) -> ParseResult<RustFileIndex> {
+#[allow(clippy::implicit_hasher)] // callers always use the default hasher
+pub fn parse_rust_full(
+    content: &str,
+    path: &Path,
+    global_constants: &HashMap<String, String>,
+) -> ParseResult<RustFileIndex> {
     let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = Parser::new();
     parser
@@ -113,7 +129,7 @@ pub fn parse_rust_full(content: &str, path: &Path) -> ParseResult<RustFileIndex>
     let root = tree.root_node();
 
     // 1. Extract findings (commands + events) using the main query
-    let findings = extract_rust_findings(root, content, &ts_lang)?;
+    let findings = extract_rust_findings(root, content, &ts_lang, global_constants)?;
 
     // 2. Extract command schemas
     let command_schemas =

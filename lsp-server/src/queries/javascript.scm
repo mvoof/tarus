@@ -7,18 +7,46 @@
   function: (identifier) @func_name
   arguments: (arguments
     .
-    (string
-      (string_fragment) @arg_value))
+    (string) @arg_value)
 ) @call_simple
 
-; Function calls with second string argument: emitTo("target", "event")
+(call_expression
+  function: (identifier) @func_name
+  arguments: (arguments
+    .
+    (identifier) @arg_value)
+) @call_simple
+
+(call_expression
+  function: (identifier) @func_name
+  arguments: (arguments
+    .
+    (member_expression) @arg_value)
+) @call_simple
+
+; Function calls with second argument: emitTo("target", "event")
 (call_expression
   function: (identifier) @func_name_second
   arguments: (arguments
     (_)
     .
-    (string
-      (string_fragment) @arg_value_second))
+    (string) @arg_value_second)
+) @call_second_arg
+
+(call_expression
+  function: (identifier) @func_name_second
+  arguments: (arguments
+    (_)
+    .
+    (identifier) @arg_value_second)
+) @call_second_arg
+
+(call_expression
+  function: (identifier) @func_name_second
+  arguments: (arguments
+    (_)
+    .
+    (member_expression) @arg_value_second)
 ) @call_second_arg
 
 ; Import specifiers with alias and source

@@ -47,6 +47,9 @@ struct Backend {
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
     /// Cache of open document contents for completion and other features
     document_cache: Arc<DashMap<PathBuf, String>>,
+    /// Set to true after Pass 1 (constant collection) completes so `did_open/did_change`missing backticks
+    /// can use the full global constants map for cross-file resolution.
+    constants_ready: Arc<AtomicBool>,
 }
 
 impl Backend {
@@ -144,6 +147,7 @@ impl Backend {
         let project_index = self.project_index.clone();
         let client = self.client.clone();
         let is_dev_mode = self.is_developer_mode_active.clone();
+        let constants_ready = self.constants_ready.clone();
 
         tokio::spawn(async move {
             client
@@ -154,6 +158,39 @@ impl Backend {
                 .await
                 .unwrap_or_default();
 
+            // Pass 1: collect all constants so cross-file references are resolvable
+            for path in &files {
+                file_processor::collect_constants_from_file(path, &project_index);
+            }
+
+            let rust_const_count = project_index.rust_constants.len();
+            let js_const_count = project_index.js_constants.len();
+            let rust_keys: Vec<String> = project_index
+                .rust_constants
+                .iter()
+                .map(|e| format!("{}={}", e.key(), e.value()))
+                .collect();
+            let js_keys: Vec<String> = project_index
+                .js_constants
+                .iter()
+                .map(|e| format!("{}={}", e.key(), e.value()))
+                .collect();
+            client
+                .log_message(
+                    MessageType::INFO,
+                    format!(
+                        "🔑 Constants collected — Rust: {rust_const_count} [{rust_keys}], JS/TS: {js_const_count} [{js_keys}]",
+                        rust_keys = rust_keys.join(", "),
+                        js_keys = js_keys.join(", "),
+                    ),
+                )
+                .await;
+
+            // Signal that the global constants map is fully populated so that
+            // did_open / did_change handlers can use it for cross-file resolution.
+            constants_ready.store(true, Ordering::Release);
+
+            // Pass 2: full parse using the complete constants map
             for path in files {
                 file_processor::process_file_index(path, &project_index);
             }
@@ -164,6 +201,10 @@ impl Backend {
                     client.publish_diagnostics(uri, diags, None).await;
                 }
             }
+
+            // Trigger VS Code to re-request CodeLens for all open editors now that
+            // the index is fully populated with resolved constants.
+            let _ = client.code_lens_refresh().await;
 
             let report = project_index.technical_report();
             if is_dev_mode.load(Ordering::Relaxed) {
@@ -437,6 +478,12 @@ impl LanguageServer for Backend {
             // Cache document content for completion
             self.document_cache.insert(path.clone(), content.clone());
 
+            // If Pass 1 hasn't finished yet, skip indexing here — spawn_indexing's
+            // Pass 2 will index this file with the full global constants map.
+            if !self.constants_ready.load(Ordering::Acquire) {
+                return;
+            }
+
             if file_processor::process_file_content(&path, &content, &self.project_index) {
                 let report = self.project_index.file_report(&path);
                 self.log_dev_info(&report).await;
@@ -603,6 +650,7 @@ async fn main() {
         is_developer_mode_active: initial_dev_mode_state.clone(),
         debounce_tasks: Arc::new(DashMap::new()),
         document_cache: Arc::new(DashMap::new()),
+        constants_ready: Arc::new(AtomicBool::new(false)),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
