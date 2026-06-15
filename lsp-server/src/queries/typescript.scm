@@ -37,8 +37,23 @@
   !type_arguments
   arguments: (arguments
     .
-    (string
-      (string_fragment) @arg_value))
+    (string) @arg_value)
+) @call_simple
+
+(call_expression
+  function: (identifier) @func_name
+  !type_arguments
+  arguments: (arguments
+    .
+    (identifier) @arg_value)
+) @call_simple
+
+(call_expression
+  function: (identifier) @func_name
+  !type_arguments
+  arguments: (arguments
+    .
+    (member_expression) @arg_value)
 ) @call_simple
 
 ; Await expression with simple call: await invoke("cmd")
@@ -48,8 +63,25 @@
   !type_arguments
   arguments: (arguments
     .
-    (string
-      (string_fragment) @arg_value))
+    (string) @arg_value)
+) @call_await_simple
+
+(call_expression
+  function: (await_expression
+    (identifier) @func_name)
+  !type_arguments
+  arguments: (arguments
+    .
+    (identifier) @arg_value)
+) @call_await_simple
+
+(call_expression
+  function: (await_expression
+    (identifier) @func_name)
+  !type_arguments
+  arguments: (arguments
+    .
+    (member_expression) @arg_value)
 ) @call_await_simple
 
 ; Function calls with second string argument: emitTo("target", "event")
@@ -59,8 +91,25 @@
   arguments: (arguments
     (_)
     .
-    (string
-      (string_fragment) @arg_value_second))
+    (string) @arg_value_second)
+) @call_second_arg
+
+(call_expression
+  function: (identifier) @func_name_second
+  !type_arguments
+  arguments: (arguments
+    (_)
+    .
+    (identifier) @arg_value_second)
+) @call_second_arg
+
+(call_expression
+  function: (identifier) @func_name_second
+  !type_arguments
+  arguments: (arguments
+    (_)
+    .
+    (member_expression) @arg_value_second)
 ) @call_second_arg
 
 ; Await expression with second string argument: await emitTo("target", "event")
@@ -71,8 +120,27 @@
   arguments: (arguments
     (_)
     .
-    (string
-      (string_fragment) @arg_value_second))
+    (string) @arg_value_second)
+) @call_await_second_arg
+
+(call_expression
+  function: (await_expression
+    (identifier) @func_name_second)
+  !type_arguments
+  arguments: (arguments
+    (_)
+    .
+    (identifier) @arg_value_second)
+) @call_await_second_arg
+
+(call_expression
+  function: (await_expression
+    (identifier) @func_name_second)
+  !type_arguments
+  arguments: (arguments
+    (_)
+    .
+    (member_expression) @arg_value_second)
 ) @call_await_second_arg
 
 ; === GENERIC CALLS (with type arguments) ===
@@ -83,8 +151,23 @@
   type_arguments: (type_arguments)
   arguments: (arguments
     .
-    (string
-      (string_fragment) @arg_value))
+    (string) @arg_value)
+) @call_generic
+
+(call_expression
+  function: (identifier) @func_name
+  type_arguments: (type_arguments)
+  arguments: (arguments
+    .
+    (identifier) @arg_value)
+) @call_generic
+
+(call_expression
+  function: (identifier) @func_name
+  type_arguments: (type_arguments)
+  arguments: (arguments
+    .
+    (member_expression) @arg_value)
 ) @call_generic
 
 ; Await expression with generic call: await invoke<T>("cmd")
@@ -94,8 +177,25 @@
   type_arguments: (type_arguments)
   arguments: (arguments
     .
-    (string
-      (string_fragment) @arg_value))
+    (string) @arg_value)
+) @call_await_generic
+
+(call_expression
+  function: (await_expression
+    (identifier) @func_name)
+  type_arguments: (type_arguments)
+  arguments: (arguments
+    .
+    (identifier) @arg_value)
+) @call_await_generic
+
+(call_expression
+  function: (await_expression
+    (identifier) @func_name)
+  type_arguments: (type_arguments)
+  arguments: (arguments
+    .
+    (member_expression) @arg_value)
 ) @call_await_generic
 
 ; Generic calls with second string argument: emitTo<T>("target", "event")
@@ -105,8 +205,25 @@
   arguments: (arguments
     (_)
     .
-    (string
-      (string_fragment) @arg_value_second))
+    (string) @arg_value_second)
+) @call_generic_second_arg
+
+(call_expression
+  function: (identifier) @func_name_second
+  type_arguments: (type_arguments)
+  arguments: (arguments
+    (_)
+    .
+    (identifier) @arg_value_second)
+) @call_generic_second_arg
+
+(call_expression
+  function: (identifier) @func_name_second
+  type_arguments: (type_arguments)
+  arguments: (arguments
+    (_)
+    .
+    (member_expression) @arg_value_second)
 ) @call_generic_second_arg
 
 ; Await expression with second string argument and generics: await emitTo<T>("target", "event")
@@ -117,8 +234,27 @@
   arguments: (arguments
     (_)
     .
-    (string
-      (string_fragment) @arg_value_second))
+    (string) @arg_value_second)
+) @call_await_generic_second_arg
+
+(call_expression
+  function: (await_expression
+    (identifier) @func_name_second)
+  type_arguments: (type_arguments)
+  arguments: (arguments
+    (_)
+    .
+    (identifier) @arg_value_second)
+) @call_await_generic_second_arg
+
+(call_expression
+  function: (await_expression
+    (identifier) @func_name_second)
+  type_arguments: (type_arguments)
+  arguments: (arguments
+    (_)
+    .
+    (member_expression) @arg_value_second)
 ) @call_await_generic_second_arg
 
 ; === SPECTA CALLS (commands.methodName(...)) ===

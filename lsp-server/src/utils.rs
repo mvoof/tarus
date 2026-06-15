@@ -1,6 +1,8 @@
 //! Shared utility functions
 
 use tower_lsp_server::lsp_types::{Position, Range};
+use tree_sitter::{Query, QueryCursor};
+use streaming_iterator::StreamingIterator;
 
 /// Find a tree-sitter capture by its `Option<u32>` index within a match.
 ///
@@ -12,6 +14,132 @@ pub fn find_capture<'a>(
 ) -> Option<&'a tree_sitter::QueryCapture<'a>> {
     idx.and_then(|i| m.captures.iter().find(|c| c.index == i))
 }
+
+/// Extract constant definitions from a Rust AST root node
+#[must_use]
+pub fn extract_rust_constants(
+    root: tree_sitter::Node<'_>,
+    content: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut constants = std::collections::HashMap::new();
+    let ts_lang = tree_sitter_rust::LANGUAGE.into();
+    let query_str = r"
+        (const_item
+          name: (identifier) @name
+          value: (string_literal
+            (string_content) @value)
+        )
+        (static_item
+          name: (identifier) @name
+          value: (string_literal
+            (string_content) @value)
+        )
+    ";
+    if let Ok(query) = Query::new(&ts_lang, query_str) {
+        let mut cursor = QueryCursor::new();
+        let bytes = content.as_bytes();
+        let mut matches = cursor.matches(&query, root, bytes);
+        let name_idx = query.capture_index_for_name("name");
+        let value_idx = query.capture_index_for_name("value");
+        while let Some(m) = matches.next() {
+            if let (Some(name_cap), Some(val_cap)) = (find_capture(m, name_idx), find_capture(m, value_idx)) {
+                let name = name_cap.node.utf8_text(bytes).unwrap_or_default().to_string();
+                let value = val_cap.node.utf8_text(bytes).unwrap_or_default().to_string();
+                constants.insert(name, value);
+            }
+        }
+    }
+    constants
+}
+
+/// Extract constant definitions from a JavaScript/TypeScript AST root node
+#[must_use]
+pub fn extract_js_constants(
+    root: tree_sitter::Node<'_>,
+    content: &str,
+    is_javascript: bool,
+) -> std::collections::HashMap<String, String> {
+    let mut constants = std::collections::HashMap::new();
+    let ts_lang: tree_sitter::Language = if is_javascript {
+        tree_sitter_javascript::LANGUAGE.into()
+    } else {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+    };
+    let query_str = if is_javascript {
+        r"
+        (variable_declarator
+          name: (identifier) @name
+          value: (string (string_fragment) @value)
+        )
+        (variable_declarator
+          name: (identifier) @object_name
+          value: (object
+            (pair
+              key: (property_identifier) @prop_name
+              value: (string (string_fragment) @value)
+            )
+          )
+        )
+        "
+    } else {
+        r"
+        (variable_declarator
+          name: (identifier) @name
+          value: [
+            (string (string_fragment) @value)
+            (as_expression (string (string_fragment) @value))
+            (type_assertion (string (string_fragment) @value))
+          ]
+        )
+        (variable_declarator
+          name: (identifier) @object_name
+          value: (object
+            (pair
+              key: (property_identifier) @prop_name
+              value: [
+                (string (string_fragment) @value)
+                (as_expression (string (string_fragment) @value))
+                (type_assertion (string (string_fragment) @value))
+              ]
+            )
+          )
+        )
+        "
+    };
+    match Query::new(&ts_lang, query_str) {
+        Ok(query) => {
+            let mut cursor = QueryCursor::new();
+            let bytes = content.as_bytes();
+            let mut matches = cursor.matches(&query, root, bytes);
+            let name_idx = query.capture_index_for_name("name");
+            let object_name_idx = query.capture_index_for_name("object_name");
+            let prop_name_idx = query.capture_index_for_name("prop_name");
+            let value_idx = query.capture_index_for_name("value");
+
+            while let Some(m) = matches.next() {
+                if let Some(val_cap) = find_capture(m, value_idx) {
+                    let value = val_cap.node.utf8_text(bytes).unwrap_or_default().to_string();
+
+                    if let Some(name_cap) = find_capture(m, name_idx) {
+                        let name = name_cap.node.utf8_text(bytes).unwrap_or_default().to_string();
+                        constants.insert(name, value);
+                    } else if let (Some(obj_cap), Some(prop_cap)) = (find_capture(m, object_name_idx), find_capture(m, prop_name_idx)) {
+                        let obj_name = obj_cap.node.utf8_text(bytes).unwrap_or_default();
+                        let prop_name = prop_cap.node.utf8_text(bytes).unwrap_or_default();
+                        let full_key = format!("{obj_name}.{prop_name}");
+                        constants.insert(full_key, value.clone());
+                        constants.insert(prop_name.to_string(), value);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            println!("DEBUG JS CONST QUERY ERROR (is_js={is_javascript}): {e:?}");
+        }
+    }
+    constants
+}
+
 
 /// Extract UTF-8 text from a tree-sitter capture by index.
 ///

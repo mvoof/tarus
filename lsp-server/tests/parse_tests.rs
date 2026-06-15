@@ -480,3 +480,60 @@ export class UserComponent {
               Event Emit "user-loaded" 11:10..11:21"#]],
     );
 }
+
+#[test]
+fn parse_rust_event_constant() {
+    helpers::check_parse(
+        r#"
+//- /events.rs
+const MY_EVENT: &str = "my-event-name";
+const OTHER_EVENT: &str = "other-event-name";
+
+fn notify_user(app: &tauri::AppHandle) {
+    app.emit(MY_EVENT, "Hello").unwrap();
+    app.emit(OTHER_EVENT, "World").unwrap();
+}
+"#,
+        expect![[r#"
+            /events.rs:
+              Event Emit "my-event-name" 4:13..4:21
+              Event Emit "other-event-name" 5:13..5:24"#]],
+    );
+}
+
+#[test]
+fn parse_ts_event_constant() {
+    helpers::check_parse(
+        r#"
+//- /app.ts
+import { emit, listen } from "@tauri-apps/api/event";
+
+const MY_EVENT = "my-event-name";
+const OTHER_EVENT = "other-event-name";
+
+emit(MY_EVENT, { data: 123 });
+listen(OTHER_EVENT, (e) => {});
+"#,
+        expect![[r#"
+            /app.ts:
+              Event Emit "my-event-name" 5:5..5:13
+              Event Listen "other-event-name" 6:7..6:18"#]],
+    );
+}
+
+#[test]
+fn parse_ts_invoke_constant_ignored() {
+    helpers::check_parse(
+        r#"
+//- /app.ts
+import { invoke } from "@tauri-apps/api/core";
+
+const MY_CMD = "greet";
+
+invoke(MY_CMD);
+"#,
+        expect![[r#""#]],
+    );
+}
+
+

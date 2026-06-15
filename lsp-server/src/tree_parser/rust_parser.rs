@@ -47,6 +47,8 @@ pub(super) fn extract_rust_findings(
     let struct_item_idx = query.capture_index_for_name("struct_item");
     let specta_emit_struct_idx = query.capture_index_for_name("specta_emit_struct");
 
+    let constants = crate::utils::extract_rust_constants(root, content);
+
     let mut findings = Vec::new();
     let mut matches = cursor.matches(&query, root, bytes);
 
@@ -63,7 +65,7 @@ pub(super) fn extract_rust_findings(
             findings.push(f);
             continue;
         }
-        if let Some(f) = process_event_call(m, method_name_idx, event_name_idx, bytes) {
+        if let Some(f) = process_event_call(m, method_name_idx, event_name_idx, bytes, &constants) {
             findings.push(f);
         }
     }
@@ -151,21 +153,65 @@ fn process_event_call(
     method_name_idx: Option<u32>,
     event_name_idx: Option<u32>,
     bytes: &[u8],
+    constants: &std::collections::HashMap<String, String>,
 ) -> Option<Finding> {
     let method_cap = find_capture(m, method_name_idx)?;
     let event_cap = find_capture(m, event_name_idx)?;
 
     let method_name = method_cap.node.utf8_text(bytes).unwrap_or_default();
-    let event_name = event_cap.node.utf8_text(bytes).unwrap_or_default();
+    let raw_event_name = event_cap.node.utf8_text(bytes).unwrap_or_default();
+
+    let mut resolved_name = raw_event_name.to_string();
+    if event_cap.node.kind() == "string_literal" {
+        if let Some(content_node) = event_cap.node.child_by_field_name("content") {
+            resolved_name = content_node.utf8_text(bytes).unwrap_or_default().to_string();
+        } else if let Some(content_node) = event_cap.node.named_child(0) {
+            resolved_name = content_node.utf8_text(bytes).unwrap_or_default().to_string();
+        } else if resolved_name.starts_with('"') && resolved_name.ends_with('"') && resolved_name.len() >= 2 {
+            resolved_name = resolved_name[1..resolved_name.len() - 1].to_string();
+        }
+    } else {
+        if let Some(resolved) = constants.get(&resolved_name) {
+            resolved_name.clone_from(resolved);
+        } else {
+            let lookup_key = if resolved_name.contains("::") {
+                resolved_name.split("::").last().unwrap_or(&resolved_name)
+            } else {
+                &resolved_name
+            };
+            if let Some(resolved) = constants.get(lookup_key) {
+                resolved_name.clone_from(resolved);
+            }
+        }
+    }
+
+    if resolved_name.is_empty() {
+        return None;
+    }
+
+    let mut range = Range {
+        start: point_to_position(event_cap.node.start_position()),
+        end: point_to_position(event_cap.node.end_position()),
+    };
+    if event_cap.node.kind() == "string_literal" {
+        if let Some(content_node) = event_cap.node.child_by_field_name("content") {
+            range = Range {
+                start: point_to_position(content_node.start_position()),
+                end: point_to_position(content_node.end_position()),
+            };
+        } else if let Some(content_node) = event_cap.node.named_child(0) {
+            range = Range {
+                start: point_to_position(content_node.start_position()),
+                end: point_to_position(content_node.end_position()),
+            };
+        }
+    }
 
     let (entity, behavior) = RUST_EVENT_PATTERNS.get(method_name)?;
     Some(Finding::new(
-        event_name.to_string(),
+        resolved_name,
         *entity,
         *behavior,
-        Range {
-            start: point_to_position(event_cap.node.start_position()),
-            end: point_to_position(event_cap.node.end_position()),
-        },
+        range,
     ))
 }
