@@ -1,5 +1,11 @@
 ## Change Log
 
+### [0.10.0] - 2026-06-15
+
+- **Added**
+  - Support for constants as command and event names — `invoke`, `emit`, `listen`, `emitTo` and other calls now resolve constants defined in both Rust and TypeScript, including across files
+  - **TARUS: Restart TARUS Server** command to restart the language server without reloading VS Code
+
 ### [0.9.1] - 2026-06-01
 
 - **Bug fixes:** Fixed an issue with false positives for functions whose names match standard Tauri v2 functions (invoke, emit, listen, once, emitTo)
