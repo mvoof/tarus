@@ -291,17 +291,23 @@ fn try_extract_event_schemas_from_node(
                     resolved_event = resolved_event[1..resolved_event.len() - 1].to_string();
                 }
             } else {
-                if let Some(resolved) = constants.get(&resolved_event) {
-                    resolved_event.clone_from(resolved);
+                let mut resolved = false;
+                if let Some(resolved_val) = constants.get(&resolved_event) {
+                    resolved_event.clone_from(resolved_val);
+                    resolved = true;
                 } else {
                     let lookup_key = if resolved_event.contains("::") {
-                        resolved_event.split("::").last().unwrap_or(&resolved_event)
+                        resolved_event.split("::").last().unwrap_or(resolved_event.as_str())
                     } else {
-                        &resolved_event
+                        resolved_event.as_str()
                     };
-                    if let Some(resolved) = constants.get(lookup_key) {
-                        resolved_event.clone_from(resolved);
+                    if let Some(resolved_val) = constants.get(lookup_key) {
+                        resolved_event.clone_from(resolved_val);
+                        resolved = true;
                     }
+                }
+                if !resolved {
+                    resolved_event.clear();
                 }
             }
         }

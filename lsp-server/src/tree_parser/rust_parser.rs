@@ -180,17 +180,23 @@ fn process_event_call(
             resolved_name = resolved_name[1..resolved_name.len() - 1].to_string();
         }
     } else {
-        if let Some(resolved) = constants.get(&resolved_name) {
-            resolved_name.clone_from(resolved);
+        let mut resolved = false;
+        if let Some(resolved_val) = constants.get(&resolved_name) {
+            resolved_name.clone_from(resolved_val);
+            resolved = true;
         } else {
             let lookup_key = if resolved_name.contains("::") {
-                resolved_name.split("::").last().unwrap_or(&resolved_name)
+                resolved_name.split("::").last().unwrap_or(resolved_name.as_str())
             } else {
-                &resolved_name
+                resolved_name.as_str()
             };
-            if let Some(resolved) = constants.get(lookup_key) {
-                resolved_name.clone_from(resolved);
+            if let Some(resolved_val) = constants.get(lookup_key) {
+                resolved_name.clone_from(resolved_val);
+                resolved = true;
             }
+        }
+        if !resolved {
+            resolved_name.clear();
         }
     }
 

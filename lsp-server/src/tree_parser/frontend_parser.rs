@@ -240,17 +240,23 @@ fn process_first_arg_pattern<'a>(
             }
         }
     } else {
-        if let Some(resolved) = constants.get(&resolved_arg) {
-            resolved_arg.clone_from(resolved);
+        let mut resolved = false;
+        if let Some(resolved_val) = constants.get(&resolved_arg) {
+            resolved_arg.clone_from(resolved_val);
+            resolved = true;
         } else {
             let lookup_key = if resolved_arg.contains('.') {
-                resolved_arg.split('.').next_back().unwrap_or(&resolved_arg)
+                resolved_arg.split('.').next_back().unwrap_or(resolved_arg.as_str())
             } else {
-                &resolved_arg
+                resolved_arg.as_str()
             };
-            if let Some(resolved) = constants.get(lookup_key) {
-                resolved_arg.clone_from(resolved);
+            if let Some(resolved_val) = constants.get(lookup_key) {
+                resolved_arg.clone_from(resolved_val);
+                resolved = true;
             }
+        }
+        if !resolved {
+            resolved_arg.clear();
         }
     }
 
@@ -329,17 +335,23 @@ fn process_second_arg_pattern<'a>(
             }
         }
     } else {
-        if let Some(resolved) = constants.get(&resolved_arg) {
-            resolved_arg.clone_from(resolved);
+        let mut resolved = false;
+        if let Some(resolved_val) = constants.get(&resolved_arg) {
+            resolved_arg.clone_from(resolved_val);
+            resolved = true;
         } else {
             let lookup_key = if resolved_arg.contains('.') {
-                resolved_arg.split('.').next_back().unwrap_or(&resolved_arg)
+                resolved_arg.split('.').next_back().unwrap_or(resolved_arg.as_str())
             } else {
-                &resolved_arg
+                resolved_arg.as_str()
             };
-            if let Some(resolved) = constants.get(lookup_key) {
-                resolved_arg.clone_from(resolved);
+            if let Some(resolved_val) = constants.get(lookup_key) {
+                resolved_arg.clone_from(resolved_val);
+                resolved = true;
             }
+        }
+        if !resolved {
+            resolved_arg.clear();
         }
     }
 
