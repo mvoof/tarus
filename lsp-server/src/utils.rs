@@ -1,8 +1,8 @@
 //! Shared utility functions
 
+use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::{Position, Range};
 use tree_sitter::{Query, QueryCursor};
-use streaming_iterator::StreamingIterator;
 
 /// Find a tree-sitter capture by its `Option<u32>` index within a match.
 ///
@@ -42,9 +42,19 @@ pub fn extract_rust_constants(
         let name_idx = query.capture_index_for_name("name");
         let value_idx = query.capture_index_for_name("value");
         while let Some(m) = matches.next() {
-            if let (Some(name_cap), Some(val_cap)) = (find_capture(m, name_idx), find_capture(m, value_idx)) {
-                let name = name_cap.node.utf8_text(bytes).unwrap_or_default().to_string();
-                let value = val_cap.node.utf8_text(bytes).unwrap_or_default().to_string();
+            if let (Some(name_cap), Some(val_cap)) =
+                (find_capture(m, name_idx), find_capture(m, value_idx))
+            {
+                let name = name_cap
+                    .node
+                    .utf8_text(bytes)
+                    .unwrap_or_default()
+                    .to_string();
+                let value = val_cap
+                    .node
+                    .utf8_text(bytes)
+                    .unwrap_or_default()
+                    .to_string();
                 constants.insert(name, value);
             }
         }
@@ -118,12 +128,23 @@ pub fn extract_js_constants(
 
             while let Some(m) = matches.next() {
                 if let Some(val_cap) = find_capture(m, value_idx) {
-                    let value = val_cap.node.utf8_text(bytes).unwrap_or_default().to_string();
+                    let value = val_cap
+                        .node
+                        .utf8_text(bytes)
+                        .unwrap_or_default()
+                        .to_string();
 
                     if let Some(name_cap) = find_capture(m, name_idx) {
-                        let name = name_cap.node.utf8_text(bytes).unwrap_or_default().to_string();
+                        let name = name_cap
+                            .node
+                            .utf8_text(bytes)
+                            .unwrap_or_default()
+                            .to_string();
                         constants.insert(name, value);
-                    } else if let (Some(obj_cap), Some(prop_cap)) = (find_capture(m, object_name_idx), find_capture(m, prop_name_idx)) {
+                    } else if let (Some(obj_cap), Some(prop_cap)) = (
+                        find_capture(m, object_name_idx),
+                        find_capture(m, prop_name_idx),
+                    ) {
                         let obj_name = obj_cap.node.utf8_text(bytes).unwrap_or_default();
                         let prop_name = prop_cap.node.utf8_text(bytes).unwrap_or_default();
                         let full_key = format!("{obj_name}.{prop_name}");
@@ -139,7 +160,6 @@ pub fn extract_js_constants(
     }
     constants
 }
-
 
 /// Extract UTF-8 text from a tree-sitter capture by index.
 ///

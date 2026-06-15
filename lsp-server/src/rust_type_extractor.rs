@@ -275,10 +275,19 @@ fn try_extract_event_schemas_from_node(
             resolved_event = raw_name.to_string();
             if cap.node.kind() == "string_literal" {
                 if let Some(content_node) = cap.node.child_by_field_name("content") {
-                    resolved_event = content_node.utf8_text(content.as_bytes()).unwrap_or_default().to_string();
+                    resolved_event = content_node
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or_default()
+                        .to_string();
                 } else if let Some(content_node) = cap.node.named_child(0) {
-                    resolved_event = content_node.utf8_text(content.as_bytes()).unwrap_or_default().to_string();
-                } else if resolved_event.starts_with('"') && resolved_event.ends_with('"') && resolved_event.len() >= 2 {
+                    resolved_event = content_node
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or_default()
+                        .to_string();
+                } else if resolved_event.starts_with('"')
+                    && resolved_event.ends_with('"')
+                    && resolved_event.len() >= 2
+                {
                     resolved_event = resolved_event[1..resolved_event.len() - 1].to_string();
                 }
             } else {

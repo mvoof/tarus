@@ -164,10 +164,19 @@ fn process_event_call(
     let mut resolved_name = raw_event_name.to_string();
     if event_cap.node.kind() == "string_literal" {
         if let Some(content_node) = event_cap.node.child_by_field_name("content") {
-            resolved_name = content_node.utf8_text(bytes).unwrap_or_default().to_string();
+            resolved_name = content_node
+                .utf8_text(bytes)
+                .unwrap_or_default()
+                .to_string();
         } else if let Some(content_node) = event_cap.node.named_child(0) {
-            resolved_name = content_node.utf8_text(bytes).unwrap_or_default().to_string();
-        } else if resolved_name.starts_with('"') && resolved_name.ends_with('"') && resolved_name.len() >= 2 {
+            resolved_name = content_node
+                .utf8_text(bytes)
+                .unwrap_or_default()
+                .to_string();
+        } else if resolved_name.starts_with('"')
+            && resolved_name.ends_with('"')
+            && resolved_name.len() >= 2
+        {
             resolved_name = resolved_name[1..resolved_name.len() - 1].to_string();
         }
     } else {
@@ -208,10 +217,5 @@ fn process_event_call(
     }
 
     let (entity, behavior) = RUST_EVENT_PATTERNS.get(method_name)?;
-    Some(Finding::new(
-        resolved_name,
-        *entity,
-        *behavior,
-        range,
-    ))
+    Some(Finding::new(resolved_name, *entity, *behavior, range))
 }

@@ -535,5 +535,3 @@ invoke(MY_CMD);
         expect![[r#""#]],
     );
 }
-
-

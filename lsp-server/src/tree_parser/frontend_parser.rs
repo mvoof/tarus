@@ -140,11 +140,14 @@ pub(super) fn parse_frontend(
     let mut matches = cursor.matches(&query, root, bytes);
 
     while let Some(m) = matches.next() {
-        if let Some(f) = process_first_arg_pattern(m, &caps, bytes, &aliases, &constants, content, line_offset)
+        if let Some(f) =
+            process_first_arg_pattern(m, &caps, bytes, &aliases, &constants, content, line_offset)
         {
             findings.push(f);
         }
-        if let Some(f) = process_second_arg_pattern(m, &caps, bytes, &aliases, &constants, line_offset) {
+        if let Some(f) =
+            process_second_arg_pattern(m, &caps, bytes, &aliases, &constants, line_offset)
+        {
             findings.push(f);
         }
         if let Some(f) = process_specta_call(m, &caps, bytes, content, line_offset) {
@@ -218,7 +221,11 @@ fn process_first_arg_pattern<'a>(
         return None;
     }
 
-    let mut resolved_arg = arg_cap.node.utf8_text(bytes).unwrap_or_default().to_string();
+    let mut resolved_arg = arg_cap
+        .node
+        .utf8_text(bytes)
+        .unwrap_or_default()
+        .to_string();
     if arg_cap.node.kind() == "string" {
         if let Some(fragment) = arg_cap.node.named_child(0) {
             resolved_arg = fragment.utf8_text(bytes).unwrap_or_default().to_string();
@@ -303,7 +310,11 @@ fn process_second_arg_pattern<'a>(
         .iter()
         .find(|p| p.name == original_name && p.arg_position == ArgPosition::Second)?;
 
-    let mut resolved_arg = arg_cap.node.utf8_text(bytes).unwrap_or_default().to_string();
+    let mut resolved_arg = arg_cap
+        .node
+        .utf8_text(bytes)
+        .unwrap_or_default()
+        .to_string();
     if arg_cap.node.kind() == "string" {
         if let Some(fragment) = arg_cap.node.named_child(0) {
             resolved_arg = fragment.utf8_text(bytes).unwrap_or_default().to_string();
