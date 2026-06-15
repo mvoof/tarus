@@ -31,6 +31,13 @@
   "main": "./out/src/extension.js",
   "icon": "images/icon.png",
   "contributes": {
+    "commands": [
+      {
+        "command": "tarus.restartServer",
+        "title": "Restart Server",
+        "category": "TARUS"
+      }
+    ],
     "configuration": {
       "title": "Tarus",
       "properties": {

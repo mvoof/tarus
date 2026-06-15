@@ -87,6 +87,14 @@ const activate = (context: ExtensionContext) => {
   });
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('tarus.restartServer', async () => {
+      await client.stop();
+      await client.start();
+      vscode.window.showInformationMessage('TARUS: server restarted.');
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand(
       'tarus.show_references',
       async (uriStr: string, pos: any, locs: any[]) => {
