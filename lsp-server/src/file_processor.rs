@@ -34,7 +34,12 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
     }
 
     if path.extension().is_some_and(|s| s == "rs") {
-        match tree_parser::parse_rust_full(content, path) {
+        // Extract constants from this file and store globally, then get all global Rust constants
+        let local_constants = crate::utils::extract_rust_constants_from_content(content);
+        project_index.add_rust_constants(path.to_path_buf(), local_constants);
+        let global_constants = project_index.get_all_rust_constants();
+
+        match tree_parser::parse_rust_full(content, path, &global_constants) {
             Ok(rust_index) => {
                 let path_buf = path.to_path_buf();
 
@@ -60,7 +65,13 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
             }
         }
     } else {
-        match tree_parser::parse(path, content) {
+        // Extract constants from this file and store globally, then get all global JS/TS constants
+        let is_js = path.extension().is_some_and(|e| e == "js" || e == "jsx");
+        let local_constants = crate::utils::extract_js_constants_from_content(content, is_js);
+        project_index.add_js_constants(path.to_path_buf(), local_constants);
+        let global_constants = project_index.get_all_js_constants();
+
+        match tree_parser::parse(path, content, &global_constants) {
             Ok(file_index) => {
                 project_index.add_file(file_index);
 
@@ -150,6 +161,31 @@ fn process_bindings_file(
         GeneratorKind::RustSource => {
             // Not a valid kind for generated TS files — ignore
         }
+    }
+}
+
+/// First-pass: extract and store constants from a file without full parsing.
+///
+/// Called during the initial workspace scan before full indexing so that
+/// cross-file constant references are available when the main parse pass runs.
+pub fn collect_constants_from_file(path: &Path, project_index: &ProjectIndex) {
+    if !is_supported_file(path) {
+        return;
+    }
+    // Skip generated bindings files — they don't contain constants we need to resolve
+    if project_index.get_generator_for_file(path).is_some() {
+        return;
+    }
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if path.extension().is_some_and(|e| e == "rs") {
+        let constants = crate::utils::extract_rust_constants_from_content(&content);
+        project_index.add_rust_constants(path.to_path_buf(), constants);
+    } else {
+        let is_js = path.extension().is_some_and(|e| e == "js" || e == "jsx");
+        let constants = crate::utils::extract_js_constants_from_content(&content, is_js);
+        project_index.add_js_constants(path.to_path_buf(), constants);
     }
 }
 

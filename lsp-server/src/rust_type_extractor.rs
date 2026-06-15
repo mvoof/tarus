@@ -297,7 +297,10 @@ fn try_extract_event_schemas_from_node(
                     resolved = true;
                 } else {
                     let lookup_key = if resolved_event.contains("::") {
-                        resolved_event.split("::").last().unwrap_or(resolved_event.as_str())
+                        resolved_event
+                            .split("::")
+                            .last()
+                            .unwrap_or(resolved_event.as_str())
                     } else {
                         resolved_event.as_str()
                     };

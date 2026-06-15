@@ -104,6 +104,7 @@ pub(super) fn parse_frontend(
     content: &str,
     lang: LangType,
     line_offset: usize,
+    global_constants: &HashMap<String, String>,
 ) -> ParseResult<Vec<Finding>> {
     let ts_lang: Language = match lang {
         LangType::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
@@ -130,9 +131,12 @@ pub(super) fn parse_frontend(
     // First pass: collect import aliases
     let aliases = collect_aliases(&query, root, bytes, &caps);
 
-    // Extract constants
+    // Extract constants from this file and merge global constants as fallback
     let is_js = matches!(lang, LangType::JavaScript);
-    let constants = crate::utils::extract_js_constants(root, content, is_js);
+    let mut constants = crate::utils::extract_js_constants(root, content, is_js);
+    for (k, v) in global_constants {
+        constants.entry(k.clone()).or_insert_with(|| v.clone());
+    }
 
     // Second pass: collect function calls
     let mut findings = Vec::new();
@@ -246,7 +250,10 @@ fn process_first_arg_pattern<'a>(
             resolved = true;
         } else {
             let lookup_key = if resolved_arg.contains('.') {
-                resolved_arg.split('.').next_back().unwrap_or(resolved_arg.as_str())
+                resolved_arg
+                    .split('.')
+                    .next_back()
+                    .unwrap_or(resolved_arg.as_str())
             } else {
                 resolved_arg.as_str()
             };
@@ -341,7 +348,10 @@ fn process_second_arg_pattern<'a>(
             resolved = true;
         } else {
             let lookup_key = if resolved_arg.contains('.') {
-                resolved_arg.split('.').next_back().unwrap_or(resolved_arg.as_str())
+                resolved_arg
+                    .split('.')
+                    .next_back()
+                    .unwrap_or(resolved_arg.as_str())
             } else {
                 resolved_arg.as_str()
             };

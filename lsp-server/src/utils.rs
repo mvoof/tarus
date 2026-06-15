@@ -173,6 +173,43 @@ pub fn extract_js_constants(
     constants
 }
 
+/// Extract constant definitions from Rust source content (parses content internally)
+#[must_use]
+pub fn extract_rust_constants_from_content(
+    content: &str,
+) -> std::collections::HashMap<String, String> {
+    let ts_lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return std::collections::HashMap::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return std::collections::HashMap::new();
+    };
+    extract_rust_constants(tree.root_node(), content)
+}
+
+/// Extract constant definitions from JS/TS source content (parses content internally)
+#[must_use]
+pub fn extract_js_constants_from_content(
+    content: &str,
+    is_javascript: bool,
+) -> std::collections::HashMap<String, String> {
+    let ts_lang: tree_sitter::Language = if is_javascript {
+        tree_sitter_javascript::LANGUAGE.into()
+    } else {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+    };
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return std::collections::HashMap::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return std::collections::HashMap::new();
+    };
+    extract_js_constants(tree.root_node(), content, is_javascript)
+}
+
 /// Extract UTF-8 text from a tree-sitter capture by index.
 ///
 /// Returns `""` if the capture is missing or text extraction fails.

@@ -52,6 +52,12 @@ pub struct ProjectIndex {
     pub(crate) generated_event_paths: DashMap<PathBuf, Vec<String>>,
     // Generators discovered from project configuration files
     pub(crate) generator_bindings: RwLock<Vec<DiscoveredGenerator>>,
+    // Global constant storage: constant_name -> string_value
+    pub(crate) rust_constants: DashMap<String, String>,
+    pub(crate) js_constants: DashMap<String, String>,
+    // Reverse index for stale removal: file_path -> list of constant names
+    pub(crate) rust_constants_paths: DashMap<PathBuf, Vec<String>>,
+    pub(crate) js_constants_paths: DashMap<PathBuf, Vec<String>>,
 }
 
 impl Default for ProjectIndex {
@@ -71,6 +77,10 @@ impl Default for ProjectIndex {
             event_schemas: DashMap::new(),
             generated_event_paths: DashMap::new(),
             generator_bindings: RwLock::new(Vec::new()),
+            rust_constants: DashMap::new(),
+            js_constants: DashMap::new(),
+            rust_constants_paths: DashMap::new(),
+            js_constants_paths: DashMap::new(),
         }
     }
 }
@@ -161,7 +171,11 @@ impl ProjectIndex {
             self.invalidate_caches();
         }
 
-        // Also remove parse errors for this file
+        // Remove parse errors for this file.
+        // NOTE: Do NOT remove constants here — `process_file_content` calls
+        // `add_rust/js_constants` (which handles cleanup) before calling `add_file`,
+        // so removing constants in `remove_file` would discard the freshly re-extracted
+        // constants and break cross-file constant resolution.
         self.parse_errors.remove(path);
     }
 
@@ -206,5 +220,67 @@ impl ProjectIndex {
     /// Get all locations for a given index key
     pub fn get_locations_for_key(&self, key: &IndexKey) -> Vec<LocationInfo> {
         self.map.get(key).map(|v| v.clone()).unwrap_or_default()
+    }
+
+    /// Store Rust constants extracted from a file, replacing any previous constants for that file
+    pub fn add_rust_constants(
+        &self,
+        path: PathBuf,
+        constants: std::collections::HashMap<String, String>,
+    ) {
+        self.remove_rust_constants_for_file(&path);
+        let names: Vec<String> = constants.keys().cloned().collect();
+        for (name, value) in constants {
+            self.rust_constants.insert(name, value);
+        }
+        self.rust_constants_paths.insert(path, names);
+    }
+
+    /// Store JS/TS constants extracted from a file, replacing any previous constants for that file
+    pub fn add_js_constants(
+        &self,
+        path: PathBuf,
+        constants: std::collections::HashMap<String, String>,
+    ) {
+        self.remove_js_constants_for_file(&path);
+        let names: Vec<String> = constants.keys().cloned().collect();
+        for (name, value) in constants {
+            self.js_constants.insert(name, value);
+        }
+        self.js_constants_paths.insert(path, names);
+    }
+
+    /// Remove all Rust constants associated with a file
+    pub fn remove_rust_constants_for_file(&self, path: &Path) {
+        if let Some((_, names)) = self.rust_constants_paths.remove(path) {
+            for name in names {
+                self.rust_constants.remove(&name);
+            }
+        }
+    }
+
+    /// Remove all JS/TS constants associated with a file
+    pub fn remove_js_constants_for_file(&self, path: &Path) {
+        if let Some((_, names)) = self.js_constants_paths.remove(path) {
+            for name in names {
+                self.js_constants.remove(&name);
+            }
+        }
+    }
+
+    /// Collect all global Rust constants as a `HashMap` (for passing to parsers)
+    pub fn get_all_rust_constants(&self) -> std::collections::HashMap<String, String> {
+        self.rust_constants
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect()
+    }
+
+    /// Collect all global JS/TS constants as a `HashMap` (for passing to parsers)
+    pub fn get_all_js_constants(&self) -> std::collections::HashMap<String, String> {
+        self.js_constants
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect()
     }
 }

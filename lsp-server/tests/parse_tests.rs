@@ -6,6 +6,7 @@
 mod helpers;
 
 use expect_test::expect;
+use std::collections::HashMap;
 use std::path::Path;
 
 // ===========================================================================
@@ -384,7 +385,8 @@ fn parse_vue_single_script() {
     )
     .unwrap();
     let path = std::path::PathBuf::from("/test/component.vue");
-    let result = lsp_server::tree_parser::parse(&path, &content).unwrap();
+    let result =
+        lsp_server::tree_parser::parse(&path, &content, &std::collections::HashMap::new()).unwrap();
 
     let mut out = String::new();
     let mut findings = result.findings;
@@ -425,7 +427,8 @@ fn parse_vue_multiple_scripts() {
     )
     .unwrap();
     let path = std::path::PathBuf::from("/test/multi.vue");
-    let result = lsp_server::tree_parser::parse(&path, &content).unwrap();
+    let result =
+        lsp_server::tree_parser::parse(&path, &content, &std::collections::HashMap::new()).unwrap();
     assert!(
         !result.findings.is_empty(),
         "Expected findings in Vue multi-script"
@@ -443,7 +446,8 @@ fn parse_svelte_component() {
     )
     .unwrap();
     let path = std::path::PathBuf::from("/test/component.svelte");
-    let result = lsp_server::tree_parser::parse(&path, &content).unwrap();
+    let result =
+        lsp_server::tree_parser::parse(&path, &content, &std::collections::HashMap::new()).unwrap();
     assert!(
         !result.findings.is_empty(),
         "Expected findings in Svelte component"
@@ -533,5 +537,229 @@ const MY_CMD = "greet";
 invoke(MY_CMD);
 "#,
         expect![[r#""#]],
+    );
+}
+
+// Cross-file constant resolution (simulates the two-pass indexing done in the LSP server)
+#[test]
+fn parse_rust_event_constant_cross_file() {
+    let lib_path = std::path::PathBuf::from("/src/lib.rs");
+
+    let emitter_content = r#"
+pub const EVENT_STATUS: &str = "sim://status";
+pub const EVENT_DISCONNECTED: &str = "sim://disconnected";
+"#;
+
+    let lib_content = r#"
+use tauri::{AppHandle, Manager};
+
+fn on_connected(app: &AppHandle) {
+    app.emit(EVENT_STATUS, "connected").unwrap();
+    app.emit(EVENT_DISCONNECTED, ()).unwrap();
+}
+"#;
+
+    // Pass 1: collect constants from the definitions file
+    let rust_constants = lsp_server::utils::extract_rust_constants_from_content(emitter_content);
+
+    // Pass 2: parse the consumer file with global constants available
+    let result = lsp_server::tree_parser::parse_rust_full(lib_content, &lib_path, &rust_constants)
+        .expect("parse should succeed");
+
+    let mut findings = result.file_index.findings;
+    findings.sort_by_key(|f| f.range.start.line);
+
+    let names: Vec<&str> = findings.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(names, vec!["sim://status", "sim://disconnected"]);
+}
+
+#[test]
+fn parse_rust_once_constant_cross_file() {
+    let lib_path = std::path::PathBuf::from("/src/lib.rs");
+
+    let constants_content = r#"pub const ONE_TIME_EVENT: &str = "one-time-event";"#;
+
+    let lib_content = r#"
+use constants::{ONE_TIME_EVENT};
+const SECRET_EVENT: &str = "secret-event";
+
+pub fn run() {
+    app.listen("frontend-event", |event: Event| {
+        println!("{:?}", event.payload());
+    });
+
+    app.once(ONE_TIME_EVENT, |event: Event| {
+        println!("{:?}", event.payload());
+    });
+}
+"#;
+
+    let rust_constants = lsp_server::utils::extract_rust_constants_from_content(constants_content);
+
+    let result = lsp_server::tree_parser::parse_rust_full(lib_content, &lib_path, &rust_constants)
+        .expect("parse should succeed");
+
+    let mut findings = result.file_index.findings;
+    findings.sort_by_key(|f| f.range.start.line);
+
+    let names: Vec<&str> = findings.iter().map(|f| f.key.as_str()).collect();
+    assert!(
+        names.contains(&"one-time-event"),
+        "expected 'one-time-event' in findings, got: {names:?}"
+    );
+}
+
+#[test]
+fn parse_ts_event_constant_cross_file() {
+    let component_path = std::path::PathBuf::from("/components/telemetry.ts");
+
+    let constants_content = r#"
+export const SIM_STATUS = 'sim://status';
+export const SIM_DISCONNECTED = 'sim://disconnected';
+"#;
+
+    let component_content = r#"
+import { listen } from "@tauri-apps/api/event";
+
+listen(SIM_STATUS, (event) => {});
+listen(SIM_DISCONNECTED, (event) => {});
+"#;
+
+    // Pass 1: collect constants from the constants file
+    let js_constants =
+        lsp_server::utils::extract_js_constants_from_content(constants_content, false);
+
+    // Pass 2: parse the consumer file with global constants
+    let result = lsp_server::tree_parser::parse(&component_path, component_content, &js_constants)
+        .expect("parse should succeed");
+
+    let mut findings = result.findings;
+    findings.sort_by_key(|f| f.range.start.line);
+
+    let names: Vec<&str> = findings.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(names, vec!["sim://status", "sim://disconnected"]);
+}
+
+#[test]
+fn parse_rust_event_constant_multiline_struct_payload() {
+    // Reproduces the exact Marble-Trace pattern:
+    //   app.emit(EVENT_STATUS, &SimStatus { status: "connected".into(), sim: Some(x) })
+    let lib_path = std::path::PathBuf::from("/src/bridge.rs");
+
+    let emitter_content = r#"
+pub const EVENT_STATUS: &str = "sim://status";
+pub const EVENT_DISCONNECTED: &str = "sim://disconnected";
+"#;
+
+    let lib_content = r#"
+use tauri::{AppHandle, Manager};
+
+fn on_connected(app: &AppHandle, source: &Source) {
+    app.emit(
+        EVENT_STATUS,
+        &SimStatus {
+            status: "connected".into(),
+            sim: Some(source.sim_type()),
+        },
+    ).unwrap();
+    app.emit(EVENT_DISCONNECTED, ()).unwrap();
+}
+"#;
+
+    let rust_constants = lsp_server::utils::extract_rust_constants_from_content(emitter_content);
+    let result = lsp_server::tree_parser::parse_rust_full(lib_content, &lib_path, &rust_constants)
+        .expect("parse should succeed");
+
+    let mut findings = result.file_index.findings;
+    findings.sort_by_key(|f| f.range.start.line);
+    let keys: Vec<&str> = findings.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, vec!["sim://status", "sim://disconnected"]);
+}
+
+#[test]
+fn parse_rust_demo_specta_librs() {
+    use std::collections::HashMap;
+    let lib_path = std::path::PathBuf::from("/demo-specta/src-tauri/src/lib.rs");
+
+    let constants_rs = r#"pub const ONE_TIME_EVENT: &str = "one-time-event";"#;
+
+    let lib_content = r#"
+use constants::{ONE_TIME_EVENT};
+
+const SECRET_EVENT: &str = "secret-event";
+
+#[tauri::command]
+#[specta::specta]
+fn trigger_event(app: AppHandle) {
+    app.emit_to(EventTarget::app(), SECRET_EVENT, EventPayload { message: "Hello!".into() })
+        .unwrap();
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .setup(move |app| {
+            app.listen("frontend-event", |event:Event| {
+                println!("{:?}", event.payload());
+            });
+
+            app.once(ONE_TIME_EVENT, |event:Event| {
+                println!("{:?}", event.payload());
+            });
+
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error");
+}
+"#;
+
+    let rust_constants = lsp_server::utils::extract_rust_constants_from_content(constants_rs);
+    eprintln!("rust_constants: {rust_constants:?}");
+
+    let result = lsp_server::tree_parser::parse_rust_full(lib_content, &lib_path, &rust_constants)
+        .expect("parse should succeed");
+
+    let findings = &result.file_index.findings;
+    eprintln!("findings ({}):", findings.len());
+    for f in findings {
+        eprintln!(
+            "  key={} behavior={:?} range={:?}",
+            f.key, f.behavior, f.range
+        );
+    }
+
+    assert!(
+        findings.iter().any(|f| f.key == "one-time-event"),
+        "expected 'one-time-event' in findings"
+    );
+}
+
+#[test]
+fn parse_rust_exact_demo_specta_librs() {
+    let lib_path = std::path::PathBuf::from("/src-tauri/src/lib.rs");
+    let constants_content = r#"pub const ONE_TIME_EVENT: &str = "one-time-event";"#;
+    let lib_content = include_str!(
+        "/home/voof/projects/learning/tauri-tutorials/demo-specta/src-tauri/src/lib.rs"
+    );
+
+    let rust_constants = lsp_server::utils::extract_rust_constants_from_content(constants_content);
+    eprintln!("rust_constants: {rust_constants:?}");
+
+    let result = lsp_server::tree_parser::parse_rust_full(lib_content, &lib_path, &rust_constants)
+        .expect("parse should succeed");
+
+    let findings = &result.file_index.findings;
+    eprintln!("findings ({}):", findings.len());
+    for f in findings {
+        eprintln!(
+            "  key={} behavior={:?} line={}",
+            f.key, f.behavior, f.range.start.line
+        );
+    }
+
+    assert!(
+        findings.iter().any(|f| f.key == "one-time-event"),
+        "expected 'one-time-event' in findings, got: {:?}",
+        findings.iter().map(|f| &f.key).collect::<Vec<_>>()
     );
 }

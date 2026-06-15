@@ -165,7 +165,11 @@ pub fn parse_fixture(input: &str) -> FixtureData {
 
         // Always parse with tree_parser (even bindings files get normal parsing too)
         if path.extension().is_some_and(|ext| ext == "rs") {
-            if let Ok(rust_index) = lsp_server::tree_parser::parse_rust_full(&content, &path) {
+            if let Ok(rust_index) = lsp_server::tree_parser::parse_rust_full(
+                &content,
+                &path,
+                &std::collections::HashMap::new(),
+            ) {
                 index.add_file(rust_index.file_index);
                 for schema in rust_index.command_schemas {
                     index.add_schema(schema);
@@ -175,7 +179,8 @@ pub fn parse_fixture(input: &str) -> FixtureData {
                 }
             }
         } else {
-            let parse_result = tree_parser::parse(&path, &content);
+            let parse_result =
+                tree_parser::parse(&path, &content, &std::collections::HashMap::new());
             match parse_result {
                 Ok(file_index) => {
                     index.add_file(file_index);
@@ -408,7 +413,8 @@ pub fn check_parse(fixture: &str, expect: Expect) {
 
     for file_path in &files {
         let content = &data.contents[file_path];
-        let parse_result = tree_parser::parse(file_path, content);
+        let parse_result =
+            tree_parser::parse(file_path, content, &std::collections::HashMap::new());
 
         match parse_result {
             Ok(file_index) => {

@@ -32,6 +32,7 @@ pub(super) fn extract_rust_findings(
     root: tree_sitter::Node<'_>,
     content: &str,
     ts_lang: &Language,
+    global_constants: &HashMap<String, String>,
 ) -> ParseResult<Vec<Finding>> {
     let query = Query::new(ts_lang, RUST_QUERY)
         .map_err(|e| ParseError::QueryError(format!("Failed to create Rust query: {e}")))?;
@@ -47,7 +48,13 @@ pub(super) fn extract_rust_findings(
     let struct_item_idx = query.capture_index_for_name("struct_item");
     let specta_emit_struct_idx = query.capture_index_for_name("specta_emit_struct");
 
-    let constants = crate::utils::extract_rust_constants(root, content);
+    let mut local_constants = crate::utils::extract_rust_constants(root, content);
+    // Merge global constants as fallback (local takes priority)
+    for (k, v) in global_constants {
+        local_constants
+            .entry(k.clone())
+            .or_insert_with(|| v.clone());
+    }
 
     let mut findings = Vec::new();
     let mut matches = cursor.matches(&query, root, bytes);
@@ -65,7 +72,9 @@ pub(super) fn extract_rust_findings(
             findings.push(f);
             continue;
         }
-        if let Some(f) = process_event_call(m, method_name_idx, event_name_idx, bytes, &constants) {
+        if let Some(f) =
+            process_event_call(m, method_name_idx, event_name_idx, bytes, &local_constants)
+        {
             findings.push(f);
         }
     }
@@ -186,7 +195,10 @@ fn process_event_call(
             resolved = true;
         } else {
             let lookup_key = if resolved_name.contains("::") {
-                resolved_name.split("::").last().unwrap_or(resolved_name.as_str())
+                resolved_name
+                    .split("::")
+                    .last()
+                    .unwrap_or(resolved_name.as_str())
             } else {
                 resolved_name.as_str()
             };
