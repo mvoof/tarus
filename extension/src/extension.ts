@@ -88,9 +88,19 @@ const activate = (context: ExtensionContext) => {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('tarus.restartServer', async () => {
-      await client.stop();
-      await client.start();
-      vscode.window.showInformationMessage('TARUS: server restarted.');
+      if (!client) {
+        vscode.window.showErrorMessage('TARUS: server is not initialized.');
+        return;
+      }
+      try {
+        await client.stop();
+        await client.start();
+        vscode.window.showInformationMessage('TARUS: server restarted.');
+      } catch (error) {
+        vscode.window.showErrorMessage(
+          `TARUS: failed to restart server — ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     })
   );
 
