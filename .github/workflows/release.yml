@@ -6,11 +6,15 @@ on:
       prerelease:
         required: true
         type: boolean
+      environment:
+        required: true
+        type: string
 
 jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     permissions:
       contents: write
     steps:

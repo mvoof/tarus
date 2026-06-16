@@ -16,6 +16,7 @@ jobs:
     name: Publish Pre-Release
     runs-on: ubuntu-latest
     needs: build
+    environment: pre-release
 
     steps:
       - name: Checkout repository
@@ -90,3 +91,4 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       prerelease: true
+      environment: pre-release
