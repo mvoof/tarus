@@ -21,10 +21,10 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 mod capabilities;
 mod constants;
 mod discovery;
-mod file_processor;
 mod indexer;
+mod parser;
+mod pipeline;
 mod syntax;
-mod tree_parser;
 mod utils;
 
 use crate::discovery::config_reader;
@@ -61,7 +61,7 @@ impl Backend {
             return;
         }
 
-        if file_processor::process_file_index(path.clone(), &self.project_index) {
+        if pipeline::process_file_index(path.clone(), &self.project_index) {
             let report = self.project_index.file_report(&path);
             self.log_dev_info(&report).await;
         }
@@ -158,7 +158,7 @@ impl Backend {
 
             // Pass 1: collect all constants so cross-file references are resolvable
             for path in &files {
-                file_processor::collect_constants_from_file(path, &project_index);
+                pipeline::collect_constants_from_file(path, &project_index);
             }
 
             let rust_const_count = project_index.rust_constants.len();
@@ -190,7 +190,7 @@ impl Backend {
 
             // Pass 2: full parse using the complete constants map
             for path in files {
-                file_processor::process_file_index(path, &project_index);
+                pipeline::process_file_index(path, &project_index);
             }
 
             for path in project_index.get_indexed_paths() {
@@ -482,7 +482,7 @@ impl LanguageServer for Backend {
                 return;
             }
 
-            if file_processor::process_file_content(&path, &content, &self.project_index) {
+            if pipeline::process_file_content(&path, &content, &self.project_index) {
                 let report = self.project_index.file_report(&path);
                 self.log_dev_info(&report).await;
             }
@@ -585,7 +585,7 @@ async fn process_debounced_change(
     // Get OLD keys before processing (will be removed)
     let old_keys: Vec<IndexKey> = project_index.get_file_keys(path);
 
-    if !file_processor::process_file_content(path, content, project_index) {
+    if !pipeline::process_file_content(path, content, project_index) {
         return;
     }
 

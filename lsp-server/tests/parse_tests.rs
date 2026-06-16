@@ -6,7 +6,6 @@
 mod helpers;
 
 use expect_test::expect;
-use std::collections::HashMap;
 use std::path::Path;
 
 // ===========================================================================
@@ -678,7 +677,6 @@ fn on_connected(app: &AppHandle, source: &Source) {
 
 #[test]
 fn parse_rust_demo_specta_librs() {
-    use std::collections::HashMap;
     let lib_path = std::path::PathBuf::from("/demo-specta/src-tauri/src/lib.rs");
 
     let constants_rs = r#"pub const ONE_TIME_EVENT: &str = "one-time-event";"#;

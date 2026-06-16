@@ -10,8 +10,8 @@ use tower_lsp_server::lsp_types::Range;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 use super::extractors::{count_specta_call_args, extract_type_argument_info};
-use super::lang_config::{get_query_source, LangType};
-use super::sfc_parser::{adjust_position, adjust_range};
+use super::sfc::{adjust_position, adjust_range};
+use crate::parser::lang_config::{get_query_source, LangType};
 
 /// Function patterns with their argument position
 struct FunctionPatternWithPos {
@@ -100,7 +100,12 @@ impl FrontendCaptures {
 }
 
 /// Parse TypeScript/JavaScript source code
-pub(super) fn parse_frontend(
+///
+/// # Errors
+///
+/// Returns error if tree-sitter query execution fails.
+#[allow(clippy::implicit_hasher)]
+pub fn parse_frontend(
     content: &str,
     lang: LangType,
     line_offset: usize,

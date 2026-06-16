@@ -35,7 +35,7 @@ fn setup_ts_query(content: &str, query_str: &str) -> Option<(tree_sitter::Tree, 
 pub fn parse_specta_bindings(content: &str, source_path: &Path) -> Vec<CommandSchema> {
     let Some((tree, query)) = setup_ts_query(
         content,
-        include_str!("../queries/bindings_specta_commands.scm"),
+        include_str!("../../queries/bindings_specta_commands.scm"),
     ) else {
         return Vec::new();
     };
@@ -179,7 +179,7 @@ fn parse_type_aliases_and_interfaces(
 
     if let Ok(query) = Query::new(
         &ts_lang,
-        include_str!("../queries/bindings_type_aliases.scm"),
+        include_str!("../../queries/bindings_type_aliases.scm"),
     ) {
         let name_idx = query.capture_index_for_name("type_name");
         let value_idx = query.capture_index_for_name("type_value");
@@ -198,8 +198,10 @@ fn parse_type_aliases_and_interfaces(
     }
 
     if include_interfaces {
-        if let Ok(query) = Query::new(&ts_lang, include_str!("../queries/bindings_interfaces.scm"))
-        {
+        if let Ok(query) = Query::new(
+            &ts_lang,
+            include_str!("../../queries/bindings_interfaces.scm"),
+        ) {
             let name_idx = query.capture_index_for_name("iface_name");
             let body_idx = query.capture_index_for_name("iface_body");
 
@@ -286,7 +288,7 @@ fn extract_interface_fields(body_node: tree_sitter::Node<'_>, content: &str) -> 
 pub fn parse_specta_events(content: &str, source_path: &Path) -> Vec<EventSchema> {
     let Some((tree, query)) = setup_ts_query(
         content,
-        include_str!("../queries/bindings_specta_events.scm"),
+        include_str!("../../queries/bindings_specta_events.scm"),
     ) else {
         return Vec::new();
     };
@@ -375,7 +377,7 @@ fn extract_type_object_entries(
 pub fn parse_typegen_events(content: &str, source_path: &Path) -> Vec<EventSchema> {
     let Some((tree, query)) = setup_ts_query(
         content,
-        include_str!("../queries/bindings_typegen_events.scm"),
+        include_str!("../../queries/bindings_typegen_events.scm"),
     ) else {
         return Vec::new();
     };

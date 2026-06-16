@@ -6,7 +6,7 @@ use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor};
 
-const RUST_PARAMS_QUERY: &str = include_str!("../queries/rust_params.scm");
+const RUST_PARAMS_QUERY: &str = include_str!("../../queries/rust_params.scm");
 
 const TAURI_SELF_PARAMS: &[&str] = &["self", "&self", "&mut self"];
 const TAURI_INJECTED_TYPES: &[&str] = &["AppHandle", "Window", "WebviewWindow", "Webview"];
@@ -137,7 +137,7 @@ fn try_extract_command_schemas_from_node(
     while let Some(m) = matches.next() {
         // Check that fn_item has a #[tauri::command] attribute
         if let Some(item_cap) = find_capture(m, fn_item_idx) {
-            if !crate::tree_parser::rust_attr::has_tauri_command_attr(item_cap.node, content) {
+            if !crate::parser::rust::attrs::has_tauri_command_attr(item_cap.node, content) {
                 continue;
             }
         }
@@ -232,7 +232,7 @@ fn parse_rust_params_from_node(
 
 // ─── Event schema extraction from Rust source ────────────────────────────────
 
-const RUST_EMIT_QUERY: &str = include_str!("../queries/rust_emit.scm");
+const RUST_EMIT_QUERY: &str = include_str!("../../queries/rust_emit.scm");
 
 /// Extract event schemas from a pre-parsed tree root node.
 ///
