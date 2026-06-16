@@ -1,5 +1,7 @@
 //! Shared utility functions
 
+pub mod ts_tree_utils;
+
 use std::sync::LazyLock;
 use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::{Position, Range};

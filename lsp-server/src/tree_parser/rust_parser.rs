@@ -114,7 +114,7 @@ fn process_struct(
     let name_cap = find_capture(m, struct_name_idx)?;
     let item_cap = find_capture(m, struct_item_idx)?;
 
-    if !crate::rust_attr::has_specta_event_derive(item_cap.node, content) {
+    if !crate::tree_parser::rust_attr::has_specta_event_derive(item_cap.node, content) {
         return None;
     }
 
@@ -141,7 +141,7 @@ fn process_fn(
     let name_cap = find_capture(m, fn_name_idx)?;
     let item_cap = find_capture(m, fn_item_idx)?;
 
-    if !crate::rust_attr::has_tauri_command_attr(item_cap.node, content) {
+    if !crate::tree_parser::rust_attr::has_tauri_command_attr(item_cap.node, content) {
         return None;
     }
 

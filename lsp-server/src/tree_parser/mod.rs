@@ -16,10 +16,13 @@ mod lang_config;
 mod rust_parser;
 mod sfc_parser;
 
+pub mod bindings_reader;
+pub mod rust_attr;
+pub mod rust_type_extractor;
+
 pub use lang_config::LangType;
 
 use crate::indexer::{CommandSchema, EventSchema, FileIndex};
-use crate::rust_type_extractor;
 use crate::syntax::{ParseError, ParseResult};
 use std::collections::HashMap;
 use std::path::Path;

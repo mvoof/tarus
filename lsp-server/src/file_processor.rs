@@ -1,8 +1,8 @@
 //! File processing utilities
 
-use crate::bindings_reader;
 use crate::indexer::{GeneratorKind, ProjectIndex};
 use crate::tree_parser;
+use crate::tree_parser::bindings_reader;
 use std::path::{Path, PathBuf};
 
 /// Check if file extension is supported

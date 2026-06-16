@@ -5,7 +5,7 @@
 
 use crate::constants::{SPECTA_EXPORT_METHOD, SPECTA_EXPORT_TO_METHOD};
 use crate::indexer::{DiscoveredGenerator, GeneratorKind};
-use crate::ts_tree_utils::parse_rust;
+use crate::utils::ts_tree_utils::parse_rust;
 use std::path::{Component, Path, PathBuf};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Query, QueryCursor};
@@ -50,7 +50,7 @@ pub fn discover_generators(workspace_root: &Path) -> Vec<DiscoveredGenerator> {
 /// Discover the tauri-specta and standalone specta-typescript output file by scanning Rust sources.
 fn discover_specta_generators(src_tauri_dir: &Path) -> Vec<DiscoveredGenerator> {
     let rust_lang: Language = tree_sitter_rust::LANGUAGE.into();
-    let query_str = include_str!("queries/rust_specta_discovery.scm");
+    let query_str = include_str!("../queries/rust_specta_discovery.scm");
 
     let Ok(query) = Query::new(&rust_lang, query_str) else {
         return Vec::new();

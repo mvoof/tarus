@@ -18,19 +18,17 @@ use tower_lsp_server::lsp_types::{
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
 // Refactored modules
-mod bindings_reader;
 mod capabilities;
-mod config_reader;
 mod constants;
+mod discovery;
 mod file_processor;
 mod indexer;
-mod rust_attr;
-mod rust_type_extractor;
-mod scanner;
 mod syntax;
 mod tree_parser;
-mod ts_tree_utils;
 mod utils;
+
+use crate::discovery::config_reader;
+use crate::discovery::scanner;
 
 use capabilities::{build_server_capabilities, diagnostics};
 use indexer::{IndexKey, ProjectIndex};
