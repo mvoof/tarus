@@ -1,9 +1,9 @@
 //! Language detection and query routing
 
 /// Query files embedded at compile time
-pub(super) const RUST_QUERY: &str = include_str!("../queries/rust.scm");
-pub(super) const TS_QUERY: &str = include_str!("../queries/typescript.scm");
-pub(super) const JS_QUERY: &str = include_str!("../queries/javascript.scm");
+pub(crate) const RUST_QUERY: &str = include_str!("../queries/rust.scm");
+pub(crate) const TS_QUERY: &str = include_str!("../queries/typescript.scm");
+pub(crate) const JS_QUERY: &str = include_str!("../queries/javascript.scm");
 
 /// Supported language types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +32,7 @@ impl LangType {
 }
 
 /// Get the query string for a given language
-pub(super) fn get_query_source(lang: LangType) -> &'static str {
+pub(crate) fn get_query_source(lang: LangType) -> &'static str {
     match lang {
         LangType::Rust => RUST_QUERY,
         LangType::TypeScript | LangType::Vue | LangType::Svelte | LangType::Angular => TS_QUERY,
@@ -41,7 +41,7 @@ pub(super) fn get_query_source(lang: LangType) -> &'static str {
 }
 
 /// Check if TypeScript file contains Angular decorators
-pub(super) fn is_angular_file(content: &str) -> bool {
+pub(crate) fn is_angular_file(content: &str) -> bool {
     const ANGULAR_DECORATORS: &[&str] = &[
         "@Component(",
         "@Injectable(",

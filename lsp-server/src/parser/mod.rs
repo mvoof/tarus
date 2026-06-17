@@ -1,45 +1,33 @@
-//! Unified Tree-sitter based parser for Rust and frontend languages
+//! Source code parsers for Rust and frontend languages
 //!
-//! This module provides a single entry point for parsing all supported file types
-//! using Tree-sitter queries defined in external .scm files.
-//!
-//! ## Submodules
-//! - `lang_config` — language detection, query routing, Angular detection
-//! - `sfc_parser` — Vue/Svelte `<script>` block extraction
-//! - `rust_parser` — Rust `#[tauri::command]` and event parsing
-//! - `frontend_parser` — TypeScript/JavaScript invoke/emit/listen parsing
-//! - `extractors` — type argument and call argument extraction helpers
+//! ## Structure
+//! - `rust/`       — Rust `#[tauri::command]`, events, struct/enum types, attributes
+//! - `typescript/` — TS/JS/Vue/Svelte invoke/emit/listen + bindings files
+//! - `lang_config` — language detection and tree-sitter query routing
 
-mod extractors;
-mod frontend_parser;
-mod lang_config;
-mod rust_parser;
-mod sfc_parser;
+pub mod lang_config;
+pub mod rust;
+pub mod typescript;
 
 pub use lang_config::LangType;
 
 use crate::indexer::{CommandSchema, EventSchema, FileIndex};
-use crate::rust_type_extractor;
 use crate::syntax::{ParseError, ParseResult};
+use lang_config::is_angular_file;
+use rust::commands::extract_rust_findings;
+use typescript::frontend::parse_frontend;
+use typescript::sfc::extract_script_blocks;
+
 use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Language, Parser};
 
-use frontend_parser::parse_frontend;
-use lang_config::is_angular_file;
-use rust_parser::extract_rust_findings;
-use sfc_parser::extract_script_blocks;
-
-/// Main parsing function - entry point for all file types
+/// Main parse entry point for all supported file types.
 ///
 /// # Errors
 ///
-/// Returns error if tree-sitter fails to parse the file or query execution fails
-///
-/// # Panics
-///
-/// Panics if language detection succeeds but lang is None (should never happen due to match guards)
-#[allow(clippy::implicit_hasher)] // callers always use the default hasher
+/// Returns error if tree-sitter fails to parse the file or query execution fails.
+#[allow(clippy::implicit_hasher)]
 pub fn parse(
     path: &Path,
     content: &str,
@@ -47,7 +35,6 @@ pub fn parse(
 ) -> ParseResult<FileIndex> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-    // Check for Angular: content-based detection for .ts files
     let is_angular = ext == "ts" && is_angular_file(content);
 
     let lang = if is_angular {
@@ -103,14 +90,12 @@ pub struct RustFileIndex {
     pub event_schemas: Vec<EventSchema>,
 }
 
-/// Parse a Rust file in a single pass: one `Parser::new()` + `parser.parse()`,
-/// then run the findings query, command schema query, and event schema query
-/// sequentially on the same tree.
+/// Parse a Rust file in a single pass, extracting findings, command schemas, and event schemas.
 ///
 /// # Errors
 ///
-/// Returns error if tree-sitter fails to parse the file or query execution fails
-#[allow(clippy::implicit_hasher)] // callers always use the default hasher
+/// Returns error if tree-sitter fails to parse the file or query execution fails.
+#[allow(clippy::implicit_hasher)]
 pub fn parse_rust_full(
     content: &str,
     path: &Path,
@@ -128,15 +113,9 @@ pub fn parse_rust_full(
 
     let root = tree.root_node();
 
-    // 1. Extract findings (commands + events) using the main query
     let findings = extract_rust_findings(root, content, &ts_lang, global_constants)?;
-
-    // 2. Extract command schemas
-    let command_schemas =
-        rust_type_extractor::extract_command_schemas_from_tree(root, content, path);
-
-    // 3. Extract event schemas
-    let event_schemas = rust_type_extractor::extract_event_schemas_from_tree(root, content, path);
+    let command_schemas = rust::types::extract_command_schemas_from_tree(root, content, path);
+    let event_schemas = rust::types::extract_event_schemas_from_tree(root, content, path);
 
     Ok(RustFileIndex {
         file_index: FileIndex {

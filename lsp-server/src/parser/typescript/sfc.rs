@@ -4,7 +4,8 @@ use tower_lsp_server::lsp_types::{Position, Range};
 
 /// Extract ALL script blocks from SFC (Single File Component: Vue, Svelte, etc.)
 /// Returns tuples of (`script_content`, `line_offset`) for each <script> block found
-pub(super) fn extract_script_blocks(content: &str) -> Vec<(String, usize)> {
+#[must_use]
+pub fn extract_script_blocks(content: &str) -> Vec<(String, usize)> {
     let mut blocks = Vec::new();
     let mut search_pos = 0;
 

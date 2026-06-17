@@ -9,7 +9,7 @@ use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::Range;
 use tree_sitter::{Language, Query, QueryCursor};
 
-use super::lang_config::RUST_QUERY;
+use crate::parser::lang_config::RUST_QUERY;
 
 static RUST_EVENT_PATTERNS: LazyLock<HashMap<&'static str, (EntityType, Behavior)>> =
     LazyLock::new(|| {
@@ -28,7 +28,12 @@ static RUST_EVENT_PATTERNS: LazyLock<HashMap<&'static str, (EntityType, Behavior
     });
 
 /// Extract findings from a pre-parsed Rust tree root node.
-pub(super) fn extract_rust_findings(
+///
+/// # Errors
+///
+/// Returns error if tree-sitter query execution fails.
+#[allow(clippy::implicit_hasher)]
+pub fn extract_rust_findings(
     root: tree_sitter::Node<'_>,
     content: &str,
     ts_lang: &Language,
@@ -114,7 +119,7 @@ fn process_struct(
     let name_cap = find_capture(m, struct_name_idx)?;
     let item_cap = find_capture(m, struct_item_idx)?;
 
-    if !crate::rust_attr::has_specta_event_derive(item_cap.node, content) {
+    if !crate::parser::rust::attrs::has_specta_event_derive(item_cap.node, content) {
         return None;
     }
 
@@ -141,7 +146,7 @@ fn process_fn(
     let name_cap = find_capture(m, fn_name_idx)?;
     let item_cap = find_capture(m, fn_item_idx)?;
 
-    if !crate::rust_attr::has_tauri_command_attr(item_cap.node, content) {
+    if !crate::parser::rust::attrs::has_tauri_command_attr(item_cap.node, content) {
         return None;
     }
 

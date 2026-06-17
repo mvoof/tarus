@@ -1,8 +1,8 @@
 //! File processing utilities
 
-use crate::bindings_reader;
 use crate::indexer::{GeneratorKind, ProjectIndex};
-use crate::tree_parser;
+use crate::parser;
+use crate::parser::typescript::bindings as bindings_reader;
 use std::path::{Path, PathBuf};
 
 /// Check if file extension is supported
@@ -39,7 +39,7 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
         project_index.add_rust_constants(path.to_path_buf(), local_constants);
         let global_constants = project_index.get_all_rust_constants();
 
-        match tree_parser::parse_rust_full(content, path, &global_constants) {
+        match parser::parse_rust_full(content, path, &global_constants) {
             Ok(rust_index) => {
                 let path_buf = path.to_path_buf();
 
@@ -71,7 +71,7 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
         project_index.add_js_constants(path.to_path_buf(), local_constants);
         let global_constants = project_index.get_all_js_constants();
 
-        match tree_parser::parse(path, content, &global_constants) {
+        match parser::parse(path, content, &global_constants) {
             Ok(file_index) => {
                 project_index.add_file(file_index);
 

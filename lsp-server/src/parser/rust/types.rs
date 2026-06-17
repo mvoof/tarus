@@ -6,7 +6,7 @@ use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor};
 
-const RUST_PARAMS_QUERY: &str = include_str!("queries/rust_params.scm");
+const RUST_PARAMS_QUERY: &str = include_str!("../../queries/rust_params.scm");
 
 const TAURI_SELF_PARAMS: &[&str] = &["self", "&self", "&mut self"];
 const TAURI_INJECTED_TYPES: &[&str] = &["AppHandle", "Window", "WebviewWindow", "Webview"];
@@ -83,7 +83,7 @@ fn classify_rust_type(t: &str) -> RustType {
 /// nested generics, and other Rust type syntax.
 fn extract_first_generic_arg_from_type(full_type: &str) -> Option<String> {
     let wrapper = format!("type _X = {full_type};");
-    let tree = crate::ts_tree_utils::parse_rust(&wrapper)?;
+    let tree = crate::utils::ts_tree_utils::parse_rust(&wrapper)?;
     let root = tree.root_node();
 
     // Navigate: source_file > type_item > type node > type_arguments > first child type
@@ -137,7 +137,7 @@ fn try_extract_command_schemas_from_node(
     while let Some(m) = matches.next() {
         // Check that fn_item has a #[tauri::command] attribute
         if let Some(item_cap) = find_capture(m, fn_item_idx) {
-            if !crate::rust_attr::has_tauri_command_attr(item_cap.node, content) {
+            if !crate::parser::rust::attrs::has_tauri_command_attr(item_cap.node, content) {
                 continue;
             }
         }
@@ -232,7 +232,7 @@ fn parse_rust_params_from_node(
 
 // ─── Event schema extraction from Rust source ────────────────────────────────
 
-const RUST_EMIT_QUERY: &str = include_str!("queries/rust_emit.scm");
+const RUST_EMIT_QUERY: &str = include_str!("../../queries/rust_emit.scm");
 
 /// Extract event schemas from a pre-parsed tree root node.
 ///
