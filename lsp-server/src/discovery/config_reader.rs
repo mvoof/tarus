@@ -20,7 +20,8 @@ use walkdir::WalkDir;
 pub fn discover_generators(workspace_root: &Path) -> Vec<DiscoveredGenerator> {
     // find_tauri_config also gives us the exact config file path, which we pass to discover_typegen
     // so it doesn't need to hardcode a filename.
-    let Some(tauri_config_path) = crate::scanner::find_tauri_config(workspace_root) else {
+    let Some(tauri_config_path) = crate::discovery::scanner::find_tauri_config(workspace_root)
+    else {
         return Vec::new();
     };
 
