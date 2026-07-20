@@ -9,13 +9,12 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::lsp_types::{
     CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, CompletionParams,
     CompletionResponse, ConfigurationItem, ConfigurationParams, DidChangeTextDocumentParams,
-    DidChangeWatchedFilesParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    DocumentSymbolParams, DocumentSymbolResponse, FileChangeType,
-    GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
-    InitializeParams, InitializeResult, InitializedParams, Location, MessageType,
-    DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, OneOf,
-    Registration, ReferenceParams, ServerCapabilities, SymbolInformation,
-    Uri, WorkspaceSymbol, WorkspaceSymbolParams,
+    DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolParams,
+    DocumentSymbolResponse, FileChangeType, FileSystemWatcher, GlobPattern, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, InitializeParams, InitializeResult,
+    InitializedParams, Location, MessageType, OneOf, ReferenceParams, Registration,
+    ServerCapabilities, SymbolInformation, Uri, WorkspaceSymbol, WorkspaceSymbolParams,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
@@ -307,9 +306,7 @@ impl LanguageServer for Backend {
 
         let registration_options = DidChangeWatchedFilesRegistrationOptions {
             watchers: vec![FileSystemWatcher {
-                glob_pattern: GlobPattern::String(
-                    "**/*.{rs,ts,tsx,js,jsx,vue,svelte}".to_string(),
-                ),
+                glob_pattern: GlobPattern::String("**/*.{rs,ts,tsx,js,jsx,vue,svelte}".to_string()),
                 kind: None,
             }],
         };
@@ -317,7 +314,12 @@ impl LanguageServer for Backend {
             Ok(v) => Some(v),
             Err(e) => {
                 self.client
-                    .log_message(MessageType::WARNING, format!("tarus-file-watcher: failed to serialize registration options: {e}"))
+                    .log_message(
+                        MessageType::WARNING,
+                        format!(
+                            "tarus-file-watcher: failed to serialize registration options: {e}"
+                        ),
+                    )
                     .await;
                 return;
             }
@@ -329,7 +331,10 @@ impl LanguageServer for Backend {
         };
         if let Err(e) = self.client.register_capability(vec![registration]).await {
             self.client
-                .log_message(MessageType::WARNING, format!("tarus-file-watcher: client rejected capability registration: {e}"))
+                .log_message(
+                    MessageType::WARNING,
+                    format!("tarus-file-watcher: client rejected capability registration: {e}"),
+                )
                 .await;
         }
     }
