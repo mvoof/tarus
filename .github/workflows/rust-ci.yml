@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   rust-ci:
-    name: Cargo Check & Clippy
+    name: Cargo Check, Fmt, Clippy & Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,15 +23,21 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: lsp-server
 
+      - name: Cargo Fmt
+        run: cargo fmt --manifest-path lsp-server/Cargo.toml -- --check
+
       - name: Cargo Check
         run: cargo check --manifest-path lsp-server/Cargo.toml
 
       - name: Cargo Clippy
         run: cargo clippy --manifest-path lsp-server/Cargo.toml -- -D warnings
+
+      - name: Cargo Test
+        run: cargo test --manifest-path lsp-server/Cargo.toml
