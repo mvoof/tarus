@@ -1,5 +1,11 @@
 ## Change Log
 
+### [0.11.0] - 2026-07-20
+
+- **Added**
+  - SolidJS support — `TypeScriptJsx` and `JavaScriptJsx` file variants are now parsed, enabling navigation, diagnostics, and completions in `.tsx`/`.jsx` SolidJS projects
+  - External file edit detection — the LSP now registers a `didChangeWatchedFiles` watcher so changes made outside the editor (e.g. regenerated binding files) trigger re-indexing automatically
+
 ### [0.10.0] - 2026-06-15
 
 - **Added**
