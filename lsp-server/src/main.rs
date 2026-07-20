@@ -9,11 +9,13 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::lsp_types::{
     CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, CompletionParams,
     CompletionResponse, ConfigurationItem, ConfigurationParams, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolParams,
-    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
-    InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
-    ReferenceParams, ServerCapabilities, SymbolInformation, Uri, WorkspaceSymbol,
-    WorkspaceSymbolParams,
+    DidChangeWatchedFilesParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DocumentSymbolParams, DocumentSymbolResponse, FileChangeType,
+    GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    InitializeParams, InitializeResult, InitializedParams, Location, MessageType,
+    DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, OneOf,
+    Registration, ReferenceParams, ServerCapabilities, SymbolInformation,
+    Uri, WorkspaceSymbol, WorkspaceSymbolParams,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
@@ -302,6 +304,34 @@ impl LanguageServer for Backend {
 
         self.project_index.set_generator_bindings(generators);
         self.spawn_indexing(root.clone());
+
+        let registration_options = DidChangeWatchedFilesRegistrationOptions {
+            watchers: vec![FileSystemWatcher {
+                glob_pattern: GlobPattern::String(
+                    "**/*.{rs,ts,tsx,js,jsx,vue,svelte}".to_string(),
+                ),
+                kind: None,
+            }],
+        };
+        let register_options = match serde_json::to_value(registration_options) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.client
+                    .log_message(MessageType::WARNING, format!("tarus-file-watcher: failed to serialize registration options: {e}"))
+                    .await;
+                return;
+            }
+        };
+        let registration = Registration {
+            id: "tarus-file-watcher".to_string(),
+            method: "workspace/didChangeWatchedFiles".to_string(),
+            register_options,
+        };
+        if let Err(e) = self.client.register_capability(vec![registration]).await {
+            self.client
+                .log_message(MessageType::WARNING, format!("tarus-file-watcher: client rejected capability registration: {e}"))
+                .await;
+        }
     }
 
     async fn goto_definition(
@@ -540,6 +570,34 @@ impl LanguageServer for Backend {
         if let Some(path) = uri_to_path(&params.text_document.uri) {
             self.on_change(path.clone()).await;
             self.publish_diagnostics_for_file(&path).await;
+        }
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        if !self.is_ready() {
+            return;
+        }
+
+        for event in params.changes {
+            let Some(path) = uri_to_path(&event.uri) else {
+                continue;
+            };
+
+            // Skip files that are open in the editor — did_change already handles them.
+            if self.document_cache.contains_key(&path) {
+                continue;
+            }
+
+            if event.typ == FileChangeType::DELETED {
+                self.project_index.remove_file(&path);
+                if let Some(uri) = Uri::from_file_path(&path) {
+                    self.client.publish_diagnostics(uri, vec![], None).await;
+                }
+            } else {
+                // CREATED or CHANGED
+                self.on_change(path.clone()).await;
+                self.publish_diagnostics_for_file(&path).await;
+            }
         }
     }
 
