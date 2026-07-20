@@ -736,9 +736,25 @@ pub fn run() {
 fn parse_rust_exact_demo_specta_librs() {
     let lib_path = std::path::PathBuf::from("/src-tauri/src/lib.rs");
     let constants_content = r#"pub const ONE_TIME_EVENT: &str = "one-time-event";"#;
-    let lib_content = include_str!(
-        "/home/voof/projects/learning/tauri-tutorials/demo-specta/src-tauri/src/lib.rs"
-    );
+    let lib_content = r#"
+pub const ONE_TIME_EVENT: &str = "one-time-event";
+
+#[tauri::command]
+pub fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![greet])
+        .setup(|app| {
+            app.emit(ONE_TIME_EVENT, ()).unwrap();
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+"#;
 
     let rust_constants = lsp_server::utils::extract_rust_constants_from_content(constants_content);
     eprintln!("rust_constants: {rust_constants:?}");
