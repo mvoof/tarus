@@ -1,0 +1,30 @@
+pre-commit:
+  jobs:
+    # Auto-fix formatters run first (sequential so fixes are staged before checks)
+    - name: rust-fmt
+      glob: "lsp-server/**/*.rs"
+      run: cargo fmt --manifest-path lsp-server/Cargo.toml
+      stage_fixed: true
+
+    - name: ts-format
+      root: "extension/"
+      glob: "src/**/*.ts"
+      run: npm run format
+      stage_fixed: true
+
+    - name: ts-lint-fix
+      root: "extension/"
+      glob: "src/**/*.ts"
+      run: npm run lint:fix
+      stage_fixed: true
+
+    # Checks run after fixes are applied
+    - name: rust-clippy
+      glob: "lsp-server/**/*.rs"
+      run: cargo clippy --manifest-path lsp-server/Cargo.toml -- -D warnings
+      fail_text: "Fix clippy warnings before committing"
+
+    - name: rust-test
+      glob: "lsp-server/**/*.rs"
+      run: cargo test --manifest-path lsp-server/Cargo.toml
+      fail_text: "All Rust tests must pass before committing"
