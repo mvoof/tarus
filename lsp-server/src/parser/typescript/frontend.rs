@@ -112,7 +112,8 @@ pub fn parse_frontend(
     global_constants: &HashMap<String, String>,
 ) -> ParseResult<Vec<Finding>> {
     let ts_lang: Language = match lang {
-        LangType::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+        LangType::JavaScript | LangType::JavaScriptJsx => tree_sitter_javascript::LANGUAGE.into(),
+        LangType::TypeScriptJsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
         _ => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
     };
 
@@ -137,7 +138,7 @@ pub fn parse_frontend(
     let aliases = collect_aliases(&query, root, bytes, &caps);
 
     // Extract constants from this file and merge global constants as fallback
-    let is_js = matches!(lang, LangType::JavaScript);
+    let is_js = matches!(lang, LangType::JavaScript | LangType::JavaScriptJsx);
     let mut constants = crate::utils::extract_js_constants(root, content, is_js);
     for (k, v) in global_constants {
         constants.entry(k.clone()).or_insert_with(|| v.clone());
