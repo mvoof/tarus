@@ -55,9 +55,13 @@ pub fn parse(
                 .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
             extract_rust_findings(tree.root_node(), content, &ts_lang, global_constants)?
         }
-        Some(lang_val @ (LangType::TypeScript | LangType::JavaScript | LangType::Angular)) => {
-            parse_frontend(content, lang_val, 0, global_constants)?
-        }
+        Some(
+            lang_val @ (LangType::TypeScript
+            | LangType::TypeScriptJsx
+            | LangType::JavaScript
+            | LangType::JavaScriptJsx
+            | LangType::Angular),
+        ) => parse_frontend(content, lang_val, 0, global_constants)?,
         Some(LangType::Vue | LangType::Svelte) => {
             let blocks = extract_script_blocks(content);
             let mut all_findings = Vec::new();

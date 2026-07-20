@@ -761,3 +761,82 @@ fn parse_rust_exact_demo_specta_librs() {
         findings.iter().map(|f| &f.key).collect::<Vec<_>>()
     );
 }
+
+// ===========================================================================
+// SolidJS (.tsx with JSX)
+// ===========================================================================
+
+#[test]
+fn parse_solidjs_invoke_in_jsx() {
+    helpers::check_parse(
+        r#"
+//- /App.tsx
+import { createSignal, onMount } from "solid-js";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, emit } from "@tauri-apps/api/event";
+
+function App() {
+  const [msg, setMsg] = createSignal("");
+
+  onMount(async () => {
+    const unlisten = await listen("backend-event", (e) => {
+      console.log(e.payload);
+    });
+  });
+
+  const greet = async () => {
+    const result = await invoke<string>("greet", { name: "World" });
+    setMsg(result);
+  };
+
+  const sendEvent = async () => {
+    await emit("frontend-ping", { from: "solid" });
+  };
+
+  return (
+    <div>
+      <button onClick={greet}>Greet</button>
+      <button onClick={sendEvent}>Ping</button>
+      <p>{msg()}</p>
+    </div>
+  );
+}
+
+export default App;
+"#,
+        expect![[r#"
+            /App.tsx:
+              Event Listen "backend-event" 8:35..8:48
+              Command Call "greet" 14:41..14:46 return_type=string
+              Event Emit "frontend-ping" 19:16..19:29"#]],
+    );
+}
+
+#[test]
+fn parse_solidjs_jsx_does_not_break_parsing() {
+    // Verifies that JSX syntax in .tsx files does not cause tree-sitter errors
+    // and that invoke calls inside JSX event handlers are still found.
+    helpers::check_parse(
+        r#"
+//- /Counter.tsx
+import { createSignal } from "solid-js";
+import { invoke } from "@tauri-apps/api/core";
+
+function Counter() {
+  const [count, setCount] = createSignal(0);
+
+  return (
+    <div>
+      <button onClick={() => invoke("increment", { value: count() })}>+</button>
+      <span>{count()}</span>
+    </div>
+  );
+}
+
+export default Counter;
+"#,
+        expect![[r#"
+            /Counter.tsx:
+              Command Call "increment" 8:37..8:46"#]],
+    );
+}
