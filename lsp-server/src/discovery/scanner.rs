@@ -47,7 +47,17 @@ fn should_skip(entry: &DirEntry) -> bool {
     is_ignored_entry_name(name, is_dir)
 }
 
-/// List of valid Tauri configuration file names (in lowercase)
+/// List of valid Tauri configuration file names (in lowercase).
+///
+/// Kept aligned with the documented Tauri config file formats:
+/// <https://v2.tauri.app/reference/config/> — base `tauri.conf.json`,
+/// `tauri.conf.json5`, `Tauri.toml`, plus the `tauri.<platform>.conf.json` and
+/// `Tauri.<platform>.toml` overrides (no platform-specific JSON5 exists).
+///
+/// The same set is maintained by hand on the extension side and must be updated
+/// together whenever this list changes:
+///   - `TAURI_CONFIG_FILES` / `TAURI_CONFIG_GLOB` in extension/src/extension.ts
+///   - `activationEvents` in extension/package.json
 const TAURI_CONFIG_FILES: &[&str] = &[
     "tauri.conf.json",
     "tauri.conf.json5",
@@ -65,6 +75,19 @@ const TAURI_CONFIG_FILES: &[&str] = &[
 ];
 
 /// Helper: Check if a path points to a Tauri configuration file
+///
+/// This uses a case-insensitive, explicit filename list, so it can disagree with
+/// the extension's case-sensitive wildcard globs in two opposite directions —
+/// both benign:
+/// - Looser on case (`TAURI.CONF.JSON` matches here but not the glob): harmless,
+///   because the server only runs after the extension's glob already matched, so
+///   such names never reach this function.
+/// - Stricter on the middle segment: the extension's `tauri.*.conf.json` glob
+///   also matches non-platform names like `tauri.staging.conf.json`, which this
+///   list rejects. That is intentional — a standalone non-platform config is not
+///   a real Tauri project, so reporting "not Tauri" (empty capabilities) is the
+///   correct outcome; the extension merely over-activates and spawns an idle
+///   server in that rare case.
 fn is_tauri_config_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
@@ -232,5 +255,13 @@ mod tests {
         assert!(!is_tauri_config_path(Path::new("tauri.json"))); // Missing .conf or .toml
         assert!(!is_tauri_config_path(Path::new("Tauri.txt")));
         assert!(!is_tauri_config_path(Path::new("package.json")));
+
+        // Platform-specific JSON5 is not a documented Tauri format — only base
+        // JSON5 (`tauri.conf.json5`) and platform JSON/TOML overrides exist.
+        assert!(!is_tauri_config_path(Path::new("tauri.linux.conf.json5")));
+        assert!(!is_tauri_config_path(Path::new("tauri.windows.conf.json5")));
+        assert!(!is_tauri_config_path(Path::new("tauri.macos.conf.json5")));
+        assert!(!is_tauri_config_path(Path::new("tauri.android.conf.json5")));
+        assert!(!is_tauri_config_path(Path::new("tauri.ios.conf.json5")));
     }
 }
