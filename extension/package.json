@@ -19,14 +19,11 @@
     "Other"
   ],
   "activationEvents": [
-    "workspaceContains:tauri.conf.json",
-    "onLanguage:rust",
-    "onLanguage:typescript",
-    "onLanguage:typescriptreact",
-    "onLanguage:javascript",
-    "onLanguage:javascriptreact",
-    "onLanguage:vue",
-    "onLanguage:svelte"
+    "workspaceContains:**/tauri.conf.json",
+    "workspaceContains:**/tauri.conf.json5",
+    "workspaceContains:**/Tauri.toml",
+    "workspaceContains:**/tauri.*.conf.json",
+    "workspaceContains:**/Tauri.*.toml"
   ],
   "main": "./out/src/extension.js",
   "icon": "images/icon.png",
