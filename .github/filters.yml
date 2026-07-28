@@ -1,0 +1,15 @@
+rust:
+  - 'lsp-server/**/*.rs'
+  - 'lsp-server/Cargo.toml'
+  - 'lsp-server/Cargo.lock'
+  - 'lsp-server/src/queries/**'
+ts:
+  - 'extension/src/**/*.ts'
+  - 'extension/package.json'
+  - 'extension/package-lock.json'
+  - 'extension/.eslintrc*'
+  - 'extension/eslint.config*'
+  - 'extension/.prettierrc*'
+ci:
+  - '.github/workflows/pr-quality-check.yml'
+  - '.github/filters.yml'
