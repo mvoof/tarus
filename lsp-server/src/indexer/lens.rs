@@ -31,60 +31,71 @@ impl ProjectIndex {
             let current_file_locations: Vec<&LocationInfo> =
                 all_locations.iter().filter(|l| l.path == path).collect();
 
-            let targets: Vec<LocationInfo> = all_locations
-                .iter()
-                .filter(|l| l.path != path)
-                .cloned()
-                .collect();
-
-            if targets.is_empty() {
-                continue;
-            }
-
             let is_current_rust = path.extension().and_then(|s| s.to_str()) == Some("rs");
             let limit = self.reference_limit.load(Ordering::Relaxed);
 
-            let mut rust_targets = Vec::new();
-            let mut frontend_targets = Vec::new();
-
-            for t in &targets {
-                if t.path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                    rust_targets.push(t.clone());
-                } else {
-                    frontend_targets.push(t.clone());
-                }
-            }
-
             for my_loc in current_file_locations {
-                if is_current_rust {
-                    push_file_lenses(
-                        &mut result,
-                        my_loc.range,
-                        frontend_targets.clone(),
-                        limit,
-                        "references",
-                    );
-                } else {
-                    push_file_lenses(
-                        &mut result,
-                        my_loc.range,
-                        rust_targets.clone(),
-                        limit,
-                        "rust refs",
-                    );
-                    push_file_lenses(
-                        &mut result,
-                        my_loc.range,
-                        frontend_targets.clone(),
-                        limit,
-                        "references",
-                    );
+                // Only the lens's own location is excluded, never its whole file:
+                // the other side of an event is just as hard to find a hundred lines
+                // down as it is in a neighbouring file.
+                let mut rust_targets = Vec::new();
+                let mut frontend_targets = Vec::new();
+                let mut same_file_targets = Vec::new();
+
+                for target in all_locations.iter() {
+                    if target.path == path {
+                        if target.range != my_loc.range {
+                            same_file_targets.push(target.clone());
+                        }
+                    } else if target.path.extension().and_then(|s| s.to_str()) == Some("rs") {
+                        rust_targets.push(target.clone());
+                    } else {
+                        frontend_targets.push(target.clone());
+                    }
                 }
+
+                if !is_current_rust {
+                    push_file_lenses(&mut result, my_loc.range, rust_targets, limit, "rust refs");
+                }
+
+                push_file_lenses(
+                    &mut result,
+                    my_loc.range,
+                    frontend_targets,
+                    limit,
+                    "references",
+                );
+                push_same_file_lens(&mut result, my_loc.range, same_file_targets);
             }
         }
 
         result
     }
+}
+
+/// Lens for references living in the file being viewed.
+///
+/// Naming the file would be tautological here, so a single target shows the line
+/// to jump to and several are summarised by count.
+fn push_same_file_lens(
+    result: &mut Vec<(Range, String, Vec<LocationInfo>)>,
+    range: Range,
+    mut targets: Vec<LocationInfo>,
+) {
+    if targets.is_empty() {
+        return;
+    }
+
+    targets.sort_by_key(|t| (t.range.start.line, t.range.start.character));
+
+    let title = if targets.len() == 1 {
+        // Editors count lines from one.
+        format!("Go to line {}", targets[0].range.start.line + 1)
+    } else {
+        format!("{} in this file", targets.len())
+    };
+
+    result.push((range, title, targets));
 }
 
 fn push_file_lenses(

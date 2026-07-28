@@ -100,7 +100,7 @@ $0
 
 #[test]
 fn code_lens_no_cross_file_targets() {
-    // Only Rust file, no frontend files → no lenses (targets must be in other files)
+    // A lone definition has nothing to point at: its own location is never a target.
     helpers::check_code_lens(
         r#"
 //- /backend.rs
@@ -133,5 +133,153 @@ import { listen } from "@tauri-apps/api/event";
 listen<string>("units-changed", (e) => console.log(e.payload));
 "#,
         expect![[r#"7:18 "Go to overlay.ts""#]],
+    );
+}
+
+#[test]
+fn code_lens_same_file_emit_and_listen() {
+    // Both sides live in one file. The lens names the line rather than the file,
+    // which would be tautological, and neither side points at itself.
+    helpers::check_code_lens(
+        r#"
+//- /events.ts
+import { emit, listen } from "@tauri-apps/api/event";
+
+emit("units-changed");
+
+listen("units-changed", () => {});
+$0
+"#,
+        expect![[r#"
+            2:6 "Go to line 5"
+            4:8 "Go to line 3""#]],
+    );
+}
+
+#[test]
+fn code_lens_same_file_multiple_references_summarised() {
+    helpers::check_code_lens(
+        r#"
+//- /events.ts
+import { emit, listen } from "@tauri-apps/api/event";
+
+emit("units-changed");
+emit("units-changed");
+
+listen("units-changed", () => {});
+$0
+"#,
+        expect![[r#"
+            2:6 "2 in this file"
+            3:6 "2 in this file"
+            5:8 "2 in this file""#]],
+    );
+}
+
+#[test]
+fn code_lens_same_file_lens_is_separate_from_cross_file() {
+    // A cross-file target and a same-file one produce two distinct lenses.
+    helpers::check_code_lens(
+        r#"
+//- /events.ts
+import { emit, listen } from "@tauri-apps/api/event";
+
+emit("units-changed");
+
+listen("units-changed", () => {});
+$0
+//- /overlay.ts
+import { listen } from "@tauri-apps/api/event";
+listen("units-changed", () => {});
+"#,
+        expect![[r#"
+            2:6 "Go to line 5"
+            2:6 "Go to overlay.ts"
+            4:8 "Go to line 3"
+            4:8 "Go to overlay.ts""#]],
+    );
+}
+
+#[test]
+fn code_lens_same_file_setup_function_and_emitters() {
+    // Shape of a real sync module: listeners registered in a setup function near
+    // the top, emitters exported from the bottom of the same file.
+    helpers::check_code_lens(
+        r#"
+//- /events.ts
+import { emit, listen } from "@tauri-apps/api/event";
+
+export const setupListeners = async () => {
+  await listen<boolean>("interact-mode-changed", (e) => console.log(e.payload));
+  await listen<number>("steering-lock-changed", (e) => console.log(e.payload));
+};
+
+export const emitInteractMode = (active: boolean) =>
+  emit("interact-mode-changed", active);
+
+export const resetInteractMode = () => emit("interact-mode-changed", false);
+
+export const emitSteeringLock = (degrees: number) =>
+  emit("steering-lock-changed", degrees);
+$0
+"#,
+        expect![[r#"
+            10:45 "2 in this file"
+            13:8 "Go to line 5"
+            3:25 "2 in this file"
+            4:24 "Go to line 14"
+            8:8 "2 in this file""#]],
+    );
+}
+
+#[test]
+fn code_lens_frontend_summarises_past_reference_limit() {
+    // Four listener files exceed the default limit of three, so the individual
+    // "Go to <file>" links collapse into one summary.
+    helpers::check_code_lens(
+        r#"
+//- /emitter.ts
+import { emit } from "@tauri-apps/api/event";
+emit("units-changed");
+$0
+//- /a.ts
+import { listen } from "@tauri-apps/api/event";
+listen("units-changed", () => {});
+
+//- /b.ts
+import { listen } from "@tauri-apps/api/event";
+listen("units-changed", () => {});
+
+//- /c.ts
+import { listen } from "@tauri-apps/api/event";
+listen("units-changed", () => {});
+
+//- /d.ts
+import { listen } from "@tauri-apps/api/event";
+listen("units-changed", () => {});
+"#,
+        expect![[r#"1:6 "4 references""#]],
+    );
+}
+
+#[test]
+fn code_lens_frontend_lists_files_within_reference_limit() {
+    helpers::check_code_lens(
+        r#"
+//- /emitter.ts
+import { emit } from "@tauri-apps/api/event";
+emit("units-changed");
+$0
+//- /a.ts
+import { listen } from "@tauri-apps/api/event";
+listen("units-changed", () => {});
+
+//- /b.ts
+import { listen } from "@tauri-apps/api/event";
+listen("units-changed", () => {});
+"#,
+        expect![[r#"
+            1:6 "Go to a.ts"
+            1:6 "Go to b.ts""#]],
     );
 }
