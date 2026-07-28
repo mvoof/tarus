@@ -64,6 +64,28 @@ emit("$0my-event");
 }
 
 #[test]
+fn diag_no_false_positive_when_file_has_syntax_errors() {
+    // A file broken mid-edit (here: an unterminated string in the listener) parses
+    // into a tree with ERROR nodes. Indexing it would drop the half-typed `listen`
+    // while still capturing the valid `emit` below, yielding a spurious
+    // "emitted but no listeners" warning. The parser must reject such trees so the
+    // pipeline keeps the last valid index and suppresses diagnostics for the file.
+    helpers::check_diagnostics(
+        r#"
+//- /events.ts
+import { emit, listen } from "@tauri-apps/api/event";
+const setup = async () => {
+  await listen("my-event, (e) => {});
+};
+const emitIt = () => {
+  emit("$0my-event");
+};
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
 fn diag_event_listened_but_no_emitters() {
     helpers::check_diagnostics(
         r#"

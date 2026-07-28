@@ -126,6 +126,19 @@ pub fn parse_frontend(
         .parse(content, None)
         .ok_or_else(|| ParseError::SyntaxError(format!("Failed to parse {lang:?} file")))?;
 
+    // tree-sitter is error-tolerant: a file that is broken mid-edit still parses
+    // into a tree with ERROR/MISSING nodes rather than returning None. Indexing
+    // such a tree yields partial findings — e.g. a half-typed `listen<...>()` lands
+    // in an ERROR node and is dropped while a valid `emit()` for the same event is
+    // still captured, producing a spurious "emitted but no listeners" diagnostic.
+    // Treat any syntax error as a parse failure so the pipeline keeps the file's
+    // last valid index (and suppresses diagnostics) until it parses cleanly again.
+    if tree.root_node().has_error() {
+        return Err(ParseError::SyntaxError(format!(
+            "{lang:?} file has syntax errors; keeping last valid index"
+        )));
+    }
+
     let query_src = get_query_source(lang);
     let query = Query::new(&ts_lang, query_src)
         .map_err(|e| ParseError::QueryError(format!("Failed to create {lang:?} query: {e}")))?;
