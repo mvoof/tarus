@@ -4,8 +4,8 @@ mod common_paths;
 
 use common_paths::test_path;
 use lsp_server::indexer::{
-    CommandSchema, EventSchema, FileIndex, Finding, GeneratorKind, IndexKey, ParamSchema,
-    ProjectIndex,
+    CommandSchema, DynamicUsages, EventSchema, FileIndex, Finding, GeneratorKind, IndexKey,
+    ParamSchema, ProjectIndex,
 };
 use lsp_server::syntax::{Behavior, EntityType};
 use tower_lsp_server::lsp_types::{Position, Range};
@@ -46,6 +46,7 @@ fn test_add_file_to_index() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        dynamic_usages: DynamicUsages::default(),
     };
 
     index.add_file(file_index);
@@ -67,6 +68,7 @@ fn test_remove_file_from_index() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        dynamic_usages: DynamicUsages::default(),
     };
 
     index.add_file(file_index);
@@ -97,6 +99,7 @@ fn test_get_locations() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        dynamic_usages: DynamicUsages::default(),
     };
 
     // Add frontend command call
@@ -107,6 +110,7 @@ fn test_get_locations() {
             EntityType::Command,
             Behavior::Call,
         )],
+        dynamic_usages: DynamicUsages::default(),
     };
 
     index.add_file(backend_file);
@@ -152,6 +156,7 @@ fn test_get_key_at_position() {
     let file_index = FileIndex {
         path: path.clone(),
         findings: vec![finding],
+        dynamic_usages: DynamicUsages::default(),
     };
 
     index.add_file(file_index);
@@ -183,6 +188,7 @@ fn test_get_diagnostic_info() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        dynamic_usages: DynamicUsages::default(),
     };
 
     // Add a command call
@@ -193,6 +199,7 @@ fn test_get_diagnostic_info() {
             EntityType::Command,
             Behavior::Call,
         )],
+        dynamic_usages: DynamicUsages::default(),
     };
 
     index.add_file(backend_file);
@@ -220,6 +227,7 @@ fn test_multiple_files_same_command() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        dynamic_usages: DynamicUsages::default(),
     });
 
     // Add multiple calls from different files
@@ -230,6 +238,7 @@ fn test_multiple_files_same_command() {
             EntityType::Command,
             Behavior::Call,
         )],
+        dynamic_usages: DynamicUsages::default(),
     });
 
     index.add_file(FileIndex {
@@ -239,6 +248,7 @@ fn test_multiple_files_same_command() {
             EntityType::Command,
             Behavior::Call,
         )],
+        dynamic_usages: DynamicUsages::default(),
     });
 
     let locations = index.get_locations(EntityType::Command, "get_user");
@@ -308,6 +318,7 @@ fn test_schema_survives_file_map_remove() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        dynamic_usages: DynamicUsages::default(),
     });
 
     // Add a schema from bindings
@@ -373,6 +384,7 @@ fn test_stale_rust_command_schema_cleared_on_reparse() {
             EntityType::Command,
             Behavior::Definition,
         )],
+        dynamic_usages: DynamicUsages::default(),
     };
     index.add_file(file_index);
     index.add_schema(CommandSchema {
@@ -390,6 +402,7 @@ fn test_stale_rust_command_schema_cleared_on_reparse() {
     let file_index = FileIndex {
         path: path.clone(),
         findings: vec![],
+        dynamic_usages: DynamicUsages::default(),
     };
     index.add_file(file_index);
 
@@ -412,6 +425,7 @@ fn test_stale_rust_event_schema_cleared_on_reparse() {
             EntityType::Event,
             Behavior::Emit,
         )],
+        dynamic_usages: DynamicUsages::default(),
     };
     index.add_file(file_index);
     index.add_event_schema(EventSchema {
@@ -428,6 +442,7 @@ fn test_stale_rust_event_schema_cleared_on_reparse() {
     let file_index = FileIndex {
         path: path.clone(),
         findings: vec![],
+        dynamic_usages: DynamicUsages::default(),
     };
     index.add_file(file_index);
 

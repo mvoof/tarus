@@ -8,7 +8,9 @@
 //!    tauri-typegen) has been indexed. Uses `CommandSchema` sourced from those generators;
 //!    `GeneratorKind::RustSource` schemas are intentionally excluded from type checking.
 
-use crate::indexer::{DiagnosticInfo, GeneratorKind, IndexKey, LocationInfo, ProjectIndex};
+use crate::indexer::{
+    DiagnosticInfo, DynamicUsages, GeneratorKind, IndexKey, LocationInfo, ProjectIndex,
+};
 use crate::syntax::Behavior;
 use serde_json::json;
 use std::path::PathBuf;
@@ -100,6 +102,7 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
     };
 
     let has_bindings = project_index.has_bindings_files();
+    let dynamic = project_index.dynamic_usages();
     let mut diagnostics = Vec::new();
 
     for key in &keys {
@@ -123,6 +126,7 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
                 &info,
                 first_call,
                 first_emit,
+                dynamic,
                 &mut diagnostics,
             );
 
@@ -141,18 +145,24 @@ fn compute_structural_diagnostics(
     info: &DiagnosticInfo,
     first_call: Option<tower_lsp_server::lsp_types::Range>,
     first_emit: Option<tower_lsp_server::lsp_types::Range>,
+    dynamic: DynamicUsages,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let msg = match loc.behavior {
         Behavior::Definition => {
             let (entity_label, usage_label, is_unused) = match key.entity {
-                crate::syntax::EntityType::Command => {
-                    ("Command", "invoked in frontend", !info.has_calls())
-                }
+                crate::syntax::EntityType::Command => (
+                    "Command",
+                    "invoked in frontend",
+                    !info.has_calls() && !dynamic.invokes,
+                ),
                 crate::syntax::EntityType::Event => (
                     "Event",
                     "emitted or listened for",
-                    !info.has_emitters() && !info.has_listeners(),
+                    !info.has_emitters()
+                        && !info.has_listeners()
+                        && !dynamic.emitters
+                        && !dynamic.listeners,
                 ),
             };
             if is_unused {
@@ -177,11 +187,11 @@ fn compute_structural_diagnostics(
                 None
             }
         }
-        Behavior::Listen if !info.has_emitters() => Some((
+        Behavior::Listen if !info.has_emitters() && !dynamic.emitters => Some((
             DiagnosticSeverity::WARNING,
             format!("Event '{}' is listened for but never emitted", key.name),
         )),
-        Behavior::Emit if !info.has_listeners() => {
+        Behavior::Emit if !info.has_listeners() && !dynamic.listeners => {
             if first_emit == Some(loc.range) {
                 Some((
                     DiagnosticSeverity::WARNING,

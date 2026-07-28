@@ -1,6 +1,6 @@
 //! TypeScript/JavaScript/Vue/Svelte/Angular parsing for Tauri invoke/emit/listen calls
 
-use crate::indexer::Finding;
+use crate::indexer::{DynamicUsages, Finding};
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use crate::utils::{find_capture, point_to_position};
 use std::collections::HashMap;
@@ -62,6 +62,62 @@ static ALL_FRONTEND_PATTERNS: LazyLock<Vec<FunctionPatternWithPos>> = LazyLock::
     ]
 });
 
+/// Result of parsing one frontend file.
+pub struct FrontendParse {
+    pub findings: Vec<Finding>,
+    pub dynamic_usages: DynamicUsages,
+}
+
+/// Everything needed to turn a command/event name argument into a literal.
+struct Scope<'a> {
+    /// String constants declared in the file being parsed.
+    local_constants: HashMap<String, String>,
+    /// String constants declared anywhere else in the workspace.
+    global_constants: &'a HashMap<String, String>,
+    /// Identifiers the file binds itself; they shadow `global_constants`.
+    bound_names: std::collections::HashSet<String>,
+}
+
+impl Scope<'_> {
+    /// Resolve an identifier or member expression to the string it stands for.
+    ///
+    /// Returns `None` when the name cannot be proven — either it is bound locally
+    /// to something that is not a string literal, or no constant declares it. A
+    /// workspace-wide constant is never applied to a locally bound name: doing so
+    /// invents a name out of an unrelated file and reports diagnostics against it.
+    fn resolve(&self, raw: &str) -> Option<String> {
+        let base = raw.split('.').next().unwrap_or(raw);
+        let last = raw.split('.').next_back().unwrap_or(raw);
+
+        if let Some(value) = self
+            .local_constants
+            .get(raw)
+            .or_else(|| self.local_constants.get(last))
+        {
+            return Some(value.clone());
+        }
+
+        if self.bound_names.contains(base) {
+            return None;
+        }
+
+        self.global_constants
+            .get(raw)
+            .or_else(|| self.global_constants.get(last))
+            .cloned()
+    }
+}
+
+/// What a query match yielded for one of the call patterns.
+enum PatternOutcome {
+    /// The match is a Tauri call with a known command/event name.
+    Found(Finding),
+    /// The match is a Tauri call whose name could not be resolved to a literal.
+    Dynamic(Behavior),
+    /// The match is not a Tauri call at all.
+    NoMatch,
+}
+
 /// Capture indices extracted from the query, grouped for readability
 struct FrontendCaptures {
     func_name: Option<u32>,
@@ -110,7 +166,7 @@ pub fn parse_frontend(
     lang: LangType,
     line_offset: usize,
     global_constants: &HashMap<String, String>,
-) -> ParseResult<Vec<Finding>> {
+) -> ParseResult<FrontendParse> {
     let ts_lang: Language = match lang {
         LangType::JavaScript | LangType::JavaScriptJsx => tree_sitter_javascript::LANGUAGE.into(),
         LangType::TypeScriptJsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
@@ -150,28 +206,31 @@ pub fn parse_frontend(
     // First pass: collect import aliases
     let aliases = collect_aliases(&query, root, bytes, &caps);
 
-    // Extract constants from this file and merge global constants as fallback
+    // Local constants win over workspace-wide ones, and locally bound identifiers
+    // (parameters, destructured variables) win over both — see `Scope`.
     let is_js = matches!(lang, LangType::JavaScript | LangType::JavaScriptJsx);
-    let mut constants = crate::utils::extract_js_constants(root, content, is_js);
-    for (k, v) in global_constants {
-        constants.entry(k.clone()).or_insert_with(|| v.clone());
-    }
+    let scope = Scope {
+        local_constants: crate::utils::extract_js_constants(root, content, is_js),
+        global_constants,
+        bound_names: crate::utils::collect_bound_names(root, content),
+    };
 
     // Second pass: collect function calls
     let mut findings = Vec::new();
+    let mut dynamic_usages = DynamicUsages::default();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, bytes);
 
     while let Some(m) = matches.next() {
-        if let Some(f) =
-            process_first_arg_pattern(m, &caps, bytes, &aliases, &constants, content, line_offset)
-        {
-            findings.push(f);
+        match process_first_arg_pattern(m, &caps, bytes, &aliases, &scope, content, line_offset) {
+            PatternOutcome::Found(f) => findings.push(f),
+            PatternOutcome::Dynamic(behavior) => dynamic_usages.record(behavior),
+            PatternOutcome::NoMatch => {}
         }
-        if let Some(f) =
-            process_second_arg_pattern(m, &caps, bytes, &aliases, &constants, line_offset)
-        {
-            findings.push(f);
+        match process_second_arg_pattern(m, &caps, bytes, &aliases, &scope, line_offset) {
+            PatternOutcome::Found(f) => findings.push(f),
+            PatternOutcome::Dynamic(behavior) => dynamic_usages.record(behavior),
+            PatternOutcome::NoMatch => {}
         }
         if let Some(f) = process_specta_call(m, &caps, bytes, content, line_offset) {
             findings.push(f);
@@ -181,7 +240,10 @@ pub fn parse_frontend(
         }
     }
 
-    Ok(findings)
+    Ok(FrontendParse {
+        findings,
+        dynamic_usages,
+    })
 }
 
 fn collect_aliases<'a>(
@@ -221,87 +283,103 @@ fn collect_aliases<'a>(
     aliases
 }
 
+/// Read the string a name argument denotes, plus the range to attach findings to.
+///
+/// Outcome of reading the name argument of a Tauri call.
+enum ArgResolution {
+    /// A name was recovered, together with the range to anchor findings to.
+    Resolved(String, Range),
+    /// The argument is a literal but names nothing — `emit("")`. There is no
+    /// entity to index and, crucially, nothing unknown either: an empty literal
+    /// must not weaken the diagnostics the way a genuinely dynamic name does.
+    EmptyLiteral,
+    /// The argument is not a literal and cannot be traced to one.
+    Unresolved,
+}
+
+fn resolve_name_argument(
+    arg: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    scope: &Scope<'_>,
+) -> ArgResolution {
+    let raw = arg.utf8_text(bytes).unwrap_or_default();
+
+    let range = Range {
+        start: point_to_position(arg.start_position()),
+        end: point_to_position(arg.end_position()),
+    };
+
+    if arg.kind() != "string" {
+        return scope
+            .resolve(raw)
+            .map_or(ArgResolution::Unresolved, |name| {
+                ArgResolution::Resolved(name, range)
+            });
+    }
+
+    if let Some(fragment) = arg.named_child(0) {
+        return ArgResolution::Resolved(
+            fragment.utf8_text(bytes).unwrap_or_default().to_string(),
+            Range {
+                start: point_to_position(fragment.start_position()),
+                end: point_to_position(fragment.end_position()),
+            },
+        );
+    }
+
+    // An empty literal has no fragment child, so strip the quotes to confirm it.
+    let unquoted = raw
+        .strip_prefix(['"', '\'', '`'])
+        .and_then(|s| s.strip_suffix(['"', '\'', '`']))
+        .unwrap_or(raw);
+
+    if unquoted.is_empty() {
+        return ArgResolution::EmptyLiteral;
+    }
+
+    ArgResolution::Resolved(unquoted.to_string(), range)
+}
+
 fn process_first_arg_pattern<'a>(
     m: &tree_sitter::QueryMatch<'_, '_>,
     caps: &FrontendCaptures,
     bytes: &'a [u8],
     aliases: &HashMap<&'a str, &'a str>,
-    constants: &HashMap<String, String>,
+    scope: &Scope<'_>,
     content: &str,
     line_offset: usize,
-) -> Option<Finding> {
-    let func_cap = find_capture(m, caps.func_name)?;
-    let arg_cap = find_capture(m, caps.arg_value)?;
+) -> PatternOutcome {
+    let (Some(func_cap), Some(arg_cap)) = (
+        find_capture(m, caps.func_name),
+        find_capture(m, caps.arg_value),
+    ) else {
+        return PatternOutcome::NoMatch;
+    };
 
     let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
-    let original_name = *aliases.get(func_name)?;
-
-    let pattern = ALL_FRONTEND_PATTERNS
-        .iter()
-        .find(|p| p.name == original_name && p.arg_position == ArgPosition::First)?;
-
-    if original_name == "invoke" && arg_cap.node.kind() != "string" {
-        return None;
-    }
-
-    let mut resolved_arg = arg_cap
-        .node
-        .utf8_text(bytes)
-        .unwrap_or_default()
-        .to_string();
-    if arg_cap.node.kind() == "string" {
-        if let Some(fragment) = arg_cap.node.named_child(0) {
-            resolved_arg = fragment.utf8_text(bytes).unwrap_or_default().to_string();
-        } else {
-            // fallback: strip first and last quotes
-            if (resolved_arg.starts_with('"') && resolved_arg.ends_with('"')
-                || resolved_arg.starts_with('\'') && resolved_arg.ends_with('\'')
-                || resolved_arg.starts_with('`') && resolved_arg.ends_with('`'))
-                && resolved_arg.len() >= 2
-            {
-                resolved_arg = resolved_arg[1..resolved_arg.len() - 1].to_string();
-            }
-        }
-    } else {
-        let mut resolved = false;
-        if let Some(resolved_val) = constants.get(&resolved_arg) {
-            resolved_arg.clone_from(resolved_val);
-            resolved = true;
-        } else {
-            let lookup_key = if resolved_arg.contains('.') {
-                resolved_arg
-                    .split('.')
-                    .next_back()
-                    .unwrap_or(resolved_arg.as_str())
-            } else {
-                resolved_arg.as_str()
-            };
-            if let Some(resolved_val) = constants.get(lookup_key) {
-                resolved_arg.clone_from(resolved_val);
-                resolved = true;
-            }
-        }
-        if !resolved {
-            resolved_arg.clear();
-        }
-    }
-
-    if resolved_arg.is_empty() {
-        return None;
-    }
-
-    let mut range = Range {
-        start: point_to_position(arg_cap.node.start_position()),
-        end: point_to_position(arg_cap.node.end_position()),
+    let Some(original_name) = aliases.get(func_name).copied() else {
+        return PatternOutcome::NoMatch;
     };
-    if arg_cap.node.kind() == "string" {
-        if let Some(fragment) = arg_cap.node.named_child(0) {
-            range = Range {
-                start: point_to_position(fragment.start_position()),
-                end: point_to_position(fragment.end_position()),
-            };
-        }
+
+    let Some(pattern) = ALL_FRONTEND_PATTERNS
+        .iter()
+        .find(|p| p.name == original_name && p.arg_position == ArgPosition::First)
+    else {
+        return PatternOutcome::NoMatch;
+    };
+
+    // `invoke` is deliberately literal-only: a command name assembled at runtime is
+    // still a call we cannot attribute, so it counts as dynamic rather than absent.
+    if original_name == "invoke" && arg_cap.node.kind() != "string" {
+        return PatternOutcome::Dynamic(pattern.behavior);
     }
+
+    let (resolved_arg, range) = match resolve_name_argument(arg_cap.node, bytes, scope) {
+        ArgResolution::Resolved(name, range) => (name, range),
+        ArgResolution::Unresolved => return PatternOutcome::Dynamic(pattern.behavior),
+        ArgResolution::EmptyLiteral => return PatternOutcome::NoMatch,
+    };
+
     let call_name_end = Some(adjust_position(
         point_to_position(func_cap.node.end_position()),
         line_offset,
@@ -311,7 +389,7 @@ fn process_first_arg_pattern<'a>(
     let return_type = type_arg_info.as_ref().map(|i| i.type_text.clone());
     let type_arg_range = type_arg_info.map(|i| adjust_range(i.type_arg_range, line_offset));
 
-    Some(Finding {
+    PatternOutcome::Found(Finding {
         return_type,
         call_name_end,
         type_arg_range,
@@ -329,79 +407,35 @@ fn process_second_arg_pattern<'a>(
     caps: &FrontendCaptures,
     bytes: &'a [u8],
     aliases: &HashMap<&'a str, &'a str>,
-    constants: &HashMap<String, String>,
+    scope: &Scope<'_>,
     line_offset: usize,
-) -> Option<Finding> {
-    let func_cap = find_capture(m, caps.func_name_second)?;
-    let arg_cap = find_capture(m, caps.arg_value_second)?;
+) -> PatternOutcome {
+    let (Some(func_cap), Some(arg_cap)) = (
+        find_capture(m, caps.func_name_second),
+        find_capture(m, caps.arg_value_second),
+    ) else {
+        return PatternOutcome::NoMatch;
+    };
 
     let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
-    let original_name = *aliases.get(func_name)?;
-
-    let pattern = ALL_FRONTEND_PATTERNS
-        .iter()
-        .find(|p| p.name == original_name && p.arg_position == ArgPosition::Second)?;
-
-    let mut resolved_arg = arg_cap
-        .node
-        .utf8_text(bytes)
-        .unwrap_or_default()
-        .to_string();
-    if arg_cap.node.kind() == "string" {
-        if let Some(fragment) = arg_cap.node.named_child(0) {
-            resolved_arg = fragment.utf8_text(bytes).unwrap_or_default().to_string();
-        } else {
-            // fallback: strip first and last quotes
-            if (resolved_arg.starts_with('"') && resolved_arg.ends_with('"')
-                || resolved_arg.starts_with('\'') && resolved_arg.ends_with('\'')
-                || resolved_arg.starts_with('`') && resolved_arg.ends_with('`'))
-                && resolved_arg.len() >= 2
-            {
-                resolved_arg = resolved_arg[1..resolved_arg.len() - 1].to_string();
-            }
-        }
-    } else {
-        let mut resolved = false;
-        if let Some(resolved_val) = constants.get(&resolved_arg) {
-            resolved_arg.clone_from(resolved_val);
-            resolved = true;
-        } else {
-            let lookup_key = if resolved_arg.contains('.') {
-                resolved_arg
-                    .split('.')
-                    .next_back()
-                    .unwrap_or(resolved_arg.as_str())
-            } else {
-                resolved_arg.as_str()
-            };
-            if let Some(resolved_val) = constants.get(lookup_key) {
-                resolved_arg.clone_from(resolved_val);
-                resolved = true;
-            }
-        }
-        if !resolved {
-            resolved_arg.clear();
-        }
-    }
-
-    if resolved_arg.is_empty() {
-        return None;
-    }
-
-    let mut range = Range {
-        start: point_to_position(arg_cap.node.start_position()),
-        end: point_to_position(arg_cap.node.end_position()),
+    let Some(original_name) = aliases.get(func_name).copied() else {
+        return PatternOutcome::NoMatch;
     };
-    if arg_cap.node.kind() == "string" {
-        if let Some(fragment) = arg_cap.node.named_child(0) {
-            range = Range {
-                start: point_to_position(fragment.start_position()),
-                end: point_to_position(fragment.end_position()),
-            };
-        }
-    }
 
-    Some(Finding::new(
+    let Some(pattern) = ALL_FRONTEND_PATTERNS
+        .iter()
+        .find(|p| p.name == original_name && p.arg_position == ArgPosition::Second)
+    else {
+        return PatternOutcome::NoMatch;
+    };
+
+    let (resolved_arg, range) = match resolve_name_argument(arg_cap.node, bytes, scope) {
+        ArgResolution::Resolved(name, range) => (name, range),
+        ArgResolution::Unresolved => return PatternOutcome::Dynamic(pattern.behavior),
+        ArgResolution::EmptyLiteral => return PatternOutcome::NoMatch,
+    };
+
+    PatternOutcome::Found(Finding::new(
         resolved_arg,
         pattern.entity,
         pattern.behavior,

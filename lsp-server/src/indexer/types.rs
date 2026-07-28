@@ -99,10 +99,49 @@ impl From<(&PathBuf, Finding)> for LocationInfo {
     }
 }
 
-#[derive(Debug)]
+/// Tauri call sites in a file whose command/event name could not be resolved to a
+/// string literal — e.g. `emit(eventName, payload)` where `eventName` is a parameter.
+///
+/// Such a call still uses *some* command or event, we just cannot tell which. Any
+/// diagnostic that reports an *absence* ("never emitted", "never invoked") assumes a
+/// closed world, so a single unresolved call site of the matching kind invalidates it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DynamicUsages {
+    pub invokes: bool,
+    pub emitters: bool,
+    pub listeners: bool,
+}
+
+impl DynamicUsages {
+    /// Record a dynamic usage for the given behavior. Definitions always carry a
+    /// literal name, so they can never be dynamic.
+    pub fn record(&mut self, behavior: Behavior) {
+        match behavior {
+            Behavior::Call | Behavior::SpectaCall => self.invokes = true,
+            Behavior::Emit => self.emitters = true,
+            Behavior::Listen => self.listeners = true,
+            Behavior::Definition => {}
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        !self.invokes && !self.emitters && !self.listeners
+    }
+
+    /// Fold another file's usages into this one.
+    pub fn merge(&mut self, other: Self) {
+        self.invokes |= other.invokes;
+        self.emitters |= other.emitters;
+        self.listeners |= other.listeners;
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct FileIndex {
     pub path: PathBuf,
     pub findings: Vec<Finding>,
+    pub dynamic_usages: DynamicUsages,
 }
 
 /// Search Key (Hashmap Key)

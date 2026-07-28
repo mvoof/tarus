@@ -58,6 +58,8 @@ pub struct ProjectIndex {
     // Reverse index for stale removal: file_path -> list of constant names
     pub(crate) rust_constants_paths: DashMap<PathBuf, Vec<String>>,
     pub(crate) js_constants_paths: DashMap<PathBuf, Vec<String>>,
+    // Files holding Tauri calls whose name could not be resolved to a literal
+    pub(crate) dynamic_usages: DashMap<PathBuf, DynamicUsages>,
 }
 
 impl Default for ProjectIndex {
@@ -81,6 +83,7 @@ impl Default for ProjectIndex {
             js_constants: DashMap::new(),
             rust_constants_paths: DashMap::new(),
             js_constants_paths: DashMap::new(),
+            dynamic_usages: DashMap::new(),
         }
     }
 }
@@ -130,6 +133,13 @@ impl ProjectIndex {
         let mut keys_in_this_file = std::collections::HashSet::new();
         let path_ref = file_index.path;
 
+        if file_index.dynamic_usages.is_empty() {
+            self.dynamic_usages.remove(&path_ref);
+        } else {
+            self.dynamic_usages
+                .insert(path_ref.clone(), file_index.dynamic_usages);
+        }
+
         for finding in file_index.findings {
             let key = IndexKey {
                 entity: finding.entity,
@@ -177,6 +187,19 @@ impl ProjectIndex {
         // so removing constants in `remove_file` would discard the freshly re-extracted
         // constants and break cross-file constant resolution.
         self.parse_errors.remove(path);
+        self.dynamic_usages.remove(path);
+    }
+
+    /// Unresolved Tauri call sites across the whole workspace, folded into one value.
+    #[must_use]
+    pub fn dynamic_usages(&self) -> DynamicUsages {
+        let mut merged = DynamicUsages::default();
+
+        for entry in &self.dynamic_usages {
+            merged.merge(*entry.value());
+        }
+
+        merged
     }
 
     /// Store a parse error for a file

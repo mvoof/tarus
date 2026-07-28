@@ -663,3 +663,160 @@ listen("$0weather", (e) => {});
         ]],
     );
 }
+
+// ===========================================================================
+// Dynamic (unresolved) names — see `indexer::DynamicUsages`
+// ===========================================================================
+
+#[test]
+fn diag_local_binding_does_not_resolve_to_foreign_constant() {
+    // `event` is a parameter, so it must not pick up the same-named object key
+    // declared in an unrelated file — that would index a "click" event nobody wrote.
+    helpers::check_diagnostics(
+        r#"
+//- /widget.ts
+const defaults = { event: "click" };
+
+//- /sync.ts
+import { emitTo } from "@tauri-apps/api/event";
+
+const emitToOverlays = async (event: string, payload: unknown) => {
+  await emitTo("overlay", ev$0ent, payload);
+};
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_dynamic_emit_suppresses_never_emitted() {
+    // The event name reaches `emitTo` through a wrapper parameter, so the emit
+    // cannot be attributed and "never emitted" can no longer be proven.
+    helpers::check_diagnostics(
+        r#"
+//- /sync.ts
+import { emitTo, listen } from "@tauri-apps/api/event";
+
+const emitToOverlays = async (event: string, payload: unknown) => {
+  await emitTo("overlay", event, payload);
+};
+
+listen("$0units-changed", () => {});
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_dynamic_listen_suppresses_no_listeners() {
+    helpers::check_diagnostics(
+        r#"
+//- /sync.ts
+import { emit, listen } from "@tauri-apps/api/event";
+
+const subscribe = (event: string) => listen(event, () => {});
+
+emit("$0units-changed");
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_dynamic_invoke_suppresses_unused_command() {
+    helpers::check_diagnostics(
+        r#"
+//- /backend.rs
+#[tauri::command]
+fn gre$0et() {}
+
+//- /frontend.ts
+import { invoke } from "@tauri-apps/api/core";
+
+const call = (name: string) => invoke(name);
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_dynamic_rust_emit_suppresses_never_emitted() {
+    helpers::check_diagnostics(
+        r#"
+//- /backend.rs
+fn broadcast(app: &AppHandle, name: &str) {
+    app.emit(name, ()).unwrap();
+}
+
+//- /frontend.ts
+import { listen } from "@tauri-apps/api/event";
+listen("$0units-changed", () => {});
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_static_emit_still_warns_alongside_unrelated_dynamic_invoke() {
+    // A dynamic *invoke* says nothing about listeners, so event diagnostics stay on.
+    helpers::check_diagnostics(
+        r#"
+//- /frontend.ts
+import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
+
+const call = (name: string) => invoke(name);
+
+emit("$0my-event");
+"#,
+        expect![[r#"WARNING 5:6..5:14 "Event 'my-event' is emitted but no listeners found""#]],
+    );
+}
+
+#[test]
+fn diag_empty_literal_is_not_a_dynamic_name() {
+    // `invoke("")` names nothing, but it is fully known — it must not suppress
+    // the unused-command warning the way an unresolvable name does.
+    helpers::check_diagnostics(
+        r#"
+//- /backend.rs
+#[tauri::command]
+fn gre$0et() {}
+
+//- /frontend.ts
+import { invoke } from "@tauri-apps/api/core";
+invoke("");
+"#,
+        expect![[r#"WARNING 1:3..1:8 "Command 'greet' is defined but never invoked in frontend""#]],
+    );
+}
+
+#[test]
+fn diag_empty_event_literal_is_not_a_dynamic_name() {
+    helpers::check_diagnostics(
+        r#"
+//- /frontend.ts
+import { emit, listen } from "@tauri-apps/api/event";
+listen("", () => {});
+emit("$0my-event");
+"#,
+        expect![[r#"WARNING 2:6..2:14 "Event 'my-event' is emitted but no listeners found""#]],
+    );
+}
+
+#[test]
+fn diag_empty_rust_event_literal_is_not_a_dynamic_name() {
+    helpers::check_diagnostics(
+        r#"
+//- /backend.rs
+fn noop(app: &AppHandle) {
+    app.emit("", ()).unwrap();
+}
+
+//- /frontend.ts
+import { listen } from "@tauri-apps/api/event";
+listen("$0units-changed", () => {});
+"#,
+        expect![[r#"WARNING 1:8..1:21 "Event 'units-changed' is listened for but never emitted""#]],
+    );
+}
