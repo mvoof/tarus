@@ -48,14 +48,15 @@ impl ProjectIndex {
                             same_file_targets.push(target.clone());
                         }
                     } else if target.path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                        rust_targets.push(target.clone());
+                        // A Rust file links only to its frontend counterparts;
+                        // Rust-to-Rust references are the language server's own
+                        // job, not ours.
+                        if !is_current_rust {
+                            rust_targets.push(target.clone());
+                        }
                     } else {
                         frontend_targets.push(target.clone());
                     }
-                }
-
-                if is_current_rust {
-                    rust_targets.clear();
                 }
 
                 // The limit caps how many links one lens row offers, so it is

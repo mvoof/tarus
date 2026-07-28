@@ -534,6 +534,21 @@ enum ArgResolution {
     Unresolved,
 }
 
+/// Whether the node spells a name out in full.
+///
+/// A template literal qualifies as long as nothing is interpolated: `` `greet` ``
+/// names a command every bit as plainly as `"greet"`, while `` `get_${kind}` ``
+/// is as dynamic as a bare identifier.
+fn is_literal_name_node(node: tree_sitter::Node<'_>) -> bool {
+    match node.kind() {
+        "string" => true,
+        "template_string" => !node
+            .named_children(&mut node.walk())
+            .any(|child| child.kind() == "template_substitution"),
+        _ => false,
+    }
+}
+
 fn resolve_name_argument(
     arg: tree_sitter::Node<'_>,
     bytes: &[u8],
@@ -546,7 +561,7 @@ fn resolve_name_argument(
         end: point_to_position(arg.end_position()),
     };
 
-    if arg.kind() != "string" {
+    if !is_literal_name_node(arg) {
         return scope
             .resolve(raw)
             .map_or(ArgResolution::Unresolved, |name| {
@@ -608,7 +623,7 @@ fn process_first_arg_pattern<'a>(
     // `invoke` is deliberately literal-only — a command name is never resolved
     // through the constant table. A forwarded parameter is different: the literal
     // does exist, at the helper's call sites, so it is still worth recovering.
-    if original_name == "invoke" && arg_cap.node.kind() != "string" {
+    if original_name == "invoke" && !is_literal_name_node(arg_cap.node) {
         let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
 
         return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)

@@ -145,6 +145,28 @@ async function fetchData() {
 }
 
 #[test]
+fn parse_ts_template_literal_names() {
+    helpers::check_parse(
+        r#"
+//- /app.ts
+import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
+
+async function run(suffix: string) {
+    await invoke(`get_user`, { id: 42 });
+    await emit(`ready`);
+    // Interpolated names are genuinely dynamic and must stay unresolved.
+    await invoke(`get_${suffix}`);
+}
+"#,
+        expect![[r#"
+            /app.ts:
+              Command Call "get_user" 4:18..4:26
+              Event Emit "ready" 5:16..5:21"#]],
+    );
+}
+
+#[test]
 fn parse_ts_no_tauri_import() {
     helpers::check_parse(
         r#"

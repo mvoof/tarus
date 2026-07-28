@@ -37,7 +37,7 @@
   !type_arguments
   arguments: (arguments
     .
-    (string) @arg_value)
+    [(string) (template_string)] @arg_value)
 ) @call_simple
 
 (call_expression
@@ -63,7 +63,7 @@
   !type_arguments
   arguments: (arguments
     .
-    (string) @arg_value)
+    [(string) (template_string)] @arg_value)
 ) @call_await_simple
 
 (call_expression
@@ -91,7 +91,7 @@
   arguments: (arguments
     (_)
     .
-    (string) @arg_value_second)
+    [(string) (template_string)] @arg_value_second)
 ) @call_second_arg
 
 (call_expression
@@ -120,7 +120,7 @@
   arguments: (arguments
     (_)
     .
-    (string) @arg_value_second)
+    [(string) (template_string)] @arg_value_second)
 ) @call_await_second_arg
 
 (call_expression
@@ -151,7 +151,7 @@
   type_arguments: (type_arguments)
   arguments: (arguments
     .
-    (string) @arg_value)
+    [(string) (template_string)] @arg_value)
 ) @call_generic
 
 (call_expression
@@ -177,7 +177,7 @@
   type_arguments: (type_arguments)
   arguments: (arguments
     .
-    (string) @arg_value)
+    [(string) (template_string)] @arg_value)
 ) @call_await_generic
 
 (call_expression
@@ -205,7 +205,7 @@
   arguments: (arguments
     (_)
     .
-    (string) @arg_value_second)
+    [(string) (template_string)] @arg_value_second)
 ) @call_generic_second_arg
 
 (call_expression
@@ -234,7 +234,7 @@
   arguments: (arguments
     (_)
     .
-    (string) @arg_value_second)
+    [(string) (template_string)] @arg_value_second)
 ) @call_await_generic_second_arg
 
 (call_expression
