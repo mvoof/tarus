@@ -157,7 +157,9 @@ $0
 }
 
 #[test]
-fn code_lens_same_file_multiple_references_summarised() {
+fn code_lens_same_file_summarises_past_reference_limit() {
+    // Four same-file references exceed the default limit of three, so the
+    // per-line links collapse exactly as the cross-file ones do.
     helpers::check_code_lens(
         r#"
 //- /events.ts
@@ -165,14 +167,18 @@ import { emit, listen } from "@tauri-apps/api/event";
 
 emit("units-changed");
 emit("units-changed");
+emit("units-changed");
+emit("units-changed");
 
 listen("units-changed", () => {});
 $0
 "#,
         expect![[r#"
-            2:6 "2 in this file"
-            3:6 "2 in this file"
-            5:8 "2 in this file""#]],
+            2:6 "4 in this file"
+            3:6 "4 in this file"
+            4:6 "4 in this file"
+            5:6 "4 in this file"
+            7:8 "4 in this file""#]],
     );
 }
 
@@ -224,11 +230,14 @@ export const emitSteeringLock = (degrees: number) =>
 $0
 "#,
         expect![[r#"
-            10:45 "2 in this file"
+            10:45 "Go to line 4"
+            10:45 "Go to line 9"
             13:8 "Go to line 5"
-            3:25 "2 in this file"
+            3:25 "Go to line 11"
+            3:25 "Go to line 9"
             4:24 "Go to line 14"
-            8:8 "2 in this file""#]],
+            8:8 "Go to line 11"
+            8:8 "Go to line 4""#]],
     );
 }
 
@@ -281,5 +290,38 @@ listen("units-changed", () => {});
         expect![[r#"
             1:6 "Go to a.ts"
             1:6 "Go to b.ts""#]],
+    );
+}
+
+#[test]
+fn code_lens_limit_counts_links_across_categories() {
+    // One Rust definition plus three frontend call sites is four links on a single
+    // line. The limit is about how many links a lens shows, so it must count them
+    // all, not restart per category.
+    helpers::check_code_lens(
+        r#"
+//- /backend.rs
+#[tauri::command]
+fn greet() {}
+
+//- /caller.ts
+import { invoke } from "@tauri-apps/api/core";
+invoke("greet");
+$0
+//- /a.ts
+import { invoke } from "@tauri-apps/api/core";
+invoke("greet");
+
+//- /b.ts
+import { invoke } from "@tauri-apps/api/core";
+invoke("greet");
+
+//- /c.ts
+import { invoke } from "@tauri-apps/api/core";
+invoke("greet");
+"#,
+        expect![[r#"
+            1:8 "1 rust ref"
+            1:8 "3 references""#]],
     );
 }

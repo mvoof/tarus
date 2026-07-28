@@ -54,18 +54,34 @@ impl ProjectIndex {
                     }
                 }
 
-                if !is_current_rust {
-                    push_file_lenses(&mut result, my_loc.range, rust_targets, limit, "rust refs");
+                if is_current_rust {
+                    rust_targets.clear();
                 }
+
+                // The limit caps how many links one lens row offers, so it is
+                // measured across every category at once. Counting each category
+                // on its own let a line show `limit` Rust links *and* `limit`
+                // frontend ones, which is what the setting exists to prevent.
+                let link_count = distinct_files(&rust_targets)
+                    + distinct_files(&frontend_targets)
+                    + same_file_targets.len();
+                let summarise = link_count > limit;
 
                 push_file_lenses(
                     &mut result,
                     my_loc.range,
-                    frontend_targets,
-                    limit,
-                    "references",
+                    rust_targets,
+                    summarise,
+                    "rust ref",
                 );
-                push_same_file_lens(&mut result, my_loc.range, same_file_targets);
+                push_file_lenses(
+                    &mut result,
+                    my_loc.range,
+                    frontend_targets,
+                    summarise,
+                    "reference",
+                );
+                push_same_file_lens(&mut result, my_loc.range, same_file_targets, summarise);
             }
         }
 
@@ -73,14 +89,34 @@ impl ProjectIndex {
     }
 }
 
+/// Number of distinct files a set of locations points at — one link is offered
+/// per file, not per location.
+fn distinct_files(targets: &[LocationInfo]) -> usize {
+    targets
+        .iter()
+        .map(|t| &t.path)
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+}
+
+/// Pluralise a summary label against the count it is shown with.
+fn summary_title(count: usize, label: &str) -> String {
+    if count == 1 {
+        format!("{count} {label}")
+    } else {
+        format!("{count} {label}s")
+    }
+}
+
 /// Lens for references living in the file being viewed.
 ///
-/// Naming the file would be tautological here, so a single target shows the line
-/// to jump to and several are summarised by count.
+/// Naming the file would be tautological here, so each target is offered by line
+/// number instead.
 fn push_same_file_lens(
     result: &mut Vec<(Range, String, Vec<LocationInfo>)>,
     range: Range,
     mut targets: Vec<LocationInfo>,
+    summarise: bool,
 ) {
     if targets.is_empty() {
         return;
@@ -88,21 +124,25 @@ fn push_same_file_lens(
 
     targets.sort_by_key(|t| (t.range.start.line, t.range.start.character));
 
-    let title = if targets.len() == 1 {
-        // Editors count lines from one.
-        format!("Go to line {}", targets[0].range.start.line + 1)
-    } else {
-        format!("{} in this file", targets.len())
-    };
+    if summarise {
+        result.push((range, format!("{} in this file", targets.len()), targets));
 
-    result.push((range, title, targets));
+        return;
+    }
+
+    for target in targets {
+        // Editors count lines from one.
+        let title = format!("Go to line {}", target.range.start.line + 1);
+
+        result.push((range, title, vec![target]));
+    }
 }
 
 fn push_file_lenses(
     result: &mut Vec<(Range, String, Vec<LocationInfo>)>,
     range: Range,
     targets: Vec<LocationInfo>,
-    limit: usize,
+    summarise: bool,
     summary_label: &str,
 ) {
     if targets.is_empty() {
@@ -114,24 +154,24 @@ fn push_file_lenses(
         files_map.entry(t.path.clone()).or_default().push(t.clone());
     }
 
-    if files_map.len() <= limit {
-        let mut sorted_files: Vec<_> = files_map.into_iter().collect();
-        sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+    if summarise {
+        let title = summary_title(files_map.len(), summary_label);
 
-        for (fpath, locs) in sorted_files {
-            let fname = fpath
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
+        result.push((range, title, targets));
 
-            result.push((range, format!("Go to {fname}"), locs));
-        }
-    } else {
-        result.push((
-            range,
-            format!("{} {}", targets.len(), summary_label),
-            targets,
-        ));
+        return;
+    }
+
+    let mut sorted_files: Vec<_> = files_map.into_iter().collect();
+    sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (fpath, locs) in sorted_files {
+        let fname = fpath
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        result.push((range, format!("Go to {fname}"), locs));
     }
 }
