@@ -70,8 +70,9 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
         let local_constants = crate::utils::extract_js_constants_from_content(content, is_js);
         project_index.add_js_constants(path.to_path_buf(), local_constants);
         let global_constants = project_index.get_all_js_constants();
+        let known_forwarders = project_index.get_all_forwarders();
 
-        match parser::parse(path, content, &global_constants) {
+        match parser::parse(path, content, &global_constants, &known_forwarders) {
             Ok(file_index) => {
                 project_index.add_file(file_index);
 
@@ -186,6 +187,19 @@ pub fn collect_constants_from_file(path: &Path, project_index: &ProjectIndex) {
         let is_js = path.extension().is_some_and(|e| e == "js" || e == "jsx");
         let constants = crate::utils::extract_js_constants_from_content(&content, is_js);
         project_index.add_js_constants(path.to_path_buf(), constants);
+
+        // Forwarding helpers are cross-file: a call site is only resolvable once the
+        // helper that owns it is known, so they must be collected before the main pass.
+        if let Some(lang) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(parser::LangType::from_extension)
+        {
+            if let Ok(forwarders) = parser::typescript::frontend::extract_forwarders(&content, lang)
+            {
+                project_index.add_forwarders(path.to_path_buf(), forwarders);
+            }
+        }
     }
 }
 

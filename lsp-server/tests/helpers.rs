@@ -179,8 +179,12 @@ pub fn parse_fixture(input: &str) -> FixtureData {
                 }
             }
         } else {
-            let parse_result =
-                tree_parser::parse(&path, &content, &std::collections::HashMap::new());
+            let parse_result = tree_parser::parse(
+                &path,
+                &content,
+                &std::collections::HashMap::new(),
+                &std::collections::HashMap::new(),
+            );
             match parse_result {
                 Ok(file_index) => {
                     index.add_file(file_index);
@@ -192,6 +196,26 @@ pub fn parse_fixture(input: &str) -> FixtureData {
         }
 
         contents.insert(path, content);
+    }
+
+    // Second pass: forwarding helpers are cross-file, so a call site can only be
+    // resolved once every file has contributed its declarations. Mirrors the
+    // pre-pass the real pipeline runs before indexing.
+    let known_forwarders = index.get_all_forwarders();
+
+    for (path, content) in &contents {
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            continue;
+        }
+
+        if let Ok(file_index) = tree_parser::parse(
+            path,
+            content,
+            &std::collections::HashMap::new(),
+            &known_forwarders,
+        ) {
+            index.add_file(file_index);
+        }
     }
 
     // Apply $SCHEMA directives
@@ -413,8 +437,12 @@ pub fn check_parse(fixture: &str, expect: Expect) {
 
     for file_path in &files {
         let content = &data.contents[file_path];
-        let parse_result =
-            tree_parser::parse(file_path, content, &std::collections::HashMap::new());
+        let parse_result = tree_parser::parse(
+            file_path,
+            content,
+            &std::collections::HashMap::new(),
+            &data.index.get_all_forwarders(),
+        );
 
         match parse_result {
             Ok(file_index) => {

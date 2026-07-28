@@ -169,6 +169,22 @@ pub fn collect_bound_names(root: tree_sitter::Node<'_>, content: &str) -> HashSe
     bound
 }
 
+/// Add every identifier a single parameter binds to `bound`, unwrapping type
+/// annotations, defaults and destructuring patterns.
+#[allow(clippy::implicit_hasher)] // reason: callers use the default hasher throughout
+pub fn collect_parameter_names(
+    param: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    bound: &mut HashSet<String>,
+) {
+    match param.kind() {
+        "required_parameter" | "optional_parameter" => {
+            collect_pattern_names(param.child_by_field_name("pattern"), bytes, bound);
+        }
+        _ => collect_pattern_names(Some(param), bytes, bound),
+    }
+}
+
 /// Add the identifiers introduced by a binding pattern (plain, object or array
 /// destructuring) to `bound`.
 fn collect_pattern_names(

@@ -384,8 +384,13 @@ fn parse_vue_single_script() {
     )
     .unwrap();
     let path = std::path::PathBuf::from("/test/component.vue");
-    let result =
-        lsp_server::tree_parser::parse(&path, &content, &std::collections::HashMap::new()).unwrap();
+    let result = lsp_server::tree_parser::parse(
+        &path,
+        &content,
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+    )
+    .unwrap();
 
     let mut out = String::new();
     let mut findings = result.findings;
@@ -426,8 +431,13 @@ fn parse_vue_multiple_scripts() {
     )
     .unwrap();
     let path = std::path::PathBuf::from("/test/multi.vue");
-    let result =
-        lsp_server::tree_parser::parse(&path, &content, &std::collections::HashMap::new()).unwrap();
+    let result = lsp_server::tree_parser::parse(
+        &path,
+        &content,
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+    )
+    .unwrap();
     assert!(
         !result.findings.is_empty(),
         "Expected findings in Vue multi-script"
@@ -445,8 +455,13 @@ fn parse_svelte_component() {
     )
     .unwrap();
     let path = std::path::PathBuf::from("/test/component.svelte");
-    let result =
-        lsp_server::tree_parser::parse(&path, &content, &std::collections::HashMap::new()).unwrap();
+    let result = lsp_server::tree_parser::parse(
+        &path,
+        &content,
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+    )
+    .unwrap();
     assert!(
         !result.findings.is_empty(),
         "Expected findings in Svelte component"
@@ -629,8 +644,13 @@ listen(SIM_DISCONNECTED, (event) => {});
         lsp_server::utils::extract_js_constants_from_content(constants_content, false);
 
     // Pass 2: parse the consumer file with global constants
-    let result = lsp_server::tree_parser::parse(&component_path, component_content, &js_constants)
-        .expect("parse should succeed");
+    let result = lsp_server::tree_parser::parse(
+        &component_path,
+        component_content,
+        &js_constants,
+        &std::collections::HashMap::new(),
+    )
+    .expect("parse should succeed");
 
     let mut findings = result.findings;
     findings.sort_by_key(|f| f.range.start.line);
@@ -854,5 +874,125 @@ export default Counter;
         expect![[r#"
             /Counter.tsx:
               Command Call "increment" 8:37..8:46"#]],
+    );
+}
+
+#[test]
+fn parse_ts_forwarded_event_indexed_at_call_site() {
+    // The `emitTo` inside the helper yields no finding of its own; the call site
+    // does, which is what makes goto-definition and CodeLens reach the other side.
+    helpers::check_parse(
+        r#"
+//- /sync.ts
+import { emitTo } from "@tauri-apps/api/event";
+
+const emitToOverlays = async (event: string, payload: unknown) => {
+  await emitTo("overlay", event, payload);
+};
+
+export const emitUnits = (value: string) => emitToOverlays("units-changed", value);
+export const emitDrag = (active: boolean) => emitToOverlays("drag-mode-changed", active);
+"#,
+        expect![[r#"
+            /sync.ts:
+              Event Emit "units-changed" 6:60..6:73
+              Event Emit "drag-mode-changed" 7:61..7:78"#]],
+    );
+}
+
+#[test]
+fn parse_ts_forwarded_event_across_files() {
+    helpers::check_parse(
+        r#"
+//- /emit-helpers.ts
+import { emit } from "@tauri-apps/api/event";
+
+export const broadcast = (event: string, payload: unknown) => emit(event, payload);
+
+//- /app.ts
+import { broadcast } from "./emit-helpers";
+
+broadcast("units-changed", "metric");
+"#,
+        expect![[r#"
+            /app.ts:
+              Event Emit "units-changed" 2:11..2:24"#]],
+    );
+}
+
+#[test]
+fn parse_ts_ambiguous_forwarder_name_is_not_resolved() {
+    // Two files declare `broadcast` with the name in a different argument slot.
+    // Without following imports there is no way to tell which one `app.ts` calls,
+    // so neither is applied rather than guessing and indexing the wrong event.
+    helpers::check_parse(
+        r#"
+//- /emit-first.ts
+import { emit } from "@tauri-apps/api/event";
+
+export const broadcast = (event: string, payload: unknown) => emit(event, payload);
+
+//- /emit-second.ts
+import { emitTo } from "@tauri-apps/api/event";
+
+export const broadcast = (target: string, event: string) => emitTo(target, event);
+
+//- /app.ts
+import { broadcast } from "./emit-first";
+
+broadcast("units-changed", "metric");
+"#,
+        expect![[r#""#]],
+    );
+}
+
+#[test]
+fn parse_ts_forwarded_command_indexed_at_call_site() {
+    helpers::check_parse(
+        r#"
+//- /api.ts
+import { invoke } from "@tauri-apps/api/core";
+
+const call = (name: string, args: unknown) => invoke(name, args);
+
+export const greetSomeone = (who: string) => call("greet", { name: who });
+"#,
+        expect![[r#"
+            /api.ts:
+              Command Call "greet" 4:51..4:56"#]],
+    );
+}
+
+#[test]
+fn parse_ts_fan_out_helper_resolves_every_call_site() {
+    // Shape taken from a real project: a private async helper loops over window
+    // labels and forwards its `event` parameter into `emitTo`.
+    helpers::check_parse(
+        r#"
+//- /events.ts
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
+
+const emitToOverlays = async (event: string, payload: unknown) => {
+  const labels = await listOverlayWindowLabels();
+
+  for (const label of labels) {
+    await emitTo(label, event, payload);
+  }
+};
+
+export const emitUnitsChanged = (system: string) =>
+  emitToOverlays("units-changed", system);
+
+export const emitSteeringLockChanged = (degrees: number) =>
+  emitToOverlays("steering-lock-changed", degrees);
+
+export const emitStandingsScroll = (delta: number) =>
+  emitToOverlays("standings-scroll", delta);
+"#,
+        expect![[r#"
+            /events.ts:
+              Event Emit "units-changed" 11:18..11:31
+              Event Emit "steering-lock-changed" 14:18..14:39
+              Event Emit "standings-scroll" 17:18..17:34"#]],
     );
 }

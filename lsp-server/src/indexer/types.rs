@@ -137,11 +137,32 @@ impl DynamicUsages {
     }
 }
 
+/// A helper that passes one of its own parameters straight into a Tauri call, e.g.
+///
+/// ```ts
+/// const emitToOverlays = async (event: string, payload: unknown) =>
+///   emitTo("overlay", event, payload);
+/// ```
+///
+/// The event name never appears at the `emitTo`; it appears at each call of the
+/// helper. Recording the forwarder lets those call sites be indexed as real emit
+/// sites, so navigation, `CodeLens` and references reach the other side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Forwarder {
+    /// Name the helper is called by.
+    pub function_name: String,
+    /// Which argument of the helper carries the command/event name.
+    pub param_index: usize,
+    pub entity: EntityType,
+    pub behavior: Behavior,
+}
+
 #[derive(Debug, Default)]
 pub struct FileIndex {
     pub path: PathBuf,
     pub findings: Vec<Finding>,
     pub dynamic_usages: DynamicUsages,
+    pub forwarders: Vec<Forwarder>,
 }
 
 /// Search Key (Hashmap Key)

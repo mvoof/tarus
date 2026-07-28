@@ -11,7 +11,7 @@ pub mod typescript;
 
 pub use lang_config::LangType;
 
-use crate::indexer::{CommandSchema, DynamicUsages, EventSchema, FileIndex};
+use crate::indexer::{CommandSchema, DynamicUsages, EventSchema, FileIndex, Forwarder};
 use crate::syntax::{ParseError, ParseResult};
 use lang_config::is_angular_file;
 use rust::commands::extract_rust_findings;
@@ -32,6 +32,7 @@ pub fn parse(
     path: &Path,
     content: &str,
     global_constants: &HashMap<String, String>,
+    known_forwarders: &HashMap<String, Forwarder>,
 ) -> ParseResult<FileIndex> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
@@ -44,6 +45,7 @@ pub fn parse(
     };
 
     let mut dynamic_usages = DynamicUsages::default();
+    let mut forwarders = Vec::new();
 
     let findings = match lang {
         Some(LangType::Rust) => {
@@ -68,8 +70,9 @@ pub fn parse(
             | LangType::JavaScriptJsx
             | LangType::Angular),
         ) => {
-            let parsed = parse_frontend(content, lang_val, 0, global_constants)?;
+            let parsed = parse_frontend(content, lang_val, 0, global_constants, known_forwarders)?;
             dynamic_usages.merge(parsed.dynamic_usages);
+            forwarders.extend(parsed.forwarders);
 
             parsed.findings
         }
@@ -83,8 +86,10 @@ pub fn parse(
                     LangType::TypeScript,
                     line_offset,
                     global_constants,
+                    known_forwarders,
                 )?;
                 dynamic_usages.merge(parsed.dynamic_usages);
+                forwarders.extend(parsed.forwarders);
                 all_findings.extend(parsed.findings);
             }
 
@@ -97,6 +102,7 @@ pub fn parse(
         path: path.to_path_buf(),
         findings,
         dynamic_usages,
+        forwarders,
     })
 }
 
@@ -139,6 +145,7 @@ pub fn parse_rust_full(
             path: path.to_path_buf(),
             findings: parsed.findings,
             dynamic_usages: parsed.dynamic_usages,
+            forwarders: Vec::new(),
         },
         command_schemas,
         event_schemas,

@@ -108,3 +108,9 @@
     property: (property_identifier) @specta_event_method)
   (#eq? @_specta_events_obj "events")
 ) @specta_event_call
+
+; === PLAIN CALLS (candidate forwarding helpers) ===
+(call_expression
+  function: (identifier) @plain_fn
+  arguments: (arguments) @plain_args
+)

@@ -689,9 +689,9 @@ const emitToOverlays = async (event: string, payload: unknown) => {
 }
 
 #[test]
-fn diag_dynamic_emit_suppresses_never_emitted() {
-    // The event name reaches `emitTo` through a wrapper parameter, so the emit
-    // cannot be attributed and "never emitted" can no longer be proven.
+fn diag_forwarded_emit_reaches_the_listener() {
+    // The literal lives at the helper call site; resolving the forwarder links it
+    // to the listener, so there is nothing to report and navigation works.
     helpers::check_diagnostics(
         r#"
 //- /sync.ts
@@ -701,7 +701,47 @@ const emitToOverlays = async (event: string, payload: unknown) => {
   await emitTo("overlay", event, payload);
 };
 
+export const emitUnits = (value: string) => emitToOverlays("units-changed", value);
+
 listen("$0units-changed", () => {});
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_forwarder_called_with_a_variable_stays_unprovable() {
+    // Here even the call site has no literal, so the emit is genuinely unknown and
+    // "never emitted" cannot be proven.
+    helpers::check_diagnostics(
+        r#"
+//- /sync.ts
+import { emitTo, listen } from "@tauri-apps/api/event";
+
+const emitToOverlays = async (event: string, payload: unknown) => {
+  await emitTo("overlay", event, payload);
+};
+
+export const relay = (name: string, value: unknown) => emitToOverlays(name, value);
+
+listen("$0units-changed", () => {});
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_forwarded_listen_reaches_the_emitter() {
+    helpers::check_diagnostics(
+        r#"
+//- /sync.ts
+import { emit, listen } from "@tauri-apps/api/event";
+
+const subscribe = (event: string) => listen(event, () => {});
+
+export const watchUnits = () => subscribe("units-changed");
+
+emit("$0units-changed");
 "#,
         expect!["(none)"],
     );
@@ -716,7 +756,28 @@ import { emit, listen } from "@tauri-apps/api/event";
 
 const subscribe = (event: string) => listen(event, () => {});
 
+export const watchAny = (name: string) => subscribe(name);
+
 emit("$0units-changed");
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_forwarded_invoke_reaches_the_command() {
+    helpers::check_diagnostics(
+        r#"
+//- /backend.rs
+#[tauri::command]
+fn gre$0et() {}
+
+//- /frontend.ts
+import { invoke } from "@tauri-apps/api/core";
+
+const call = (name: string, args: unknown) => invoke(name, args);
+
+export const greetSomeone = (who: string) => call("greet", { name: who });
 "#,
         expect!["(none)"],
     );
@@ -734,6 +795,8 @@ fn gre$0et() {}
 import { invoke } from "@tauri-apps/api/core";
 
 const call = (name: string) => invoke(name);
+
+export const callAny = (name: string) => call(name);
 "#,
         expect!["(none)"],
     );

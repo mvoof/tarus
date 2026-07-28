@@ -111,3 +111,27 @@ $0
         expect!["(none)"],
     );
 }
+
+#[test]
+fn code_lens_forwarded_emit_links_to_listener_file() {
+    // The emit only exists because the helper's parameter was resolved from this
+    // call site; the lens proves that finding reaches navigation like any other.
+    helpers::check_code_lens(
+        r#"
+//- /sync.ts
+import { emitTo } from "@tauri-apps/api/event";
+
+const emitToOverlays = async (event: string, payload: unknown) => {
+  await emitTo("overlay", event, payload);
+};
+
+export const emitUnitsChanged = (system: string) =>
+  emitToOverlays("units-changed", system);
+$0
+//- /overlay.ts
+import { listen } from "@tauri-apps/api/event";
+listen<string>("units-changed", (e) => console.log(e.payload));
+"#,
+        expect![[r#"7:18 "Go to overlay.ts""#]],
+    );
+}

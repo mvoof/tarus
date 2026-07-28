@@ -1,6 +1,6 @@
 //! TypeScript/JavaScript/Vue/Svelte/Angular parsing for Tauri invoke/emit/listen calls
 
-use crate::indexer::{DynamicUsages, Finding};
+use crate::indexer::{DynamicUsages, Finding, Forwarder};
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use crate::utils::{find_capture, point_to_position};
 use std::collections::HashMap;
@@ -63,9 +63,12 @@ static ALL_FRONTEND_PATTERNS: LazyLock<Vec<FunctionPatternWithPos>> = LazyLock::
 });
 
 /// Result of parsing one frontend file.
+#[derive(Default)]
 pub struct FrontendParse {
     pub findings: Vec<Finding>,
     pub dynamic_usages: DynamicUsages,
+    /// Forwarding helpers this file declares.
+    pub forwarders: Vec<Forwarder>,
 }
 
 /// Everything needed to turn a command/event name argument into a literal.
@@ -112,10 +115,93 @@ impl Scope<'_> {
 enum PatternOutcome {
     /// The match is a Tauri call with a known command/event name.
     Found(Finding),
+    /// The match is a Tauri call that forwards a parameter of the enclosing helper.
+    /// The name lives at the helper's call sites, not here.
+    Forwards(Forwarder),
     /// The match is a Tauri call whose name could not be resolved to a literal.
     Dynamic(Behavior),
     /// The match is not a Tauri call at all.
     NoMatch,
+}
+
+/// Node kinds that introduce a parameter list.
+const FUNCTION_KINDS: [&str; 5] = [
+    "arrow_function",
+    "function_declaration",
+    "function_expression",
+    "method_definition",
+    "generator_function_declaration",
+];
+
+/// If `name` is a parameter of a *named* function enclosing `node`, describe how
+/// that function forwards it into a Tauri call.
+///
+/// Anonymous callbacks are skipped: with no name there is no call site to look up.
+fn detect_forwarder(
+    node: tree_sitter::Node<'_>,
+    name: &str,
+    bytes: &[u8],
+    entity: EntityType,
+    behavior: Behavior,
+) -> Option<Forwarder> {
+    let mut current = node.parent();
+
+    while let Some(candidate) = current {
+        if FUNCTION_KINDS.contains(&candidate.kind()) {
+            if let Some(param_index) = parameter_index(candidate, name, bytes) {
+                return function_name(candidate, bytes).map(|function_name| Forwarder {
+                    function_name,
+                    param_index,
+                    entity,
+                    behavior,
+                });
+            }
+
+            // The name belongs to an outer scope; keep walking outwards.
+        }
+
+        current = candidate.parent();
+    }
+
+    None
+}
+
+/// Position of the parameter called `name` in a function's parameter list.
+fn parameter_index(function: tree_sitter::Node<'_>, name: &str, bytes: &[u8]) -> Option<usize> {
+    // `const f = event => ...` has a single unparenthesized parameter.
+    if let Some(single) = function.child_by_field_name("parameter") {
+        return (single.utf8_text(bytes).unwrap_or_default() == name).then_some(0);
+    }
+
+    let params = function.child_by_field_name("parameters")?;
+    let mut cursor = params.walk();
+    let declared: Vec<_> = params.named_children(&mut cursor).collect();
+
+    declared.iter().position(|param| {
+        let mut bound = std::collections::HashSet::new();
+        crate::utils::collect_parameter_names(*param, bytes, &mut bound);
+
+        bound.contains(name)
+    })
+}
+
+/// Name a function can be called by: its own identifier, or the variable it is
+/// assigned to for arrow and function expressions.
+fn function_name(function: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
+    if let Some(own_name) = function.child_by_field_name("name") {
+        return Some(own_name.utf8_text(bytes).unwrap_or_default().to_string());
+    }
+
+    let declarator = function.parent()?;
+
+    if declarator.kind() != "variable_declarator" {
+        return None;
+    }
+
+    let name_node = declarator.child_by_field_name("name")?;
+
+    (name_node.kind() == "identifier")
+        .then(|| name_node.utf8_text(bytes).unwrap_or_default().to_string())
 }
 
 /// Capture indices extracted from the query, grouped for readability
@@ -133,6 +219,8 @@ struct FrontendCaptures {
     specta_call: Option<u32>,
     specta_event_name: Option<u32>,
     specta_event_method: Option<u32>,
+    plain_fn: Option<u32>,
+    plain_args: Option<u32>,
 }
 
 impl FrontendCaptures {
@@ -151,6 +239,8 @@ impl FrontendCaptures {
             specta_call: query.capture_index_for_name("specta_call"),
             specta_event_name: query.capture_index_for_name("specta_event_name"),
             specta_event_method: query.capture_index_for_name("specta_event_method"),
+            plain_fn: query.capture_index_for_name("plain_fn"),
+            plain_args: query.capture_index_for_name("plain_args"),
         }
     }
 }
@@ -166,6 +256,7 @@ pub fn parse_frontend(
     lang: LangType,
     line_offset: usize,
     global_constants: &HashMap<String, String>,
+    known_forwarders: &HashMap<String, Forwarder>,
 ) -> ParseResult<FrontendParse> {
     let ts_lang: Language = match lang {
         LangType::JavaScript | LangType::JavaScriptJsx => tree_sitter_javascript::LANGUAGE.into(),
@@ -218,17 +309,20 @@ pub fn parse_frontend(
     // Second pass: collect function calls
     let mut findings = Vec::new();
     let mut dynamic_usages = DynamicUsages::default();
+    let mut forwarders = Vec::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, bytes);
 
     while let Some(m) = matches.next() {
         match process_first_arg_pattern(m, &caps, bytes, &aliases, &scope, content, line_offset) {
             PatternOutcome::Found(f) => findings.push(f),
+            PatternOutcome::Forwards(fwd) => forwarders.push(fwd),
             PatternOutcome::Dynamic(behavior) => dynamic_usages.record(behavior),
             PatternOutcome::NoMatch => {}
         }
         match process_second_arg_pattern(m, &caps, bytes, &aliases, &scope, line_offset) {
             PatternOutcome::Found(f) => findings.push(f),
+            PatternOutcome::Forwards(fwd) => forwarders.push(fwd),
             PatternOutcome::Dynamic(behavior) => dynamic_usages.record(behavior),
             PatternOutcome::NoMatch => {}
         }
@@ -238,12 +332,155 @@ pub fn parse_frontend(
         if let Some(f) = process_specta_event(m, &caps, bytes, line_offset) {
             findings.push(f);
         }
+        match process_forwarder_call(m, &caps, bytes, &scope, known_forwarders, line_offset) {
+            PatternOutcome::Found(f) => findings.push(f),
+            PatternOutcome::Dynamic(behavior) => dynamic_usages.record(behavior),
+            PatternOutcome::Forwards(_) | PatternOutcome::NoMatch => {}
+        }
     }
 
     Ok(FrontendParse {
         findings,
         dynamic_usages,
+        forwarders,
     })
+}
+
+/// Collect only the forwarding helpers a file declares.
+///
+/// The main pass cannot do this on its own: a call site is resolvable only once the
+/// helper it calls is known, and helpers are routinely declared in another file.
+/// This runs alongside the constant pre-pass and deliberately skips everything the
+/// declaration scan does not need — constants, bound names, specta, findings.
+///
+/// # Errors
+///
+/// Returns error if tree-sitter fails to parse the file or query execution fails.
+pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forwarder>> {
+    let ts_lang: Language = match lang {
+        LangType::JavaScript | LangType::JavaScriptJsx => tree_sitter_javascript::LANGUAGE.into(),
+        LangType::TypeScriptJsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        _ => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+    };
+
+    let mut parser = Parser::new();
+    parser
+        .set_language(&ts_lang)
+        .map_err(|e| ParseError::LanguageError(format!("Failed to set {lang:?} language: {e}")))?;
+
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| ParseError::SyntaxError(format!("Failed to parse {lang:?} file")))?;
+
+    if tree.root_node().has_error() {
+        return Ok(Vec::new());
+    }
+
+    let query = Query::new(&ts_lang, get_query_source(lang))
+        .map_err(|e| ParseError::QueryError(format!("Failed to create {lang:?} query: {e}")))?;
+
+    let caps = FrontendCaptures::from_query(&query);
+    let root = tree.root_node();
+    let bytes = content.as_bytes();
+    let aliases = collect_aliases(&query, root, bytes, &caps);
+
+    let mut forwarders = Vec::new();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, root, bytes);
+
+    while let Some(m) = matches.next() {
+        for (func_cap, arg_cap, position) in [
+            (caps.func_name, caps.arg_value, ArgPosition::First),
+            (
+                caps.func_name_second,
+                caps.arg_value_second,
+                ArgPosition::Second,
+            ),
+        ] {
+            let (Some(func_cap), Some(arg_cap)) =
+                (find_capture(m, func_cap), find_capture(m, arg_cap))
+            else {
+                continue;
+            };
+
+            // Only a bare identifier can be a forwarded parameter.
+            if arg_cap.node.kind() != "identifier" {
+                continue;
+            }
+
+            let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
+            let Some(original_name) = aliases.get(func_name).copied() else {
+                continue;
+            };
+
+            let Some(pattern) = ALL_FRONTEND_PATTERNS
+                .iter()
+                .find(|p| p.name == original_name && p.arg_position == position)
+            else {
+                continue;
+            };
+
+            let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
+
+            if let Some(forwarder) =
+                detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+            {
+                forwarders.push(forwarder);
+            }
+        }
+    }
+
+    Ok(forwarders)
+}
+
+/// Turn a call of a known forwarding helper into a finding for the real command
+/// or event, anchored at the literal in *this* file.
+///
+/// This is what makes `emitToOverlays("units-changed", value)` navigable: the
+/// finding is indexed exactly as if `emit("units-changed", ...)` were written here.
+fn process_forwarder_call(
+    m: &tree_sitter::QueryMatch<'_, '_>,
+    caps: &FrontendCaptures,
+    bytes: &[u8],
+    scope: &Scope<'_>,
+    known_forwarders: &HashMap<String, Forwarder>,
+    line_offset: usize,
+) -> PatternOutcome {
+    let (Some(fn_cap), Some(args_cap)) = (
+        find_capture(m, caps.plain_fn),
+        find_capture(m, caps.plain_args),
+    ) else {
+        return PatternOutcome::NoMatch;
+    };
+
+    let called = fn_cap.node.utf8_text(bytes).unwrap_or_default();
+    let Some(forwarder) = known_forwarders.get(called) else {
+        return PatternOutcome::NoMatch;
+    };
+
+    // A helper declared in this file is also matched here; that is intended, since
+    // its own body forwards a parameter and produces no finding of its own.
+    let mut cursor = args_cap.node.walk();
+    let Some(name_arg) = args_cap
+        .node
+        .named_children(&mut cursor)
+        .nth(forwarder.param_index)
+    else {
+        return PatternOutcome::Dynamic(forwarder.behavior);
+    };
+
+    match resolve_name_argument(name_arg, bytes, scope) {
+        ArgResolution::Resolved(name, range) => PatternOutcome::Found(Finding::new(
+            name,
+            forwarder.entity,
+            forwarder.behavior,
+            adjust_range(range, line_offset),
+        )),
+        // A forwarder fed by another forwarder's parameter would need a second
+        // hop; one level is resolved, deeper chains stay unprovable.
+        ArgResolution::Unresolved => PatternOutcome::Dynamic(forwarder.behavior),
+        ArgResolution::EmptyLiteral => PatternOutcome::NoMatch,
+    }
 }
 
 fn collect_aliases<'a>(
@@ -368,15 +605,28 @@ fn process_first_arg_pattern<'a>(
         return PatternOutcome::NoMatch;
     };
 
-    // `invoke` is deliberately literal-only: a command name assembled at runtime is
-    // still a call we cannot attribute, so it counts as dynamic rather than absent.
+    // `invoke` is deliberately literal-only — a command name is never resolved
+    // through the constant table. A forwarded parameter is different: the literal
+    // does exist, at the helper's call sites, so it is still worth recovering.
     if original_name == "invoke" && arg_cap.node.kind() != "string" {
-        return PatternOutcome::Dynamic(pattern.behavior);
+        let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
+
+        return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+            .map_or(PatternOutcome::Dynamic(pattern.behavior), |forwarder| {
+                PatternOutcome::Forwards(forwarder)
+            });
     }
 
     let (resolved_arg, range) = match resolve_name_argument(arg_cap.node, bytes, scope) {
         ArgResolution::Resolved(name, range) => (name, range),
-        ArgResolution::Unresolved => return PatternOutcome::Dynamic(pattern.behavior),
+        ArgResolution::Unresolved => {
+            let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
+
+            return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+                .map_or(PatternOutcome::Dynamic(pattern.behavior), |forwarder| {
+                    PatternOutcome::Forwards(forwarder)
+                });
+        }
         ArgResolution::EmptyLiteral => return PatternOutcome::NoMatch,
     };
 
@@ -431,7 +681,14 @@ fn process_second_arg_pattern<'a>(
 
     let (resolved_arg, range) = match resolve_name_argument(arg_cap.node, bytes, scope) {
         ArgResolution::Resolved(name, range) => (name, range),
-        ArgResolution::Unresolved => return PatternOutcome::Dynamic(pattern.behavior),
+        ArgResolution::Unresolved => {
+            let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
+
+            return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+                .map_or(PatternOutcome::Dynamic(pattern.behavior), |forwarder| {
+                    PatternOutcome::Forwards(forwarder)
+                });
+        }
         ArgResolution::EmptyLiteral => return PatternOutcome::NoMatch,
     };
 
