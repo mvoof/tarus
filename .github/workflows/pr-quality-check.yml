@@ -1,0 +1,116 @@
+name: PR Quality Check
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+# Cancel in-progress runs when a new push is made to the same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-changes:
+    name: Check Changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      ts: ${{ steps.filter.outputs.ts }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for file changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: .github/filters.yml
+
+  rust-checks:
+    name: Cargo Check, Fmt, Clippy & Test
+    needs: check-changes
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.check-changes.outputs.rust == 'true' || needs.check-changes.outputs.ci == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: lsp-server
+
+      - name: Cargo Fmt
+        run: cargo fmt --manifest-path lsp-server/Cargo.toml -- --check
+
+      - name: Cargo Check
+        run: cargo check --manifest-path lsp-server/Cargo.toml
+
+      - name: Cargo Clippy
+        run: cargo clippy --manifest-path lsp-server/Cargo.toml -- -D warnings
+
+      - name: Cargo Test
+        run: cargo test --manifest-path lsp-server/Cargo.toml
+
+  ts-checks:
+    name: Lint & Format Check
+    needs: check-changes
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.check-changes.outputs.ts == 'true' || needs.check-changes.outputs.ci == 'true' }}
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prettier
+        run: npm run format:check
+
+  status-check:
+    name: Quality Status
+    needs: [check-changes, rust-checks, ts-checks]
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    steps:
+      - name: Check Status
+        run: |
+          if [ "${{ needs.check-changes.result }}" != "success" ]; then
+            echo "Change detection failed"
+            exit 1
+          fi
+
+          if [ "${{ needs.rust-checks.result }}" != "success" ] && [ "${{ needs.rust-checks.result }}" != "skipped" ]; then
+            echo "Rust checks failed"
+            exit 1
+          fi
+
+          if [ "${{ needs.ts-checks.result }}" != "success" ] && [ "${{ needs.ts-checks.result }}" != "skipped" ]; then
+            echo "TypeScript checks failed"
+            exit 1
+          fi
+
+          echo "All checks passed or skipped"
