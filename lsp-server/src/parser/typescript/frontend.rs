@@ -372,10 +372,10 @@ pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forw
         .parse(content, None)
         .ok_or_else(|| ParseError::SyntaxError(format!("Failed to parse {lang:?} file")))?;
 
-    if tree.root_node().has_error() {
-        return Ok(Vec::new());
-    }
-
+    // No `has_error` bail-out here: helpers are cross-file, so discarding every
+    // declaration in a file that is merely mid-edit would silently turn each of its
+    // call sites elsewhere into an unresolved dynamic usage. Tree-sitter still
+    // recovers the intact subtrees, and the main pass parses on the same terms.
     let query = Query::new(&ts_lang, get_query_source(lang))
         .map_err(|e| ParseError::QueryError(format!("Failed to create {lang:?} query: {e}")))?;
 

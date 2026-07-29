@@ -70,6 +70,12 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
         let local_constants = crate::utils::extract_js_constants_from_content(content, is_js);
         project_index.add_js_constants(path.to_path_buf(), local_constants);
         let global_constants = project_index.get_all_js_constants();
+
+        // Re-register this file's helpers before the main pass reads the global set:
+        // an edit that declares a helper and calls it in the same file would otherwise
+        // be parsed against the pre-edit snapshot and leave the call site unresolved.
+        project_index.add_forwarders(path.to_path_buf(), extract_file_forwarders(path, content));
+
         let known_forwarders = project_index.get_all_forwarders();
 
         match parser::parse(path, content, &global_constants, &known_forwarders) {
@@ -190,16 +196,42 @@ pub fn collect_constants_from_file(path: &Path, project_index: &ProjectIndex) {
 
         // Forwarding helpers are cross-file: a call site is only resolvable once the
         // helper that owns it is known, so they must be collected before the main pass.
-        if let Some(lang) = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .and_then(parser::LangType::from_extension)
-        {
-            if let Ok(forwarders) = parser::typescript::frontend::extract_forwarders(&content, lang)
-            {
-                project_index.add_forwarders(path.to_path_buf(), forwarders);
-            }
+        project_index.add_forwarders(path.to_path_buf(), extract_file_forwarders(path, &content));
+    }
+}
+
+/// Forwarding helpers declared by a single frontend file.
+///
+/// Returns an empty list for anything that is not a frontend language. SFCs are
+/// unwrapped to their script blocks first, since the helper scan reads plain
+/// TypeScript and would otherwise see the surrounding template markup.
+fn extract_file_forwarders(path: &Path, content: &str) -> Vec<crate::indexer::types::Forwarder> {
+    let Some(lang) = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(parser::LangType::from_extension)
+    else {
+        return Vec::new();
+    };
+
+    match lang {
+        parser::LangType::Rust => Vec::new(),
+
+        parser::LangType::Vue | parser::LangType::Svelte => {
+            parser::typescript::sfc::extract_script_blocks(content)
+                .into_iter()
+                .filter_map(|(script, _)| {
+                    parser::typescript::frontend::extract_forwarders(
+                        &script,
+                        parser::LangType::TypeScript,
+                    )
+                    .ok()
+                })
+                .flatten()
+                .collect()
         }
+
+        _ => parser::typescript::frontend::extract_forwarders(content, lang).unwrap_or_default(),
     }
 }
 
@@ -228,6 +260,34 @@ mod tests {
         let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         std::fs::read_to_string(fixtures_dir.join(relative_path))
             .unwrap_or_else(|e| panic!("Failed to load fixture {relative_path}: {e}"))
+    }
+
+    #[test]
+    fn test_helper_declared_and_called_in_same_edit_is_indexed() {
+        // Simulates `didChange`: the file introduces the helper and a call to it at
+        // once, so nothing else in the workspace has registered the forwarder yet.
+        let index = ProjectIndex::new();
+        let path = PathBuf::from("app.ts");
+
+        let content = r#"
+import { emit } from "@tauri-apps/api/event";
+
+const broadcast = (event: string, payload: unknown) => emit(event, payload);
+
+broadcast("units-changed", "metric");
+"#;
+
+        assert!(process_file_content(&path, content, &index));
+
+        let key = crate::indexer::types::IndexKey {
+            entity: crate::syntax::EntityType::Event,
+            name: "units-changed".to_string(),
+        };
+
+        assert!(
+            index.map.contains_key(&key),
+            "call site of a helper declared in the same edit should be indexed"
+        );
     }
 
     #[test]
