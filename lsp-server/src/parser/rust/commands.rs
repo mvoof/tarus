@@ -1,6 +1,6 @@
 //! Rust source code parsing for Tauri commands and events
 
-use crate::indexer::Finding;
+use crate::indexer::{DynamicUsages, Finding};
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use crate::utils::{find_capture, point_to_position};
 use std::collections::HashMap;
@@ -27,6 +27,12 @@ static RUST_EVENT_PATTERNS: LazyLock<HashMap<&'static str, (EntityType, Behavior
         m
     });
 
+/// Result of parsing one Rust file.
+pub struct RustParse {
+    pub findings: Vec<Finding>,
+    pub dynamic_usages: DynamicUsages,
+}
+
 /// Extract findings from a pre-parsed Rust tree root node.
 ///
 /// # Errors
@@ -38,7 +44,7 @@ pub fn extract_rust_findings(
     content: &str,
     ts_lang: &Language,
     global_constants: &HashMap<String, String>,
-) -> ParseResult<Vec<Finding>> {
+) -> ParseResult<RustParse> {
     let query = Query::new(ts_lang, RUST_QUERY)
         .map_err(|e| ParseError::QueryError(format!("Failed to create Rust query: {e}")))?;
 
@@ -62,6 +68,7 @@ pub fn extract_rust_findings(
     }
 
     let mut findings = Vec::new();
+    let mut dynamic_usages = DynamicUsages::default();
     let mut matches = cursor.matches(&query, root, bytes);
 
     while let Some(m) = matches.next() {
@@ -77,14 +84,17 @@ pub fn extract_rust_findings(
             findings.push(f);
             continue;
         }
-        if let Some(f) =
-            process_event_call(m, method_name_idx, event_name_idx, bytes, &local_constants)
-        {
-            findings.push(f);
+        match process_event_call(m, method_name_idx, event_name_idx, bytes, &local_constants) {
+            EventCallOutcome::Found(f) => findings.push(f),
+            EventCallOutcome::Dynamic(behavior) => dynamic_usages.record(behavior),
+            EventCallOutcome::NoMatch => {}
         }
     }
 
-    Ok(findings)
+    Ok(RustParse {
+        findings,
+        dynamic_usages,
+    })
 }
 
 fn process_specta_emit(
@@ -162,83 +172,81 @@ fn process_fn(
     ))
 }
 
+/// What a query match yielded for a Rust `emit`/`listen`-style call.
+enum EventCallOutcome {
+    /// The call names a known event.
+    Found(Finding),
+    /// The call is an event call whose name could not be resolved to a literal.
+    Dynamic(Behavior),
+    /// The match is not an event call at all.
+    NoMatch,
+}
+
 fn process_event_call(
     m: &tree_sitter::QueryMatch<'_, '_>,
     method_name_idx: Option<u32>,
     event_name_idx: Option<u32>,
     bytes: &[u8],
     constants: &std::collections::HashMap<String, String>,
-) -> Option<Finding> {
-    let method_cap = find_capture(m, method_name_idx)?;
-    let event_cap = find_capture(m, event_name_idx)?;
+) -> EventCallOutcome {
+    let (Some(method_cap), Some(event_cap)) = (
+        find_capture(m, method_name_idx),
+        find_capture(m, event_name_idx),
+    ) else {
+        return EventCallOutcome::NoMatch;
+    };
 
     let method_name = method_cap.node.utf8_text(bytes).unwrap_or_default();
-    let raw_event_name = event_cap.node.utf8_text(bytes).unwrap_or_default();
-
-    let mut resolved_name = raw_event_name.to_string();
-    if event_cap.node.kind() == "string_literal" {
-        if let Some(content_node) = event_cap.node.child_by_field_name("content") {
-            resolved_name = content_node
-                .utf8_text(bytes)
-                .unwrap_or_default()
-                .to_string();
-        } else if let Some(content_node) = event_cap.node.named_child(0) {
-            resolved_name = content_node
-                .utf8_text(bytes)
-                .unwrap_or_default()
-                .to_string();
-        } else if resolved_name.starts_with('"')
-            && resolved_name.ends_with('"')
-            && resolved_name.len() >= 2
-        {
-            resolved_name = resolved_name[1..resolved_name.len() - 1].to_string();
-        }
-    } else {
-        let mut resolved = false;
-        if let Some(resolved_val) = constants.get(&resolved_name) {
-            resolved_name.clone_from(resolved_val);
-            resolved = true;
-        } else {
-            let lookup_key = if resolved_name.contains("::") {
-                resolved_name
-                    .split("::")
-                    .last()
-                    .unwrap_or(resolved_name.as_str())
-            } else {
-                resolved_name.as_str()
-            };
-            if let Some(resolved_val) = constants.get(lookup_key) {
-                resolved_name.clone_from(resolved_val);
-                resolved = true;
-            }
-        }
-        if !resolved {
-            resolved_name.clear();
-        }
-    }
-
-    if resolved_name.is_empty() {
-        return None;
-    }
-
-    let mut range = Range {
-        start: point_to_position(event_cap.node.start_position()),
-        end: point_to_position(event_cap.node.end_position()),
+    let Some((entity, behavior)) = RUST_EVENT_PATTERNS.get(method_name) else {
+        return EventCallOutcome::NoMatch;
     };
-    if event_cap.node.kind() == "string_literal" {
-        if let Some(content_node) = event_cap.node.child_by_field_name("content") {
-            range = Range {
-                start: point_to_position(content_node.start_position()),
-                end: point_to_position(content_node.end_position()),
-            };
-        } else if let Some(content_node) = event_cap.node.named_child(0) {
-            range = Range {
-                start: point_to_position(content_node.start_position()),
-                end: point_to_position(content_node.end_position()),
-            };
+
+    let raw_event_name = event_cap.node.utf8_text(bytes).unwrap_or_default();
+    let is_literal = event_cap.node.kind() == "string_literal";
+
+    let literal_content = is_literal
+        .then(|| {
+            event_cap
+                .node
+                .child_by_field_name("content")
+                .or_else(|| event_cap.node.named_child(0))
+        })
+        .flatten();
+
+    let resolved_name = if is_literal {
+        literal_content.map_or_else(
+            || {
+                raw_event_name
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(raw_event_name)
+                    .to_string()
+            },
+            |node| node.utf8_text(bytes).unwrap_or_default().to_string(),
+        )
+    } else {
+        let lookup_key = raw_event_name.rsplit("::").next().unwrap_or(raw_event_name);
+
+        match constants
+            .get(raw_event_name)
+            .or_else(|| constants.get(lookup_key))
+        {
+            Some(value) => value.clone(),
+            None => return EventCallOutcome::Dynamic(*behavior),
         }
+    };
+
+    // `app.emit("", ..)` names nothing, but it is not unknown either: an empty
+    // literal must not weaken diagnostics the way a dynamic name does.
+    if resolved_name.is_empty() {
+        return EventCallOutcome::NoMatch;
     }
 
-    let (entity, behavior) = RUST_EVENT_PATTERNS.get(method_name)?;
-    Some(Finding::new(resolved_name, *entity, *behavior, range))
+    let name_node = literal_content.unwrap_or(event_cap.node);
+    let range = Range {
+        start: point_to_position(name_node.start_position()),
+        end: point_to_position(name_node.end_position()),
+    };
+
+    EventCallOutcome::Found(Finding::new(resolved_name, *entity, *behavior, range))
 }

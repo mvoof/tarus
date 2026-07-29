@@ -58,6 +58,14 @@ pub struct ProjectIndex {
     // Reverse index for stale removal: file_path -> list of constant names
     pub(crate) rust_constants_paths: DashMap<PathBuf, Vec<String>>,
     pub(crate) js_constants_paths: DashMap<PathBuf, Vec<String>>,
+    // Files holding Tauri calls whose name could not be resolved to a literal
+    pub(crate) dynamic_usages: DashMap<PathBuf, DynamicUsages>,
+    // Helpers that forward a parameter into a Tauri call: function_name -> every
+    // declaration seen under that name. Kept as a list so that two files declaring
+    // the same helper name are detected as ambiguous instead of overwriting.
+    pub(crate) forwarders: DashMap<String, Vec<(PathBuf, Forwarder)>>,
+    // Reverse index for stale removal: file_path -> declared forwarder names
+    pub(crate) forwarder_paths: DashMap<PathBuf, Vec<String>>,
 }
 
 impl Default for ProjectIndex {
@@ -81,6 +89,9 @@ impl Default for ProjectIndex {
             js_constants: DashMap::new(),
             rust_constants_paths: DashMap::new(),
             js_constants_paths: DashMap::new(),
+            dynamic_usages: DashMap::new(),
+            forwarders: DashMap::new(),
+            forwarder_paths: DashMap::new(),
         }
     }
 }
@@ -130,6 +141,15 @@ impl ProjectIndex {
         let mut keys_in_this_file = std::collections::HashSet::new();
         let path_ref = file_index.path;
 
+        if file_index.dynamic_usages.is_empty() {
+            self.dynamic_usages.remove(&path_ref);
+        } else {
+            self.dynamic_usages
+                .insert(path_ref.clone(), file_index.dynamic_usages);
+        }
+
+        self.add_forwarders(path_ref.clone(), file_index.forwarders);
+
         for finding in file_index.findings {
             let key = IndexKey {
                 entity: finding.entity,
@@ -177,6 +197,20 @@ impl ProjectIndex {
         // so removing constants in `remove_file` would discard the freshly re-extracted
         // constants and break cross-file constant resolution.
         self.parse_errors.remove(path);
+        self.dynamic_usages.remove(path);
+        self.remove_forwarders_for_file(path);
+    }
+
+    /// Unresolved Tauri call sites across the whole workspace, folded into one value.
+    #[must_use]
+    pub fn dynamic_usages(&self) -> DynamicUsages {
+        let mut merged = DynamicUsages::default();
+
+        for entry in &self.dynamic_usages {
+            merged.merge(*entry.value());
+        }
+
+        merged
     }
 
     /// Store a parse error for a file
@@ -248,6 +282,57 @@ impl ProjectIndex {
             self.js_constants.insert(name, value);
         }
         self.js_constants_paths.insert(path, names);
+    }
+
+    /// Store the forwarding helpers declared in a file, replacing any previous set.
+    pub fn add_forwarders(&self, path: PathBuf, forwarders: Vec<Forwarder>) {
+        self.remove_forwarders_for_file(&path);
+        let names: Vec<String> = forwarders.iter().map(|f| f.function_name.clone()).collect();
+
+        for forwarder in forwarders {
+            self.forwarders
+                .entry(forwarder.function_name.clone())
+                .or_default()
+                .push((path.clone(), forwarder));
+        }
+
+        self.forwarder_paths.insert(path, names);
+    }
+
+    /// Remove all forwarding helpers associated with a file
+    pub fn remove_forwarders_for_file(&self, path: &Path) {
+        if let Some((_, names)) = self.forwarder_paths.remove(path) {
+            for name in names {
+                let now_empty = self.forwarders.get_mut(&name).is_some_and(|mut entry| {
+                    entry.retain(|(declared_in, _)| declared_in != path);
+
+                    entry.is_empty()
+                });
+
+                if now_empty {
+                    self.forwarders.remove(&name);
+                }
+            }
+        }
+    }
+
+    /// Forwarding helpers that can be resolved unambiguously, keyed by function name.
+    ///
+    /// A name declared by two files with *different* shapes is dropped: without
+    /// following imports there is no way to tell which declaration a call site
+    /// means, and guessing would attribute the event to the wrong helper.
+    #[must_use]
+    pub fn get_all_forwarders(&self) -> std::collections::HashMap<String, Forwarder> {
+        self.forwarders
+            .iter()
+            .filter_map(|entry| {
+                let (first, rest) = entry.value().split_first()?;
+
+                rest.iter()
+                    .all(|(_, other)| other == &first.1)
+                    .then(|| (entry.key().clone(), first.1.clone()))
+            })
+            .collect()
     }
 
     /// Remove all Rust constants associated with a file

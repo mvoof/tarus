@@ -2,6 +2,7 @@
 
 pub mod ts_tree_utils;
 
+use std::collections::HashSet;
 use std::sync::LazyLock;
 use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::{Position, Range};
@@ -122,6 +123,90 @@ pub fn extract_rust_constants(
         }
     }
     constants
+}
+
+/// Collect every identifier the file binds itself: function parameters, catch
+/// clauses and variable declarators.
+///
+/// A name bound here shadows any same-named constant found elsewhere in the
+/// workspace, so cross-file constant resolution must not be applied to it. Scopes
+/// are deliberately not modelled — the whole file is treated as one scope, which
+/// can only make resolution give up, never invent a wrong name.
+#[must_use]
+pub fn collect_bound_names(root: tree_sitter::Node<'_>, content: &str) -> HashSet<String> {
+    let mut bound = HashSet::new();
+    let bytes = content.as_bytes();
+    let mut cursor = root.walk();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "required_parameter" | "optional_parameter" => {
+                collect_pattern_names(node.child_by_field_name("pattern"), bytes, &mut bound);
+            }
+            "arrow_function" => {
+                collect_pattern_names(node.child_by_field_name("parameter"), bytes, &mut bound);
+            }
+            "variable_declarator" | "catch_clause" => {
+                collect_pattern_names(node.child_by_field_name("name"), bytes, &mut bound);
+                collect_pattern_names(node.child_by_field_name("parameter"), bytes, &mut bound);
+            }
+            "formal_parameters" => {
+                for child in node.named_children(&mut node.walk()) {
+                    if child.kind() == "identifier" {
+                        collect_pattern_names(Some(child), bytes, &mut bound);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    bound
+}
+
+/// Add every identifier a single parameter binds to `bound`, unwrapping type
+/// annotations, defaults and destructuring patterns.
+#[allow(clippy::implicit_hasher)] // reason: callers use the default hasher throughout
+pub fn collect_parameter_names(
+    param: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    bound: &mut HashSet<String>,
+) {
+    match param.kind() {
+        "required_parameter" | "optional_parameter" => {
+            collect_pattern_names(param.child_by_field_name("pattern"), bytes, bound);
+        }
+        _ => collect_pattern_names(Some(param), bytes, bound),
+    }
+}
+
+/// Add the identifiers introduced by a binding pattern (plain, object or array
+/// destructuring) to `bound`.
+fn collect_pattern_names(
+    node: Option<tree_sitter::Node<'_>>,
+    bytes: &[u8],
+    bound: &mut HashSet<String>,
+) {
+    let Some(node) = node else {
+        return;
+    };
+
+    if node.kind() == "identifier" || node.kind() == "shorthand_property_identifier_pattern" {
+        bound.insert(node.utf8_text(bytes).unwrap_or_default().to_string());
+
+        return;
+    }
+
+    let mut cursor = node.walk();
+
+    for child in node.named_children(&mut cursor) {
+        collect_pattern_names(Some(child), bytes, bound);
+    }
 }
 
 /// Extract constant definitions from a JavaScript/TypeScript AST root node

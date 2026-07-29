@@ -99,10 +99,70 @@ impl From<(&PathBuf, Finding)> for LocationInfo {
     }
 }
 
-#[derive(Debug)]
+/// Tauri call sites in a file whose command/event name could not be resolved to a
+/// string literal — e.g. `emit(eventName, payload)` where `eventName` is a parameter.
+///
+/// Such a call still uses *some* command or event, we just cannot tell which. Any
+/// diagnostic that reports an *absence* ("never emitted", "never invoked") assumes a
+/// closed world, so a single unresolved call site of the matching kind invalidates it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DynamicUsages {
+    pub invokes: bool,
+    pub emitters: bool,
+    pub listeners: bool,
+}
+
+impl DynamicUsages {
+    /// Record a dynamic usage for the given behavior. Definitions always carry a
+    /// literal name, so they can never be dynamic.
+    pub fn record(&mut self, behavior: Behavior) {
+        match behavior {
+            Behavior::Call | Behavior::SpectaCall => self.invokes = true,
+            Behavior::Emit => self.emitters = true,
+            Behavior::Listen => self.listeners = true,
+            Behavior::Definition => {}
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        !self.invokes && !self.emitters && !self.listeners
+    }
+
+    /// Fold another file's usages into this one.
+    pub fn merge(&mut self, other: Self) {
+        self.invokes |= other.invokes;
+        self.emitters |= other.emitters;
+        self.listeners |= other.listeners;
+    }
+}
+
+/// A helper that passes one of its own parameters straight into a Tauri call, e.g.
+///
+/// ```ts
+/// const emitToOverlays = async (event: string, payload: unknown) =>
+///   emitTo("overlay", event, payload);
+/// ```
+///
+/// The event name never appears at the `emitTo`; it appears at each call of the
+/// helper. Recording the forwarder lets those call sites be indexed as real emit
+/// sites, so navigation, `CodeLens` and references reach the other side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Forwarder {
+    /// Name the helper is called by.
+    pub function_name: String,
+    /// Which argument of the helper carries the command/event name.
+    pub param_index: usize,
+    pub entity: EntityType,
+    pub behavior: Behavior,
+}
+
+#[derive(Debug, Default)]
 pub struct FileIndex {
     pub path: PathBuf,
     pub findings: Vec<Finding>,
+    pub dynamic_usages: DynamicUsages,
+    pub forwarders: Vec<Forwarder>,
 }
 
 /// Search Key (Hashmap Key)

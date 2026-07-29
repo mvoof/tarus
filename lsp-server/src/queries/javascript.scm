@@ -7,7 +7,7 @@
   function: (identifier) @func_name
   arguments: (arguments
     .
-    (string) @arg_value)
+    [(string) (template_string)] @arg_value)
 ) @call_simple
 
 (call_expression
@@ -30,7 +30,7 @@
   arguments: (arguments
     (_)
     .
-    (string) @arg_value_second)
+    [(string) (template_string)] @arg_value_second)
 ) @call_second_arg
 
 (call_expression
@@ -108,3 +108,9 @@
     property: (property_identifier) @specta_event_method)
   (#eq? @_specta_events_obj "events")
 ) @specta_event_call
+
+; === PLAIN CALLS (candidate forwarding helpers) ===
+(call_expression
+  function: (identifier) @plain_fn
+  arguments: (arguments) @plain_args
+)

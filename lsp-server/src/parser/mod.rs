@@ -11,7 +11,7 @@ pub mod typescript;
 
 pub use lang_config::LangType;
 
-use crate::indexer::{CommandSchema, EventSchema, FileIndex};
+use crate::indexer::{CommandSchema, DynamicUsages, EventSchema, FileIndex, Forwarder};
 use crate::syntax::{ParseError, ParseResult};
 use lang_config::is_angular_file;
 use rust::commands::extract_rust_findings;
@@ -32,6 +32,7 @@ pub fn parse(
     path: &Path,
     content: &str,
     global_constants: &HashMap<String, String>,
+    known_forwarders: &HashMap<String, Forwarder>,
 ) -> ParseResult<FileIndex> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
@@ -43,6 +44,9 @@ pub fn parse(
         LangType::from_extension(ext)
     };
 
+    let mut dynamic_usages = DynamicUsages::default();
+    let mut forwarders = Vec::new();
+
     let findings = match lang {
         Some(LangType::Rust) => {
             let ts_lang: Language = tree_sitter_rust::LANGUAGE.into();
@@ -53,7 +57,11 @@ pub fn parse(
             let tree = parser
                 .parse(content, None)
                 .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
-            extract_rust_findings(tree.root_node(), content, &ts_lang, global_constants)?
+            let parsed =
+                extract_rust_findings(tree.root_node(), content, &ts_lang, global_constants)?;
+            dynamic_usages.merge(parsed.dynamic_usages);
+
+            parsed.findings
         }
         Some(
             lang_val @ (LangType::TypeScript
@@ -61,19 +69,28 @@ pub fn parse(
             | LangType::JavaScript
             | LangType::JavaScriptJsx
             | LangType::Angular),
-        ) => parse_frontend(content, lang_val, 0, global_constants)?,
+        ) => {
+            let parsed = parse_frontend(content, lang_val, 0, global_constants, known_forwarders)?;
+            dynamic_usages.merge(parsed.dynamic_usages);
+            forwarders.extend(parsed.forwarders);
+
+            parsed.findings
+        }
         Some(LangType::Vue | LangType::Svelte) => {
             let blocks = extract_script_blocks(content);
             let mut all_findings = Vec::new();
 
             for (script_content, line_offset) in blocks {
-                let findings = parse_frontend(
+                let parsed = parse_frontend(
                     &script_content,
                     LangType::TypeScript,
                     line_offset,
                     global_constants,
+                    known_forwarders,
                 )?;
-                all_findings.extend(findings);
+                dynamic_usages.merge(parsed.dynamic_usages);
+                forwarders.extend(parsed.forwarders);
+                all_findings.extend(parsed.findings);
             }
 
             all_findings
@@ -84,6 +101,8 @@ pub fn parse(
     Ok(FileIndex {
         path: path.to_path_buf(),
         findings,
+        dynamic_usages,
+        forwarders,
     })
 }
 
@@ -117,14 +136,16 @@ pub fn parse_rust_full(
 
     let root = tree.root_node();
 
-    let findings = extract_rust_findings(root, content, &ts_lang, global_constants)?;
+    let parsed = extract_rust_findings(root, content, &ts_lang, global_constants)?;
     let command_schemas = rust::types::extract_command_schemas_from_tree(root, content, path);
     let event_schemas = rust::types::extract_event_schemas_from_tree(root, content, path);
 
     Ok(RustFileIndex {
         file_index: FileIndex {
             path: path.to_path_buf(),
-            findings,
+            findings: parsed.findings,
+            dynamic_usages: parsed.dynamic_usages,
+            forwarders: Vec::new(),
         },
         command_schemas,
         event_schemas,
