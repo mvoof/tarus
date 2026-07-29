@@ -1,5 +1,19 @@
 ## Change Log
 
+### [0.12.0] - 2026-07-29
+
+- **Bug fixes**
+  - Fixed a false positive where a command or event name passed as a function parameter was matched against an unrelated constant from another file. Names are now resolved from the nearest local variable first
+  - Fixed false "no listeners" / "command not found" warnings appearing when a name could not be determined at all (for example, a name built at runtime). Such calls are now skipped instead of reported
+  - Fixed spurious warnings while typing: a file with a syntax error is no longer partially indexed, so half-written code no longer breaks diagnostics for the whole event. The last valid version is kept until the file parses cleanly again
+  - Fixed a bug where names written in template literals (`` invoke(`my_command`) ``) were not recognized
+  - Fixed CodeLens ignoring the reference limit — a line with both Rust and frontend references could show twice as many links as configured and never collapse into a summary
+  - Fixed the extension starting on non-Tauri projects. Activation now follows the officially documented Tauri config file names, and startup errors are no longer silently swallowed
+
+- **Added**
+  - Names passed through your own wrapper functions are now resolved. If a helper forwards its argument into `invoke`/`emit`/`listen`, the literal at the call site becomes a real reference with navigation, CodeLens and Find References
+  - CodeLens now also shows references inside the same file, so an `emit` and its `listen` a hundred lines apart are linked
+
 ### [0.11.0] - 2026-07-20
 
 - **Added**
