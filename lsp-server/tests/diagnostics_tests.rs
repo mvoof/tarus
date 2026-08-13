@@ -802,6 +802,173 @@ export const emitUnitsChanged = (value: boolean) => emit("$0units-changed", valu
     );
 }
 
+// The four ways a real app subscribes through a helper. Every one of them was
+// reported as "emitted but no listeners found" while the helper call was both
+// awaited and given a type argument.
+
+#[test]
+fn diag_awaited_forwarder_in_a_class_method() {
+    // `this.unlistens.push(await listenTo<T>(CONST, cb))` inside a private
+    // method — the shape a telemetry store uses.
+    helpers::check_diagnostics(
+        r#"
+//- /src-tauri/src/telemetry/emitter.rs
+pub const EVENT_TRACK_SHAPE: &str = "sim://track-shape";
+
+pub fn emit_shape(app: &tauri::AppHandle, payload: &TrackShapePayload) {
+    let _ = app.emit($0EVENT_TRACK_SHAPE, payload);
+}
+
+//- /src/services/events.service.ts
+import { listen, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
+
+export const listenTo = <PayloadType>(
+  event: string,
+  handler: EventCallback<PayloadType>
+): Promise<UnlistenFn> => listen(event, handler);
+//- /src/store/sync/sim-events.ts
+export const SIM_TRACK_SHAPE = "sim://track-shape";
+
+//- /src/store/sim/sim.store.ts
+import { listenTo, type UnlistenFn } from "../../services/events.service";
+import { SIM_TRACK_SHAPE } from "../sync/sim-events";
+
+export class SimStore {
+  private unlistens: UnlistenFn[] = [];
+
+  private async subscribeAllEvents() {
+    this.unlistens.push(
+      await listenTo<TrackShapePayload>(SIM_TRACK_SHAPE, (event) => {
+        void event;
+      })
+    );
+  }
+}
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_awaited_forwarder_assigned_to_a_const() {
+    // `const handle = await listenTo<T>(CONST, cb)` — a chat store keeps the
+    // unlisten handles in locals before pushing them together.
+    helpers::check_diagnostics(
+        r#"
+//- /src-tauri/src/chat/twitch.rs
+pub const EVENT_CHAT_MESSAGE: &str = "chat://message";
+
+pub fn forward(app: &tauri::AppHandle, msg: &ChatMessage) {
+    let _ = app.emit($0EVENT_CHAT_MESSAGE, msg);
+}
+
+//- /src/services/events.service.ts
+import { listen, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
+
+export const listenTo = <PayloadType>(
+  event: string,
+  handler: EventCallback<PayloadType>
+): Promise<UnlistenFn> => listen(event, handler);
+//- /src/store/sync/sim-events.ts
+export const CHAT_MESSAGE = "chat://message";
+
+//- /src/store/data/chat.store.ts
+import { listenTo, type UnlistenFn } from "../../services/events.service";
+import { CHAT_MESSAGE } from "../sync/sim-events";
+
+export class ChatStore {
+  private unlisteners: UnlistenFn[] = [];
+
+  async init() {
+    const message = await listenTo<ChatMessage>(CHAT_MESSAGE, (event) => {
+      void event;
+    });
+
+    this.unlisteners.push(message);
+  }
+}
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_awaited_forwarder_in_an_exported_async_arrow() {
+    // `unlistens.push(await listenTo<T>(CONST, cb))` at module level.
+    helpers::check_diagnostics(
+        r#"
+//- /src-tauri/src/input/runtime.rs
+pub const INPUT_BUTTON_EVENT: &str = "input://button";
+
+pub fn publish(app: &tauri::AppHandle, event: &InputButtonEvent) {
+    let _ = app.emit($0INPUT_BUTTON_EVENT, event);
+}
+
+//- /src/services/events.service.ts
+import { listen, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
+
+export const listenTo = <PayloadType>(
+  event: string,
+  handler: EventCallback<PayloadType>
+): Promise<UnlistenFn> => listen(event, handler);
+//- /src/store/sync/sim-events.ts
+export const INPUT_BUTTON_EVENT = "input://button";
+
+//- /src/store/hotkeys/bindings-sync.ts
+import { listenTo, type UnlistenFn } from "../../services/events.service";
+import { INPUT_BUTTON_EVENT } from "../sync/sim-events";
+
+export const setupDeviceBindings = async (): Promise<UnlistenFn[]> => {
+  const unlistens: UnlistenFn[] = [];
+
+  unlistens.push(
+    await listenTo<InputButtonEvent>(INPUT_BUTTON_EVENT, (event) => {
+      void event;
+    })
+  );
+
+  return unlistens;
+};
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_awaited_forwarder_paired_with_a_frontend_emitter() {
+    // Both sides in TypeScript: a named emit helper in the service, the
+    // subscriber awaiting the forwarder with a literal name.
+    helpers::check_diagnostics(
+        r#"
+//- /src/services/events.service.ts
+import { emit, listen, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
+
+export const listenTo = <PayloadType>(
+  event: string,
+  handler: EventCallback<PayloadType>
+): Promise<UnlistenFn> => listen(event, handler);
+
+export const emitDragMode = (val: boolean) => emit("$0drag-mode-changed", val);
+
+//- /src/store/sync/listeners.ts
+import { listenTo, type UnlistenFn } from "../../services/events.service";
+
+export const setupOverlayListeners = async (): Promise<UnlistenFn[]> => {
+  const unlistens: UnlistenFn[] = [];
+
+  unlistens.push(
+    await listenTo<boolean>("drag-mode-changed", (e) => {
+      void e;
+    })
+  );
+
+  return unlistens;
+};
+"#,
+        expect!["(none)"],
+    );
+}
+
 #[test]
 fn diag_dynamic_listen_suppresses_no_listeners() {
     helpers::check_diagnostics(
