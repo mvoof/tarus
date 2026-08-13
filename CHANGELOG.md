@@ -1,5 +1,10 @@
 ## Change Log
 
+### [Unreleased]
+
+- **Bug fixes**
+  - Fixed wrapper functions not being resolved when the call is both awaited and given an explicit type argument (`await listenTo<Payload>("event", ...)`). Such a call was skipped, so every event the helper subscribed to was reported as having no listeners
+
 ### [0.12.0] - 2026-07-29
 
 - **Bug fixes**
