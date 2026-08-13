@@ -297,3 +297,14 @@
   function: (identifier) @plain_fn
   arguments: (arguments) @plain_args
 )
+
+; `await helper<T>(...)` parses with the await *inside* the callee:
+;   (call_expression function: (await_expression (identifier)) type_arguments: ...)
+; The plain `await helper(...)` does not — it nests the other way round. Without
+; this pattern an awaited generic call never reaches the forwarder resolver, and
+; every event the helper subscribes to looks like it has no listener.
+(call_expression
+  function: (await_expression
+    (identifier) @plain_fn)
+  arguments: (arguments) @plain_args
+)

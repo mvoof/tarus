@@ -748,6 +748,61 @@ emit("$0units-changed");
 }
 
 #[test]
+fn diag_generic_forwarded_listen_reaches_the_emitter() {
+    // Same helper as above, called with an explicit type argument. The type
+    // argument changes nothing about which parameter carries the event name, so
+    // the call site has to resolve exactly as the plain one does.
+    helpers::check_diagnostics(
+        r#"
+//- /sync.ts
+import { emit, listen } from "@tauri-apps/api/event";
+
+const subscribe = <T>(event: string) => listen(event, (_e: T) => {});
+
+export const watchUnits = () => subscribe<boolean>("units-changed");
+
+emit("$0units-changed");
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_awaited_generic_forwarded_listen_reaches_the_emitter() {
+    // `await helper<T>(...)` puts the await inside the callee, so the helper
+    // name is not directly under `function:`. The helper is declared in another
+    // module here because that is the shape this was reported against.
+    helpers::check_diagnostics(
+        r#"
+//- /services/events.service.ts
+import { listen, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
+
+export const listenTo = <PayloadType>(
+  event: string,
+  handler: EventCallback<PayloadType>
+): Promise<UnlistenFn> => listen(event, handler);
+
+//- /store/sync/events.ts
+import { emit } from "@tauri-apps/api/event";
+import { listenTo } from "../../services/events.service";
+
+export const setupOverlayListeners = async () => {
+  const unlistens: UnlistenFn[] = [];
+
+  unlistens.push(
+    await listenTo<boolean>("units-changed", () => {})
+  );
+
+  return unlistens;
+};
+
+export const emitUnitsChanged = (value: boolean) => emit("$0units-changed", value);
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
 fn diag_dynamic_listen_suppresses_no_listeners() {
     helpers::check_diagnostics(
         r#"
