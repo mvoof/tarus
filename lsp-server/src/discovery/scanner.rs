@@ -47,6 +47,30 @@ fn should_skip(entry: &DirEntry) -> bool {
     is_ignored_entry_name(name, is_dir)
 }
 
+/// Returns true if the path lies inside an excluded directory or is an excluded file.
+///
+/// Applies the same rules as the workspace scan to a single path, so a file the
+/// editor opens by itself (Go to Definition into , a search result)
+/// is not indexed when the scan would never have reached it.
+#[must_use]
+pub fn is_ignored_path(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+
+    let in_excluded_dir = parent
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .any(|name| is_ignored_entry_name(name, true));
+
+    let is_excluded_file = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| is_ignored_entry_name(name, false));
+
+    in_excluded_dir || is_excluded_file
+}
+
 /// List of valid Tauri configuration file names (in lowercase).
 ///
 /// Kept aligned with the documented Tauri config file formats:
@@ -146,6 +170,21 @@ pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_ignored_path() {
+        assert!(is_ignored_path(Path::new(
+            "/proj/node_modules/lib/index.js"
+        )));
+        assert!(is_ignored_path(Path::new(
+            "/proj/src-tauri/target/debug/out.rs"
+        )));
+        assert!(is_ignored_path(Path::new("/proj/src/types.d.ts")));
+        assert!(is_ignored_path(Path::new("/proj/vite.config.ts")));
+
+        assert!(!is_ignored_path(Path::new("/proj/src/app.ts")));
+        assert!(!is_ignored_path(Path::new("/proj/src-tauri/src/main.rs")));
+    }
 
     #[test]
     fn test_is_ignored_entry_name() {
