@@ -505,7 +505,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path) = uri_to_path(&params.text_document.uri) {
+        if let Some(path) = indexable_path(&params.text_document.uri) {
             let content = params.text_document.text.clone();
 
             // Cache document content for completion
@@ -531,7 +531,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path) = uri_to_path(&params.text_document.uri) {
+        if let Some(path) = indexable_path(&params.text_document.uri) {
             // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
             if let Some(change) = params.content_changes.into_iter().next() {
                 let content = change.text;
@@ -572,7 +572,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path) = uri_to_path(&params.text_document.uri) {
+        if let Some(path) = indexable_path(&params.text_document.uri) {
             self.on_change(path.clone()).await;
             self.publish_diagnostics_for_file(&path).await;
         }
@@ -584,7 +584,7 @@ impl LanguageServer for Backend {
         }
 
         for event in params.changes {
-            let Some(path) = uri_to_path(&event.uri) else {
+            let Some(path) = indexable_path(&event.uri) else {
                 continue;
             };
 
@@ -613,6 +613,12 @@ impl LanguageServer for Backend {
 
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     uri.to_file_path().map(std::borrow::Cow::into_owned)
+}
+
+/// Like , but None for files the workspace scan excludes
+/// (, , , ...), so opening one never indexes it.
+fn indexable_path(uri: &Uri) -> Option<PathBuf> {
+    uri_to_path(uri).filter(|path| !scanner::is_ignored_path(path))
 }
 
 fn document_symbol_len(response: &DocumentSymbolResponse) -> usize {
