@@ -526,6 +526,9 @@ impl LanguageServer for Backend {
         }
     }
 
+    // The trait requires ; the work is debounced into a spawned task, so
+    // there is nothing to await here.  for clippy before 1.98.
+    #[allow(unknown_lints, clippy::unused_async_trait_impl)]
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if !self.is_ready() {
             return;
@@ -606,6 +609,7 @@ impl LanguageServer for Backend {
         }
     }
 
+    #[allow(unknown_lints, clippy::unused_async_trait_impl)]
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
