@@ -2,8 +2,10 @@
 
 ### [Unreleased]
 
+### [0.12.2] - 2026-09-30
+
 - **Bug fixes**
-  - Fixed files from excluded folders (, , , ...) and  files being indexed when opened in the editor. The workspace scan skipped them, but opening one (Go to Definition into a library, a search result) indexed it anyway, so a library's own  calls showed up as "command is not defined in Rust backend" warnings
+  - Fixed files from excluded folders (`node_modules`, `target`, `dist`, ...) and `.d.ts` files being indexed when opened in the editor. The workspace scan skipped them, but opening one (Go to Definition into a library, a search result) indexed it anyway, so a library's own `invoke("...")` calls showed up as "command is not defined in Rust backend" warnings
 
 ### [0.12.1] - 2026-08-13
 
