@@ -6,6 +6,9 @@
   "version": "0.2.0",
   "configurations": [
     {
+      // Opens an empty Dev Host window. The extension activates only after you
+      // open a Tauri project in it manually (File > Open Folder), because every
+      // activation event is `workspaceContains:` on a Tauri config file.
       "name": "Run Extension",
       "type": "extensionHost",
       "request": "launch",
@@ -13,8 +16,31 @@
         "--extensionDevelopmentPath=${workspaceFolder}/extension",
         "--disable-extensions"
       ],
-      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      "outFiles": ["${workspaceFolder}/extension/out/**/*.js"],
       "preLaunchTask": "${defaultBuildTask}"
+    },
+    {
+      // Opens the Dev Host directly on a Tauri project, so the extension
+      // activates right away. Set TARUS_DEV_WORKSPACE to your local test
+      // project to skip the prompt.
+      "name": "Run Extension (open Tauri project)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "${input:tauriWorkspace}",
+        "--extensionDevelopmentPath=${workspaceFolder}/extension",
+        "--disable-extensions"
+      ],
+      "outFiles": ["${workspaceFolder}/extension/out/**/*.js"],
+      "preLaunchTask": "${defaultBuildTask}"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "tauriWorkspace",
+      "type": "promptString",
+      "description": "Absolute path to a Tauri project to open in the Extension Development Host",
+      "default": "${env:TARUS_DEV_WORKSPACE}"
     }
   ]
 }

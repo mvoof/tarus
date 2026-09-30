@@ -526,8 +526,8 @@ impl LanguageServer for Backend {
         }
     }
 
-    // The trait requires ; the work is debounced into a spawned task, so
-    // there is nothing to await here.  for clippy before 1.98.
+    // The trait requires `async`; the work is debounced into a spawned task, so
+    // there is nothing to await here. `unknown_lints` for clippy before 1.98.
     #[allow(unknown_lints, clippy::unused_async_trait_impl)]
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if !self.is_ready() {
@@ -619,8 +619,8 @@ fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     uri.to_file_path().map(std::borrow::Cow::into_owned)
 }
 
-/// Like , but None for files the workspace scan excludes
-/// (, , , ...), so opening one never indexes it.
+/// Like `uri_to_path`, but None for files the workspace scan excludes
+/// (`node_modules`, `target`, `.d.ts`, ...), so opening one never indexes it.
 fn indexable_path(uri: &Uri) -> Option<PathBuf> {
     uri_to_path(uri).filter(|path| !scanner::is_ignored_path(path))
 }
