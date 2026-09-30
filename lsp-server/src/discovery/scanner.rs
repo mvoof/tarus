@@ -50,7 +50,7 @@ fn should_skip(entry: &DirEntry) -> bool {
 /// Returns true if the path lies inside an excluded directory or is an excluded file.
 ///
 /// Applies the same rules as the workspace scan to a single path, so a file the
-/// editor opens by itself (Go to Definition into , a search result)
+/// editor opens by itself (Go to Definition into `node_modules`, a search result)
 /// is not indexed when the scan would never have reached it.
 #[must_use]
 pub fn is_ignored_path(path: &Path) -> bool {
