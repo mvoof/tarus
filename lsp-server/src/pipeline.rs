@@ -587,6 +587,26 @@ pub fn parses_cleanly(path: &Path, content: &str) -> bool {
     }
 }
 
+/// The text startup pass 1 reads `path`'s names from, given its current text.
+///
+/// An open file mid-edit would give half-typed names: its saved text, read through
+/// `read_saved` and used when it parses, gives the last good ones. Otherwise the
+/// current text is all there is.
+pub fn startup_names_text(
+    path: &Path,
+    current: String,
+    is_open: bool,
+    read_saved: impl FnOnce() -> Option<String>,
+) -> String {
+    if !is_open || parses_cleanly(path, &current) {
+        return current;
+    }
+
+    read_saved()
+        .filter(|saved| parses_cleanly(path, saved))
+        .unwrap_or(current)
+}
+
 /// First-pass: extract and store constants from a file's `content` without full parsing.
 ///
 /// Called during the initial workspace scan before full indexing so that
@@ -688,6 +708,45 @@ broadcast("units-changed", "metric");
             index.map.contains_key(&key),
             "call site of a helper declared in the same edit should be indexed"
         );
+    }
+
+    #[test]
+    fn test_startup_reads_an_open_broken_file_s_names_from_its_saved_text() {
+        let path = Path::new("names.ts");
+        let saved = "export const RUN = \"run://a\";\n".to_string();
+        let broken = "export const RUN = \"run://b\";\nlisten(\"x, () => {});\n".to_string();
+
+        let text = startup_names_text(path, broken, true, || Some(saved.clone()));
+
+        assert_eq!(text, saved);
+    }
+
+    #[test]
+    fn test_startup_keeps_an_open_file_s_text_when_it_parses() {
+        let path = Path::new("names.ts");
+        let edited = "export const RUN = \"run://b\";\n".to_string();
+
+        let text = startup_names_text(path, edited.clone(), true, || {
+            panic!("the saved text is not needed")
+        });
+
+        assert_eq!(text, edited);
+    }
+
+    #[test]
+    fn test_startup_keeps_a_broken_text_when_nothing_better_parses() {
+        // A closed file has only its disk text; an open one whose saved text is
+        // broken too has nothing better either.
+        let path = Path::new("names.ts");
+        let broken = "export const RUN = \"run://b\";\nlisten(\"x, () => {});\n".to_string();
+
+        let closed = startup_names_text(path, broken.clone(), false, || {
+            panic!("a closed file's text is its saved text")
+        });
+        let open = startup_names_text(path, broken.clone(), true, || Some(broken.clone()));
+
+        assert_eq!(closed, broken);
+        assert_eq!(open, broken);
     }
 
     #[test]

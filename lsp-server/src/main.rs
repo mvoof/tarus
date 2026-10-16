@@ -25,6 +25,7 @@ mod discovery;
 mod indexer;
 mod parser;
 mod pipeline;
+mod scheduling;
 mod syntax;
 mod utils;
 
@@ -34,7 +35,8 @@ use crate::discovery::scanner;
 use capabilities::{build_server_capabilities, diagnostics};
 use indexer::ProjectIndex;
 use scanner::{is_tauri_project, scan_workspace_files};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use scheduling::{PublishOrder, ReindexQueue};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 
 #[derive(Debug)]
@@ -44,9 +46,8 @@ struct Backend {
     project_index: Arc<ProjectIndex>,
     is_developer_mode_active: Arc<AtomicBool>,
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
-    /// Files whose debounced re-index is queued but has not read their text yet.
-    /// Another one queued for them meanwhile would index the same text again.
-    queued_reindexes: Arc<dashmap::DashSet<PathBuf>>,
+    /// Debounced re-index jobs queued but not started, see [`ReindexQueue`].
+    queued_reindexes: Arc<ReindexQueue>,
     /// Cache of open document contents for completion and other features
     document_cache: Arc<DashMap<PathBuf, String>>,
     /// Set to true after Pass 1 (constant collection) completes so `did_open/did_change`missing backticks
@@ -189,18 +190,12 @@ impl Backend {
                             continue;
                         };
 
-                        // An open file mid-edit would give half-typed names; its saved
-                        // text, when that parses, gives the last good ones.
-                        let content = if document_cache.contains_key(path)
-                            && !pipeline::parses_cleanly(path, &content)
-                        {
-                            std::fs::read_to_string(path)
-                                .ok()
-                                .filter(|saved| pipeline::parses_cleanly(path, saved))
-                                .unwrap_or(content)
-                        } else {
-                            content
-                        };
+                        let content = pipeline::startup_names_text(
+                            path,
+                            content,
+                            document_cache.contains_key(path),
+                            || std::fs::read_to_string(path).ok(),
+                        );
 
                         pipeline::collect_constants_from_file(path, &content, &project_index);
                     }
@@ -637,7 +632,7 @@ impl LanguageServer for Backend {
                 let task = tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(constants::DEBOUNCE_MS)).await;
 
-                    if !queued_reindexes.insert(path_clone.clone()) {
+                    if !queued_reindexes.try_queue(&path_clone) {
                         return;
                     }
 
@@ -784,14 +779,12 @@ async fn process_debounced_change(
     client: &Client,
     is_dev_mode: &Arc<AtomicBool>,
     index_ready: &AtomicBool,
-    queued_reindexes: &Arc<dashmap::DashSet<PathBuf>>,
+    queued_reindexes: &Arc<ReindexQueue>,
 ) {
     let job_path = path.to_path_buf();
     let queued_reindexes = queued_reindexes.clone();
     let files = in_background(project_index, document_cache, client, move |index, read| {
-        // From here the job reads the file's text: an edit after this point needs
-        // a job of its own.
-        queued_reindexes.remove(&job_path);
+        queued_reindexes.started(&job_path);
 
         pipeline::reindex_current(&job_path, index, read)
     })
@@ -862,15 +855,8 @@ where
     })
 }
 
-/// Numbers each diagnostics computation in the order it starts: one that starts
-/// later reads an index at least as new.
-static PUBLISH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-/// Per file, the number of the computation whose diagnostics were last sent.
-static LAST_SENT: LazyLock<DashMap<PathBuf, u64>> = LazyLock::new(DashMap::new);
-
-/// Held while deciding whether to send one file's diagnostics and sending them.
-static SEND_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Keeps publishes that finish out of order from sending stale diagnostics.
+static PUBLISH_ORDER: LazyLock<PublishOrder> = LazyLock::new(PublishOrder::default);
 
 /// Compute and publish diagnostics for each of `files` — none before `index_ready`,
 /// see [`Backend::index_ready`].
@@ -893,7 +879,7 @@ async fn publish_diagnostics_for(
 
     let worker = tokio::task::spawn_blocking(move || {
         for file in files {
-            let sequence = PUBLISH_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+            let sequence = PUBLISH_ORDER.start();
             let diagnostics = diagnostics::compute_file_diagnostics(&file, &project_index);
 
             if sender.send((file, sequence, diagnostics)).is_err() {
@@ -911,7 +897,7 @@ async fn publish_diagnostics_for(
 
 /// Clear `path`'s diagnostics, unless a newer computation already published them.
 async fn clear_diagnostics(client: &Client, path: PathBuf) {
-    let sequence = PUBLISH_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+    let sequence = PUBLISH_ORDER.start();
     send_if_newest(client, path, sequence, Vec::new()).await;
 }
 
@@ -927,14 +913,11 @@ async fn send_if_newest(
         return;
     };
 
-    let _guard = SEND_LOCK.lock().await;
-
-    if LAST_SENT.get(&file).is_some_and(|last| *last > sequence) {
-        return;
-    }
-
-    LAST_SENT.insert(file, sequence);
-    client.publish_diagnostics(uri, diagnostics, None).await;
+    PUBLISH_ORDER
+        .send_if_newest(&file, sequence, || {
+            client.publish_diagnostics(uri, diagnostics, None)
+        })
+        .await;
 }
 
 #[tokio::main]
@@ -951,7 +934,7 @@ async fn main() {
         project_index,
         is_developer_mode_active: initial_dev_mode_state.clone(),
         debounce_tasks: Arc::new(DashMap::new()),
-        queued_reindexes: Arc::new(dashmap::DashSet::new()),
+        queued_reindexes: Arc::new(ReindexQueue::default()),
         document_cache: Arc::new(DashMap::new()),
         constants_ready: Arc::new(AtomicBool::new(false)),
         index_ready: Arc::new(AtomicBool::new(false)),
