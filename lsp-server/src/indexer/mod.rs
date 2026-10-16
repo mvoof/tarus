@@ -52,17 +52,20 @@ pub struct ProjectIndex {
     pub(crate) generated_event_paths: DashMap<PathBuf, Vec<String>>,
     // Generators discovered from project configuration files
     pub(crate) generator_bindings: RwLock<Vec<DiscoveredGenerator>>,
-    // Global constant storage: constant_name -> string_value
-    pub(crate) rust_constants: DashMap<String, String>,
-    // `const A: &str = B;` in Rust: constant_name -> referenced constant_name
-    pub(crate) rust_constant_references: DashMap<String, String>,
-    pub(crate) js_constants: DashMap<String, String>,
+    // Constant storage: constant_name -> every (file, string_value) declaring it.
+    // Each entry keeps its file so that re-indexing one file drops only its own
+    // declarations, never a same-named one from another file.
+    pub(crate) rust_constants: DashMap<String, Vec<(PathBuf, String)>>,
+    // `const A: T = B;` in Rust: constant_name -> every (file, reference)
+    pub(crate) rust_constant_references:
+        DashMap<String, Vec<(PathBuf, crate::utils::ConstantReference)>>,
+    // `type A = &str;` in Rust: alias_name -> every file declaring it
+    pub(crate) rust_str_type_aliases: DashMap<String, Vec<(PathBuf, ())>>,
+    pub(crate) js_constants: DashMap<String, Vec<(PathBuf, String)>>,
     // Reverse index for stale removal: file_path -> list of constant names
     pub(crate) rust_constants_paths: DashMap<PathBuf, Vec<String>>,
-    // Kept apart from `rust_constants_paths`: `pub const X: &str = crate::a::X;`
-    // re-exports a name another file holds the value of, and dropping this file's
-    // reference must not drop that value.
     pub(crate) rust_constant_reference_paths: DashMap<PathBuf, Vec<String>>,
+    pub(crate) rust_str_type_alias_paths: DashMap<PathBuf, Vec<String>>,
     pub(crate) js_constants_paths: DashMap<PathBuf, Vec<String>>,
     // Files holding Tauri calls whose name could not be resolved to a literal
     pub(crate) dynamic_usages: DashMap<PathBuf, DynamicUsages>,
@@ -93,9 +96,11 @@ impl Default for ProjectIndex {
             generator_bindings: RwLock::new(Vec::new()),
             rust_constants: DashMap::new(),
             rust_constant_references: DashMap::new(),
+            rust_str_type_aliases: DashMap::new(),
             js_constants: DashMap::new(),
             rust_constants_paths: DashMap::new(),
             rust_constant_reference_paths: DashMap::new(),
+            rust_str_type_alias_paths: DashMap::new(),
             js_constants_paths: DashMap::new(),
             dynamic_usages: DashMap::new(),
             forwarders: DashMap::new(),
@@ -269,12 +274,18 @@ impl ProjectIndex {
         self.remove_rust_constants_for_file(&path);
         let value_names: Vec<String> = constants.values.keys().cloned().collect();
         let reference_names: Vec<String> = constants.references.keys().cloned().collect();
+        let alias_names: Vec<String> = constants.str_type_aliases.iter().cloned().collect();
         for (name, value) in constants.values {
-            self.rust_constants.insert(name, value);
+            insert_owned(&self.rust_constants, &path, name, value);
         }
-        for (name, target) in constants.references {
-            self.rust_constant_references.insert(name, target);
+        for (name, reference) in constants.references {
+            insert_owned(&self.rust_constant_references, &path, name, reference);
         }
+        for alias in constants.str_type_aliases {
+            insert_owned(&self.rust_str_type_aliases, &path, alias, ());
+        }
+        self.rust_str_type_alias_paths
+            .insert(path.clone(), alias_names);
         self.rust_constants_paths.insert(path.clone(), value_names);
         self.rust_constant_reference_paths
             .insert(path, reference_names);
@@ -289,7 +300,7 @@ impl ProjectIndex {
         self.remove_js_constants_for_file(&path);
         let names: Vec<String> = constants.keys().cloned().collect();
         for (name, value) in constants {
-            self.js_constants.insert(name, value);
+            insert_owned(&self.js_constants, &path, name, value);
         }
         self.js_constants_paths.insert(path, names);
     }
@@ -312,17 +323,7 @@ impl ProjectIndex {
     /// Remove all forwarding helpers associated with a file
     pub fn remove_forwarders_for_file(&self, path: &Path) {
         if let Some((_, names)) = self.forwarder_paths.remove(path) {
-            for name in names {
-                let now_empty = self.forwarders.get_mut(&name).is_some_and(|mut entry| {
-                    entry.retain(|(declared_in, _)| declared_in != path);
-
-                    entry.is_empty()
-                });
-
-                if now_empty {
-                    self.forwarders.remove(&name);
-                }
-            }
+            remove_owned(&self.forwarders, path, names);
         }
     }
 
@@ -348,39 +349,36 @@ impl ProjectIndex {
     /// Remove all Rust constants associated with a file
     pub fn remove_rust_constants_for_file(&self, path: &Path) {
         if let Some((_, names)) = self.rust_constants_paths.remove(path) {
-            for name in names {
-                self.rust_constants.remove(&name);
-            }
+            remove_owned(&self.rust_constants, path, names);
         }
         if let Some((_, names)) = self.rust_constant_reference_paths.remove(path) {
-            for name in names {
-                self.rust_constant_references.remove(&name);
-            }
+            remove_owned(&self.rust_constant_references, path, names);
+        }
+        if let Some((_, names)) = self.rust_str_type_alias_paths.remove(path) {
+            remove_owned(&self.rust_str_type_aliases, path, names);
         }
     }
 
     /// Remove all JS/TS constants associated with a file
     pub fn remove_js_constants_for_file(&self, path: &Path) {
         if let Some((_, names)) = self.js_constants_paths.remove(path) {
-            for name in names {
-                self.js_constants.remove(&name);
-            }
+            remove_owned(&self.js_constants, path, names);
         }
     }
 
     /// Collect all global Rust constants as a `HashMap` (for passing to parsers),
     /// with `const A: &str = B;` resolved across files
     pub fn get_all_rust_constants(&self) -> std::collections::HashMap<String, String> {
-        let mut values: std::collections::HashMap<String, String> = self
-            .rust_constants
+        let mut values = latest_owned(&self.rust_constants);
+        let str_type_aliases: std::collections::HashSet<String> = self
+            .rust_str_type_aliases
             .iter()
-            .map(|e| (e.key().clone(), e.value().clone()))
+            .map(|entry| entry.key().clone())
             .collect();
-        let references: std::collections::HashMap<String, String> = self
-            .rust_constant_references
-            .iter()
-            .map(|e| (e.key().clone(), e.value().clone()))
-            .collect();
+        let references = crate::utils::str_typed_references(
+            latest_owned(&self.rust_constant_references),
+            &str_type_aliases,
+        );
 
         crate::utils::resolve_constant_references(
             &mut values,
@@ -393,9 +391,41 @@ impl ProjectIndex {
 
     /// Collect all global JS/TS constants as a `HashMap` (for passing to parsers)
     pub fn get_all_js_constants(&self) -> std::collections::HashMap<String, String> {
-        self.js_constants
-            .iter()
-            .map(|e| (e.key().clone(), e.value().clone()))
-            .collect()
+        latest_owned(&self.js_constants)
     }
+}
+
+/// Record that `path` declares `name`. Files keep their own entries side by side.
+fn insert_owned<T>(map: &DashMap<String, Vec<(PathBuf, T)>>, path: &Path, name: String, value: T) {
+    map.entry(name)
+        .or_default()
+        .push((path.to_path_buf(), value));
+}
+
+/// Drop the entries `path` declared under `names`, leaving other files' entries.
+///
+/// The emptiness check and the removal happen under one shard lock (`remove_if`):
+/// checked and removed as two steps, a same-named entry another thread adds in
+/// between would be removed with it.
+fn remove_owned<T>(map: &DashMap<String, Vec<(PathBuf, T)>>, path: &Path, names: Vec<String>) {
+    for name in names {
+        if let Some(mut entry) = map.get_mut(&name) {
+            entry.retain(|(declared_in, _)| declared_in != path);
+        }
+
+        map.remove_if(&name, |_, entries| entries.is_empty());
+    }
+}
+
+/// One value per name: the most recently indexed file's, as a single map always gave.
+fn latest_owned<T: Clone>(
+    map: &DashMap<String, Vec<(PathBuf, T)>>,
+) -> std::collections::HashMap<String, T> {
+    map.iter()
+        .filter_map(|entry| {
+            let (_, value) = entry.value().last()?;
+
+            Some((entry.key().clone(), value.clone()))
+        })
+        .collect()
 }

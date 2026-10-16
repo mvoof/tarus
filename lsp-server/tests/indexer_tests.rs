@@ -531,3 +531,136 @@ fn test_reindexing_a_same_name_reexport_keeps_the_original_value() {
         Some("x")
     );
 }
+
+#[test]
+fn test_reindexing_one_file_keeps_a_same_name_value_from_another() {
+    // Two files declare the same constant; editing one must not drop the other's.
+    let index = ProjectIndex::new();
+    let first_file = test_path("src-tauri/src/first.rs");
+    let second_file = test_path("src-tauri/src/second.rs");
+    let declaration = r#"pub const EVENT_X: &str = "x";"#;
+
+    for path in [first_file, second_file.clone(), second_file.clone()] {
+        index.add_rust_constants(
+            path,
+            lsp_server::utils::extract_rust_constant_decls_from_content(declaration),
+        );
+    }
+    assert_eq!(
+        index
+            .get_all_rust_constants()
+            .get("EVENT_X")
+            .map(String::as_str),
+        Some("x")
+    );
+
+    index.remove_rust_constants_for_file(&second_file);
+    assert_eq!(
+        index
+            .get_all_rust_constants()
+            .get("EVENT_X")
+            .map(String::as_str),
+        Some("x")
+    );
+}
+
+#[test]
+fn test_reindexing_one_file_keeps_a_same_name_reference_from_another() {
+    let index = ProjectIndex::new();
+    let names_file = test_path("src-tauri/src/names.rs");
+    let first_file = test_path("src-tauri/src/first.rs");
+    let second_file = test_path("src-tauri/src/second.rs");
+    let reference = "pub const EVENT_ALIAS: &str = crate::names::RUN;";
+
+    index.add_rust_constants(
+        names_file,
+        lsp_server::utils::extract_rust_constant_decls_from_content(
+            r#"pub const RUN: &str = "run";"#,
+        ),
+    );
+    for path in [first_file, second_file.clone(), second_file.clone()] {
+        index.add_rust_constants(
+            path,
+            lsp_server::utils::extract_rust_constant_decls_from_content(reference),
+        );
+    }
+
+    index.remove_rust_constants_for_file(&second_file);
+    assert_eq!(
+        index
+            .get_all_rust_constants()
+            .get("EVENT_ALIAS")
+            .map(String::as_str),
+        Some("run")
+    );
+}
+
+#[test]
+fn test_reindexing_one_file_keeps_a_same_name_js_constant_from_another() {
+    // Two TS files declare the same constant (a shared name copied into two
+    // modules); editing one must not drop the other's.
+    let index = ProjectIndex::new();
+    let first_file = test_path("src/first.ts");
+    let second_file = test_path("src/second.ts");
+    let declaration = "export const EVENT_X = 'x';";
+
+    for path in [first_file, second_file.clone(), second_file.clone()] {
+        index.add_js_constants(
+            path,
+            lsp_server::utils::extract_js_constants_from_content(declaration, false),
+        );
+    }
+    assert_eq!(
+        index
+            .get_all_js_constants()
+            .get("EVENT_X")
+            .map(String::as_str),
+        Some("x")
+    );
+
+    index.remove_js_constants_for_file(&second_file);
+    assert_eq!(
+        index
+            .get_all_js_constants()
+            .get("EVENT_X")
+            .map(String::as_str),
+        Some("x")
+    );
+}
+
+#[test]
+fn test_rust_reference_through_a_str_type_alias_in_another_file() {
+    let index = ProjectIndex::new();
+    let types_file = test_path("src-tauri/src/types.rs");
+
+    index.add_rust_constants(
+        test_path("src-tauri/src/names.rs"),
+        lsp_server::utils::extract_rust_constant_decls_from_content(
+            r#"pub const RUN_RAW: &str = "run";"#,
+        ),
+    );
+    index.add_rust_constants(
+        test_path("src-tauri/src/events.rs"),
+        lsp_server::utils::extract_rust_constant_decls_from_content(
+            "pub const RUN: crate::types::EventName = crate::names::RUN_RAW;",
+        ),
+    );
+    assert_eq!(index.get_all_rust_constants().get("RUN"), None);
+
+    index.add_rust_constants(
+        types_file.clone(),
+        lsp_server::utils::extract_rust_constant_decls_from_content(
+            "pub type EventName = &'static str;",
+        ),
+    );
+    assert_eq!(
+        index
+            .get_all_rust_constants()
+            .get("RUN")
+            .map(String::as_str),
+        Some("run")
+    );
+
+    index.remove_rust_constants_for_file(&types_file);
+    assert_eq!(index.get_all_rust_constants().get("RUN"), None);
+}
