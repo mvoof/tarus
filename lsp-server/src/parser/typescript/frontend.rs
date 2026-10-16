@@ -385,10 +385,10 @@ pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forw
         .parse(content, None)
         .ok_or_else(|| ParseError::SyntaxError(format!("Failed to parse {lang:?} file")))?;
 
-    // No `has_error` bail-out here: helpers are cross-file, so discarding every
-    // declaration in a file that is merely mid-edit would silently turn each of its
-    // call sites elsewhere into an unresolved dynamic usage. Tree-sitter still
-    // recovers the intact subtrees, and the main pass parses on the same terms.
+    // No `has_error` bail-out here: at startup this is the only source of a broken
+    // file's helpers, and discarding them all would turn each of their call sites
+    // elsewhere into an unresolved dynamic usage. Tree-sitter still recovers the
+    // intact subtrees. On an edit, the main pass decides whether they are stored.
     let query = Query::new(&ts_lang, get_query_source(lang))
         .map_err(|e| ParseError::QueryError(format!("Failed to create {lang:?} query: {e}")))?;
 
@@ -571,19 +571,27 @@ enum ArgResolution {
 }
 
 /// Node kinds that wrap a value without changing it: `(x)`, `x as T`, `x!`,
-/// `x satisfies T`.
-const VALUE_WRAPPER_KINDS: [&str; 4] = [
+/// `x satisfies T`, `<T>x`.
+const VALUE_WRAPPER_KINDS: [&str; 5] = [
     "parenthesized_expression",
     "as_expression",
     "non_null_expression",
     "satisfies_expression",
+    "type_assertion",
 ];
 
 /// The value inside any parentheses and type-only wrappers: `(EVENT as string)!`
 /// names whatever `EVENT` names.
 fn unwrap_value(mut node: tree_sitter::Node<'_>) -> tree_sitter::Node<'_> {
     while VALUE_WRAPPER_KINDS.contains(&node.kind()) {
-        let Some(inner) = node.named_child(0) else {
+        // `<T>x` puts the type first; every other wrapper puts the value first.
+        let value = if node.kind() == "type_assertion" {
+            node.named_child(node.named_child_count().saturating_sub(1))
+        } else {
+            node.named_child(0)
+        };
+
+        let Some(inner) = value else {
             break;
         };
 
@@ -656,55 +664,63 @@ fn literal_key(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
     literal_text(node, bytes).filter(|key| !key.is_empty())
 }
 
-/// The string a literal holds, its escapes decoded: `"run\u003Aa"` holds `run:a`.
-/// None when an escape cannot be decoded, such as a legacy octal `"\1"`.
+/// The string a literal holds, its escapes decoded: `"run\u003Aa"` holds `run:a`,
+/// and `"\uD83D\uDE00"` the one character the surrogate pair spells. None when an
+/// escape cannot be decoded, such as a legacy octal `"\1"` or a lone surrogate.
 fn literal_text(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
-    let mut text = String::new();
+    // JavaScript strings are UTF-16: a `\uXXXX` may be half of a pair, so the
+    // units are collected first and decoded together.
+    let mut units: Vec<u16> = Vec::new();
 
     for part in node.named_children(&mut node.walk()) {
         let raw = part.utf8_text(bytes).ok()?;
 
         match part.kind() {
-            "string_fragment" => text.push_str(raw),
-            "escape_sequence" => text.push_str(&decode_escape(raw)?),
+            "string_fragment" => units.extend(raw.encode_utf16()),
+            "escape_sequence" => units.extend(decode_escape(raw)?),
             _ => return None,
         }
     }
 
-    Some(text)
+    String::from_utf16(&units).ok()
 }
 
-/// The text one JavaScript escape sequence stands for: `\n`, `\x41`, `\u0041`,
-/// `\u{1F600}`, a line continuation, or `\` before any other character.
-fn decode_escape(escape: &str) -> Option<String> {
+/// The UTF-16 units one JavaScript escape sequence stands for: `\n`, `\x41`,
+/// `\u0041`, `\u{1F600}`, a line continuation, or `\` before any other character.
+fn decode_escape(escape: &str) -> Option<Vec<u16>> {
     let rest = escape.strip_prefix('\\')?;
     let mut chars = rest.chars();
     let first = chars.next()?;
     let tail = chars.as_str();
 
-    let hex = |digits: &str| {
+    let units = |text: &str| Some(text.encode_utf16().collect());
+    let code_point = |digits: &str| {
         u32::from_str_radix(digits, 16)
             .ok()
             .and_then(char::from_u32)
-            .map(String::from)
+            .map(|c| c.encode_utf16(&mut [0; 2]).to_vec())
     };
 
     match first {
-        'n' if tail.is_empty() => Some("\n".to_string()),
-        't' if tail.is_empty() => Some("\t".to_string()),
-        'r' if tail.is_empty() => Some("\r".to_string()),
-        'b' if tail.is_empty() => Some("\u{8}".to_string()),
-        'f' if tail.is_empty() => Some("\u{c}".to_string()),
-        'v' if tail.is_empty() => Some("\u{b}".to_string()),
-        '0' if tail.is_empty() => Some("\0".to_string()),
-        'x' if tail.len() == 2 => hex(tail),
+        'n' if tail.is_empty() => units("\n"),
+        't' if tail.is_empty() => units("\t"),
+        'r' if tail.is_empty() => units("\r"),
+        'b' if tail.is_empty() => units("\u{8}"),
+        'f' if tail.is_empty() => units("\u{c}"),
+        'v' if tail.is_empty() => units("\u{b}"),
+        '0' if tail.is_empty() => units("\0"),
+        'x' if tail.len() == 2 => code_point(tail),
+        // Four digits name one UTF-16 unit, a surrogate half included.
+        'u' if tail.len() == 4 && !tail.starts_with('{') => {
+            u16::from_str_radix(tail, 16).ok().map(|unit| vec![unit])
+        }
         'u' => tail
             .strip_prefix('{')
             .and_then(|braced| braced.strip_suffix('}'))
-            .map_or_else(|| hex(tail).filter(|_| tail.len() == 4), hex),
-        '\n' | '\r' | '\u{2028}' | '\u{2029}' => Some(String::new()),
+            .and_then(code_point),
+        '\n' | '\r' | '\u{2028}' | '\u{2029}' => Some(Vec::new()),
         '1'..='9' => None,
-        other if tail.is_empty() => Some(other.to_string()),
+        other if tail.is_empty() => Some(other.encode_utf16(&mut [0; 2]).to_vec()),
         _ => None,
     }
 }

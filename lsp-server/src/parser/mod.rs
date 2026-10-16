@@ -116,6 +116,9 @@ pub struct RustFileIndex {
     pub file_index: FileIndex,
     pub command_schemas: Vec<CommandSchema>,
     pub event_schemas: Vec<EventSchema>,
+    /// The tree holds ERROR or MISSING nodes: a file mid-edit, or syntax the grammar
+    /// does not know. What parsed is still here; what did not is missing.
+    pub has_syntax_errors: bool,
 }
 
 /// Parse a Rust file in a single pass, extracting findings, command schemas, and event schemas.
@@ -139,15 +142,6 @@ pub fn parse_rust_full(
         .parse(content, None)
         .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
 
-    // As in `parse_frontend`: a file broken mid-edit still parses into a tree, and
-    // what it yields — `const EVENT: &str = "run://a` with the quote not yet closed —
-    // would replace the last good constants every file using them resolves through.
-    if tree.root_node().has_error() {
-        return Err(ParseError::SyntaxError(
-            "Rust file has syntax errors; keeping last valid index".to_string(),
-        ));
-    }
-
     let root = tree.root_node();
 
     let parsed = extract_rust_findings(root, content, &ts_lang, global_constants)?;
@@ -164,5 +158,6 @@ pub fn parse_rust_full(
         },
         command_schemas,
         event_schemas,
+        has_syntax_errors: root.has_error(),
     })
 }

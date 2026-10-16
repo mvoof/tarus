@@ -1202,11 +1202,13 @@ fn parse_ts_literal_with_escapes_names_what_it_spells() {
 import { emit, listen } from "@tauri-apps/api/event";
 emit("run\u003Asent");
 listen('a\'b', () => {});
+emit("party\uD83D\uDE00");
 "#,
         expect![[r#"
             /runs.ts:
               Event Emit "run:sent" 1:6..1:19
-              Event Listen "a'b" 2:8..2:12"#]],
+              Event Listen "a'b" 2:8..2:12
+              Event Emit "party😀" 3:6..3:23"#]],
     );
 }
 
@@ -1226,5 +1228,21 @@ emitTo("main", "run://sent", a + b);
               Event Emit "run://sent" 1:16..1:26
               Event Emit "run://sent" 2:16..2:26
               Event Emit "run://sent" 3:16..3:26"#]],
+    );
+}
+
+#[test]
+fn parse_tsx_still_parses_without_type_assertions() {
+    // The TSX grammar has no `<T>x`; its query must still compile.
+    helpers::check_parse(
+        r#"
+//- /view.tsx
+import { emit } from "@tauri-apps/api/event";
+emit(await eventName());
+emit("run://a");
+"#,
+        expect![[r#"
+            /view.tsx:
+              Event Emit "run://a" 2:6..2:13"#]],
     );
 }

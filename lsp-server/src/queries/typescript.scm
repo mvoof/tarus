@@ -53,7 +53,7 @@
   !type_arguments
   arguments: (arguments
     .
-    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value)
+    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression) (await_expression) (new_expression) (unary_expression) (sequence_expression)] @arg_value)
 ) @call_simple
 
 ; Await expression with simple call: await invoke("cmd")
@@ -81,7 +81,7 @@
   !type_arguments
   arguments: (arguments
     .
-    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value)
+    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression) (await_expression) (new_expression) (unary_expression) (sequence_expression)] @arg_value)
 ) @call_await_simple
 
 ; Function calls with second string argument: emitTo("target", "event")
@@ -112,7 +112,7 @@
     .
     (_)
     .
-    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value_second)
+    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression) (await_expression) (new_expression) (unary_expression) (sequence_expression)] @arg_value_second)
 ) @call_second_arg
 
 ; Await expression with second string argument: await emitTo("target", "event")
@@ -146,7 +146,7 @@
     .
     (_)
     .
-    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value_second)
+    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression) (await_expression) (new_expression) (unary_expression) (sequence_expression)] @arg_value_second)
 ) @call_await_second_arg
 
 ; === GENERIC CALLS (with type arguments) ===
@@ -173,7 +173,7 @@
   type_arguments: (type_arguments)
   arguments: (arguments
     .
-    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value)
+    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression) (await_expression) (new_expression) (unary_expression) (sequence_expression)] @arg_value)
 ) @call_generic
 
 ; Await expression with generic call: await invoke<T>("cmd")
@@ -201,7 +201,7 @@
   type_arguments: (type_arguments)
   arguments: (arguments
     .
-    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value)
+    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression) (await_expression) (new_expression) (unary_expression) (sequence_expression)] @arg_value)
 ) @call_await_generic
 
 ; Generic calls with second string argument: emitTo<T>("target", "event")
@@ -232,7 +232,7 @@
     .
     (_)
     .
-    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value_second)
+    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression) (await_expression) (new_expression) (unary_expression) (sequence_expression)] @arg_value_second)
 ) @call_generic_second_arg
 
 ; Await expression with second string argument and generics: await emitTo<T>("target", "event")
@@ -266,7 +266,7 @@
     .
     (_)
     .
-    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value_second)
+    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression) (await_expression) (new_expression) (unary_expression) (sequence_expression)] @arg_value_second)
 ) @call_await_generic_second_arg
 
 ; === SPECTA CALLS (commands.methodName(...)) ===

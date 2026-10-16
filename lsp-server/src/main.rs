@@ -34,8 +34,8 @@ use crate::discovery::scanner;
 use capabilities::{build_server_capabilities, diagnostics};
 use indexer::ProjectIndex;
 use scanner::{is_tauri_project, scan_workspace_files};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 
 #[derive(Debug)]
 struct Backend {
@@ -44,6 +44,9 @@ struct Backend {
     project_index: Arc<ProjectIndex>,
     is_developer_mode_active: Arc<AtomicBool>,
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
+    /// Files whose debounced re-index is queued but has not read their text yet.
+    /// Another one queued for them meanwhile would index the same text again.
+    queued_reindexes: Arc<dashmap::DashSet<PathBuf>>,
     /// Cache of open document contents for completion and other features
     document_cache: Arc<DashMap<PathBuf, String>>,
     /// Set to true after Pass 1 (constant collection) completes so `did_open/did_change`missing backticks
@@ -182,9 +185,24 @@ impl Backend {
                     for path in &files {
                         let _guard = lock_reindex();
 
-                        if let Ok(content) = utils::read_current_text(path, &document_cache) {
-                            pipeline::collect_constants_from_file(path, &content, &project_index);
-                        }
+                        let Ok(content) = utils::read_current_text(path, &document_cache) else {
+                            continue;
+                        };
+
+                        // An open file mid-edit would give half-typed names; its saved
+                        // text, when that parses, gives the last good ones.
+                        let content = if document_cache.contains_key(path)
+                            && !pipeline::parses_cleanly(path, &content)
+                        {
+                            std::fs::read_to_string(path)
+                                .ok()
+                                .filter(|saved| pipeline::parses_cleanly(path, saved))
+                                .unwrap_or(content)
+                        } else {
+                            content
+                        };
+
+                        pipeline::collect_constants_from_file(path, &content, &project_index);
                     }
 
                     files
@@ -609,12 +627,20 @@ impl LanguageServer for Backend {
                 let path_clone = path.clone();
                 let is_dev_mode = self.is_developer_mode_active.clone();
                 let index_ready = self.index_ready.clone();
+                let queued_reindexes = self.queued_reindexes.clone();
 
                 // Only the wait is cancellable. Once it has elapsed, the re-index runs
                 // as its own task: aborting it half-way would leave the index updated
-                // and the diagnostics that should follow it never published.
+                // and the diagnostics that should follow it never published. A job
+                // already queued for this file will read the newest text when it
+                // runs, so no second one is queued behind it.
                 let task = tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(constants::DEBOUNCE_MS)).await;
+
+                    if !queued_reindexes.insert(path_clone.clone()) {
+                        return;
+                    }
+
                     tokio::spawn(async move {
                         process_debounced_change(
                             &path_clone,
@@ -623,6 +649,7 @@ impl LanguageServer for Backend {
                             &client,
                             &is_dev_mode,
                             &index_ready,
+                            &queued_reindexes,
                         )
                         .await;
                     });
@@ -695,10 +722,7 @@ impl LanguageServer for Backend {
 
                 // Cleared once the file is out of the index: a publish computed from
                 // here on finds nothing for it either, so none can bring them back.
-                if let Some(uri) = Uri::from_file_path(&path) {
-                    let _guard = PUBLISH_LOCK.lock().await;
-                    self.client.publish_diagnostics(uri, vec![], None).await;
-                }
+                clear_diagnostics(&self.client, path).await;
 
                 publish_diagnostics_for(
                     others,
@@ -760,9 +784,15 @@ async fn process_debounced_change(
     client: &Client,
     is_dev_mode: &Arc<AtomicBool>,
     index_ready: &AtomicBool,
+    queued_reindexes: &Arc<dashmap::DashSet<PathBuf>>,
 ) {
     let job_path = path.to_path_buf();
+    let queued_reindexes = queued_reindexes.clone();
     let files = in_background(project_index, document_cache, client, move |index, read| {
+        // From here the job reads the file's text: an edit after this point needs
+        // a job of its own.
+        queued_reindexes.remove(&job_path);
+
         pipeline::reindex_current(&job_path, index, read)
     })
     .await;
@@ -832,30 +862,79 @@ where
     })
 }
 
-/// Held from computing one file's diagnostics until they are sent.
-static PUBLISH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Numbers each diagnostics computation in the order it starts: one that starts
+/// later reads an index at least as new.
+static PUBLISH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Per file, the number of the computation whose diagnostics were last sent.
+static LAST_SENT: LazyLock<DashMap<PathBuf, u64>> = LazyLock::new(DashMap::new);
+
+/// Held while deciding whether to send one file's diagnostics and sending them.
+static SEND_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Compute and publish diagnostics for each of `files` — none before `index_ready`,
 /// see [`Backend::index_ready`].
+///
+/// They are computed off the async runtime and sent as each is ready. Publishes
+/// for one file can run concurrently, so a result older than the one already sent
+/// is dropped rather than sent over it.
 async fn publish_diagnostics_for(
     files: Vec<PathBuf>,
-    project_index: &ProjectIndex,
+    project_index: &Arc<ProjectIndex>,
     client: &Client,
     index_ready: &AtomicBool,
 ) {
-    if !index_ready.load(Ordering::Acquire) {
+    if !index_ready.load(Ordering::Acquire) || files.is_empty() {
         return;
     }
 
-    for file in files {
-        if let Some(uri) = Uri::from_file_path(&file) {
-            // Computed and sent under one lock: a publish computed earlier cannot be
-            // sent after one computed later and overwrite it.
-            let _guard = PUBLISH_LOCK.lock().await;
-            let diagnostics = diagnostics::compute_file_diagnostics(&file, project_index);
-            client.publish_diagnostics(uri, diagnostics, None).await;
+    let (sender, mut computed) = tokio::sync::mpsc::unbounded_channel();
+    let project_index = project_index.clone();
+
+    let worker = tokio::task::spawn_blocking(move || {
+        for file in files {
+            let sequence = PUBLISH_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+            let diagnostics = diagnostics::compute_file_diagnostics(&file, &project_index);
+
+            if sender.send((file, sequence, diagnostics)).is_err() {
+                break;
+            }
         }
+    });
+
+    while let Some((file, sequence, diagnostics)) = computed.recv().await {
+        send_if_newest(client, file, sequence, diagnostics).await;
     }
+
+    let _ = worker.await;
+}
+
+/// Clear `path`'s diagnostics, unless a newer computation already published them.
+async fn clear_diagnostics(client: &Client, path: PathBuf) {
+    let sequence = PUBLISH_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+    send_if_newest(client, path, sequence, Vec::new()).await;
+}
+
+/// Send `diagnostics` for `file` unless diagnostics from a later computation were
+/// sent already.
+async fn send_if_newest(
+    client: &Client,
+    file: PathBuf,
+    sequence: u64,
+    diagnostics: Vec<tower_lsp_server::lsp_types::Diagnostic>,
+) {
+    let Some(uri) = Uri::from_file_path(&file) else {
+        return;
+    };
+
+    let _guard = SEND_LOCK.lock().await;
+
+    if LAST_SENT.get(&file).is_some_and(|last| *last > sequence) {
+        return;
+    }
+
+    LAST_SENT.insert(file, sequence);
+    client.publish_diagnostics(uri, diagnostics, None).await;
 }
 
 #[tokio::main]
@@ -872,6 +951,7 @@ async fn main() {
         project_index,
         is_developer_mode_active: initial_dev_mode_state.clone(),
         debounce_tasks: Arc::new(DashMap::new()),
+        queued_reindexes: Arc::new(dashmap::DashSet::new()),
         document_cache: Arc::new(DashMap::new()),
         constants_ready: Arc::new(AtomicBool::new(false)),
         index_ready: Arc::new(AtomicBool::new(false)),

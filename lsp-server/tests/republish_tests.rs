@@ -644,8 +644,8 @@ fn a_file_that_cannot_be_read_keeps_its_index_entries() {
 
 #[test]
 fn a_rust_file_that_does_not_parse_keeps_its_constants_until_it_does() {
-    // Rust follows the same rule as the frontend: a half-typed string must not
-    // replace the constant every file using it resolves through.
+    // A half-typed string must not replace the constant every file using it
+    // resolves through. Unlike the frontend, the rest of the file is still indexed.
     let mut workspace = Workspace::new(&[
         (
             "src-tauri/src/events.rs",
@@ -657,12 +657,11 @@ fn a_rust_file_that_does_not_parse_keeps_its_constants_until_it_does() {
         ),
     ]);
 
-    let files = workspace.edit(
+    workspace.edit(
         "src-tauri/src/events.rs",
-        "pub const EVENT_RUN: &str = \"run://a\";\npub const EVENT_STOP: &str = \"run://b",
+        "pub const EVENT_RUN: &str = \"run://c\";\npub const EVENT_STOP: &str = \"run://b",
     );
 
-    assert!(files.is_empty(), "{files:?}");
     assert_eq!(
         workspace.event_files("run://a"),
         vec![test_path("src-tauri/src/run.rs")]
@@ -723,4 +722,78 @@ fn a_file_that_does_not_parse_keeps_its_same_named_helpers_ambiguous() {
     workspace.edit("src/relay.ts", &format!("{helper}emit(\"x);\n"));
 
     assert!(!workspace.index.get_all_forwarders().contains_key("relay"));
+}
+
+#[test]
+fn a_rust_file_with_syntax_errors_is_indexed_from_what_parsed() {
+    // A typo, or syntax tree-sitter-rust does not know, must not hide every command
+    // in the file: not when it is first indexed, nor when an edit adds one.
+    let mut workspace = Workspace::new(&[(
+        "src-tauri/src/commands.rs",
+        "#[tauri::command]\nfn greet(name: String) -> String { name }\nfn broken( {}\n",
+    )]);
+    assert!(workspace.index.get_schema("greet").is_some());
+
+    workspace.edit(
+        "src-tauri/src/commands.rs",
+        "#[tauri::command]\nfn greet(name: String) -> String { name }\n#[tauri::command]\nfn bye() {}\nfn broken( {}\n",
+    );
+
+    assert!(workspace.index.get_schema("bye").is_some());
+}
+
+#[test]
+fn a_refresh_keeps_the_edited_file_s_value_of_a_shared_constant_name() {
+    // Both files declare `EVENT` and use it. Re-parsing the other file as a
+    // dependent must not hand the name back to its value, wave after wave.
+    let mut workspace = Workspace::new(&[
+        (
+            "src/a.ts",
+            "import { emit } from \"@tauri-apps/api/event\";\nexport const EVENT = \"run://a\";\nemit(EVENT);\n",
+        ),
+        (
+            "src/b.ts",
+            "import { emit } from \"@tauri-apps/api/event\";\nexport const EVENT = \"run://b\";\nemit(EVENT);\n",
+        ),
+    ]);
+
+    let edited = "import { emit } from \"@tauri-apps/api/event\";\nexport const EVENT = \"run://c\";\nemit(EVENT);\n";
+    workspace.type_unindexed("src/a.ts", edited);
+
+    let reads = std::cell::Cell::new(0);
+    let files = &workspace.files;
+    pipeline::reindex(
+        &test_path("src/a.ts"),
+        edited,
+        &workspace.index,
+        |file: &Path| {
+            reads.set(reads.get() + 1);
+            files.get(file).cloned()
+        },
+    );
+
+    // One wave re-parses `b.ts`, the next finds nothing changed.
+    assert!(reads.get() <= 2, "{} reads", reads.get());
+    assert_eq!(
+        workspace.index.get_all_js_constants().get("EVENT"),
+        Some(&"run://c".to_string())
+    );
+}
+
+#[test]
+fn a_file_that_does_not_parse_does_not_take_over_a_shared_constant_name() {
+    // `new.ts` was indexed last, so its `EVENT` is in use; a broken edit of
+    // `old.ts` stores nothing and must not change that.
+    let mut workspace = Workspace::new(&[("src/old.ts", "export const EVENT = \"run://old\";\n")]);
+    workspace.edit("src/new.ts", "export const EVENT = \"run://new\";\n");
+
+    workspace.edit(
+        "src/old.ts",
+        "import { emit } from \"@tauri-apps/api/event\";\nexport const EVENT = \"run://old\";\nemit(\"x);\n",
+    );
+
+    assert_eq!(
+        workspace.index.get_all_js_constants().get("EVENT"),
+        Some(&"run://new".to_string())
+    );
 }

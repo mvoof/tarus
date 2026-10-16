@@ -192,7 +192,9 @@ pub fn refresh_after(
     // Each wave compares the names against one copy taken as it starts, so a wave
     // sees exactly what the one before it changed. This ends on its own: a file's
     // constants and helpers come from its own text alone, which does not change
-    // during the pass. The wave limit is a guard, not the stopping rule.
+    // during the pass, and storing them unchanged leaves the index as it was — it
+    // does not even make the file the latest declarer of a shared name. The wave
+    // limit is a guard, not the stopping rule.
     let mut names_before = before.names.clone();
 
     for wave in 0..MAX_REFRESH_WAVES {
@@ -385,9 +387,15 @@ pub fn is_supported_file(path: &Path) -> bool {
 
 /// Process file content from editor buffer.
 ///
-/// Returns `true` if the file was successfully routed and processed. A file that
-/// fails to parse keeps the constants and helpers it declared before: read from a
-/// broken tree, they would be dropped or mangled for every file resolving through them.
+/// Returns `true` if the file was successfully routed and processed. The parse
+/// resolves through the workspace's names with this file's new ones in place of its
+/// old, but they are stored only once the parse is good: read from a broken tree,
+/// they would be dropped or mangled for every file resolving through them.
+///
+/// A TypeScript/JavaScript file with syntax errors is not indexed at all and keeps
+/// its last good index. A Rust file with syntax errors is indexed from the parts
+/// that parsed — tree-sitter-rust may not know newer syntax, and dropping the whole
+/// file would lose every command in it — but keeps its earlier constants.
 ///
 /// # Panics
 ///
@@ -405,67 +413,83 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
         return true;
     }
 
-    let previous_names = project_index.file_names(path);
-
     if path.extension().is_some_and(|s| s == "rs") {
-        // Extract constants from this file and store globally, then get all global Rust constants
-        let local_constants = crate::utils::extract_rust_constant_decls_from_content(content);
-        project_index.add_rust_constants(path.to_path_buf(), local_constants);
-        let global_constants = project_index.get_all_rust_constants();
-
-        match parser::parse_rust_full(content, path, &global_constants) {
-            Ok(rust_index) => {
-                let path_buf = path.to_path_buf();
-
-                project_index.remove_schemas_for_file(&path_buf);
-                project_index.remove_event_schemas_for_file(&path_buf);
-
-                project_index.add_file(rust_index.file_index);
-
-                for schema in rust_index.command_schemas {
-                    add_command_schema_if_higher_priority(schema, project_index);
-                }
-
-                for schema in rust_index.event_schemas {
-                    add_event_schema_if_higher_priority(schema, project_index);
-                }
-
-                true
-            }
-
-            Err(e) => {
-                project_index.restore_file_names(path, previous_names);
-                project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
-                false
-            }
-        }
+        process_rust_file(path, content, project_index)
     } else {
-        // Extract constants from this file and store globally, then get all global JS/TS constants
-        let is_js = path.extension().is_some_and(|e| e == "js" || e == "jsx");
-        let local_constants = crate::utils::extract_js_constants_from_content(content, is_js);
-        project_index.add_js_constants(path.to_path_buf(), local_constants);
-        let global_constants = project_index.get_all_js_constants();
+        process_frontend_file(path, content, project_index)
+    }
+}
 
-        // Re-register this file's helpers before the main pass reads the global set:
-        // an edit that declares a helper and calls it in the same file would otherwise
-        // be parsed against the pre-edit snapshot and leave the call site unresolved.
-        project_index.add_forwarders(path.to_path_buf(), extract_file_forwarders(path, content));
+fn process_rust_file(path: &Path, content: &str, project_index: &ProjectIndex) -> bool {
+    let local_constants = crate::utils::extract_rust_constant_decls_from_content(content);
+    let global_constants = project_index.rust_constants_with(path, &local_constants);
 
-        let known_forwarders = project_index.get_all_forwarders();
+    let parsed = match parser::parse_rust_full(content, path, &global_constants) {
+        // A broken file that has an earlier index keeps its constants, and is parsed
+        // again against them: its own call sites must not resolve through what the
+        // broken text spells either. One indexed for the first time has nothing
+        // better to keep.
+        Ok(rust_index) if rust_index.has_syntax_errors && project_index.is_indexed(path) => {
+            parser::parse_rust_full(content, path, &project_index.get_all_rust_constants())
+        }
 
-        match parser::parse(path, content, &global_constants, &known_forwarders) {
-            Ok(file_index) => {
-                project_index.add_file(file_index);
-
-                true
+        parsed => {
+            if parsed.is_ok() {
+                project_index.add_rust_constants(path.to_path_buf(), local_constants);
             }
 
-            Err(e) => {
-                project_index.restore_file_names(path, previous_names);
-                project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
+            parsed
+        }
+    };
 
-                false
+    match parsed {
+        Ok(rust_index) => {
+            project_index.remove_schemas_for_file(path);
+            project_index.remove_event_schemas_for_file(path);
+
+            project_index.add_file(rust_index.file_index);
+
+            for schema in rust_index.command_schemas {
+                add_command_schema_if_higher_priority(schema, project_index);
             }
+
+            for schema in rust_index.event_schemas {
+                add_event_schema_if_higher_priority(schema, project_index);
+            }
+
+            true
+        }
+
+        Err(e) => {
+            project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
+
+            false
+        }
+    }
+}
+
+fn process_frontend_file(path: &Path, content: &str, project_index: &ProjectIndex) -> bool {
+    let is_js = path.extension().is_some_and(|e| e == "js" || e == "jsx");
+    let local_constants = crate::utils::extract_js_constants_from_content(content, is_js);
+    let global_constants = project_index.js_constants_with(path, &local_constants);
+
+    // This file's own helpers count: an edit that declares a helper and calls it in
+    // the same file would otherwise leave the call site unresolved.
+    let known_forwarders =
+        project_index.forwarders_with(path, &extract_file_forwarders(path, content));
+
+    match parser::parse(path, content, &global_constants, &known_forwarders) {
+        Ok(file_index) => {
+            project_index.add_js_constants(path.to_path_buf(), local_constants);
+            project_index.add_file(file_index);
+
+            true
+        }
+
+        Err(e) => {
+            project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
+
+            false
         }
     }
 }
@@ -549,6 +573,17 @@ fn process_bindings_file(
         GeneratorKind::RustSource => {
             // Not a valid kind for generated TS files — ignore
         }
+    }
+}
+
+/// Whether `content` parses without syntax errors, as `path`'s language reads it.
+#[must_use]
+pub fn parses_cleanly(path: &Path, content: &str) -> bool {
+    if path.extension().is_some_and(|s| s == "rs") {
+        parser::parse_rust_full(content, path, &HashMap::new())
+            .is_ok_and(|rust_index| !rust_index.has_syntax_errors)
+    } else {
+        parser::parse(path, content, &HashMap::new(), &HashMap::new()).is_ok()
     }
 }
 

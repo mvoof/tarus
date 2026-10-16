@@ -1514,3 +1514,27 @@ listen("$0started", () => {});
         expect!["(none)"],
     );
 }
+
+#[test]
+fn diag_names_built_by_other_expressions_get_the_hint() {
+    // Awaited, constructed, unary and comma names are as unknown as any other
+    // expression: the call is recorded, not ignored. `<T>x` is seen through.
+    helpers::check_diagnostics(
+        r#"
+//- /names.ts
+import { emit, listen } from "@tauri-apps/api/event";
+emit(await eventName());
+emit(new String("run://a"));
+emit(typeof x);
+emit((log(), name));
+listen(<string>name, () => {});
+listen(<string>"run://b", () => {});
+$0"#,
+        expect![[r#"
+            HINT 1:5..1:22 "Tarus cannot read the event name `await eventName()` as a string: this emit is not linked to any listener, and "never emitted" warnings are off for the whole workspace" [tarus/unresolved-name]
+            HINT 2:5..2:26 "Tarus cannot read the event name `new String("run://a")` as a string: this emit is not linked to any listener, and "never emitted" warnings are off for the whole workspace" [tarus/unresolved-name]
+            HINT 3:5..3:13 "Tarus cannot read the event name `typeof x` as a string: this emit is not linked to any listener, and "never emitted" warnings are off for the whole workspace" [tarus/unresolved-name]
+            HINT 4:5..4:18 "Tarus cannot read the event name `(log(), name)` as a string: this emit is not linked to any listener, and "never emitted" warnings are off for the whole workspace" [tarus/unresolved-name]
+            HINT 5:7..5:19 "Tarus cannot read the event name `<string>name` as a string: this listener is not linked to any emitter, and "no listeners" warnings are off for the whole workspace" [tarus/unresolved-name]"#]],
+    );
+}
