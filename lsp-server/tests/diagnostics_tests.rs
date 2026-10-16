@@ -726,7 +726,9 @@ export const relay = (name: string, value: unknown) => emitToOverlays(name, valu
 
 listen("$0units-changed", () => {});
 "#,
-        expect!["(none)"],
+        expect![[
+            r#"HINT 6:70..6:74 "Tarus cannot read the event name `name` as a string: this emit is not linked to any listener, and "never emitted" warnings are off for the whole workspace" [tarus/unresolved-name]"#
+        ]],
     );
 }
 
@@ -982,7 +984,9 @@ export const watchAny = (name: string) => subscribe(name);
 
 emit("$0units-changed");
 "#,
-        expect!["(none)"],
+        expect![[
+            r#"HINT 4:52..4:56 "Tarus cannot read the event name `name` as a string: this listener is not linked to any emitter, and "no listeners" warnings are off for the whole workspace" [tarus/unresolved-name]"#
+        ]],
     );
 }
 
@@ -1207,5 +1211,100 @@ listen("run://raw", () => {});
 listen("$0run://typo", () => {});
 "###,
         expect![[r#"WARNING 3:8..3:18 "Event 'run://typo' is listened for but never emitted""#]],
+    );
+}
+
+// ===========================================================================
+// Hint on a name Tarus cannot read
+// ===========================================================================
+
+#[test]
+fn diag_hint_on_rust_emit_with_unreadable_constant() {
+    // `concat!` is only evaluated by the compiler, so the emit has no name; the hint
+    // says so where it is written, together with what it switches off.
+    helpers::check_diagnostics(
+        r#"
+//- /src-tauri/src/run.rs
+const EVENT_X: &str = concat!("run", "://x");
+
+fn start(app: &AppHandle) {
+    app.emit($0EVENT_X, ()).ok();
+}
+"#,
+        expect![[
+            r#"HINT 3:13..3:20 "Tarus cannot read the event name `EVENT_X` as a string: this emit is not linked to any listener, and "never emitted" warnings are off for the whole workspace" [tarus/unresolved-name]"#
+        ]],
+    );
+}
+
+#[test]
+fn diag_hint_on_invoke_with_an_unresolvable_name() {
+    helpers::check_diagnostics(
+        r#"
+//- /frontend.ts
+import { invoke } from "@tauri-apps/api/core";
+
+// A parameter alone would make this a forwarding helper; a field of one is not.
+export const run = (commands: Record<string, string>) => invoke(comm$0ands.run);
+"#,
+        expect![[
+            r#"HINT 3:64..3:76 "Tarus cannot read the command name `commands.run` as a string: this call is not linked to its command, and "never invoked" warnings are off for the whole workspace" [tarus/unresolved-name]"#
+        ]],
+    );
+}
+
+#[test]
+fn diag_hint_does_not_quote_a_long_expression() {
+    helpers::check_diagnostics(
+        r#"
+//- /frontend.ts
+import { listen } from "@tauri-apps/api/event";
+
+export const watch = (prefix: string, id: string) =>
+  listen($0`${prefix}://some-rather-long-event-suffix/${id}`, () => {});
+"#,
+        expect![[
+            r#"HINT 3:9..3:58 "Tarus cannot read the event name as a string: this listener is not linked to any emitter, and "no listeners" warnings are off for the whole workspace" [tarus/unresolved-name]"#
+        ]],
+    );
+}
+
+#[test]
+fn diag_no_hint_when_every_name_resolves() {
+    helpers::check_diagnostics(
+        r#"
+//- /src-tauri/src/run.rs
+const EVENT_X: &str = "run://x";
+
+fn start(app: &AppHandle) {
+    app.emit($0EVENT_X, ()).ok();
+}
+
+//- /frontend.ts
+import { listen } from "@tauri-apps/api/event";
+
+listen("run://x", () => {});
+"#,
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_hint_on_forwarder_call_without_a_name_argument() {
+    // The name is not unreadable here, it is missing: the hint must not quote `()`.
+    helpers::check_diagnostics(
+        r#"
+//- /sync.ts
+import { emitTo } from "@tauri-apps/api/event";
+
+const emitToOverlays = async (event: string, payload: unknown) => {
+  await emitTo("overlay", event, payload);
+};
+
+export const broken = () => emitToOverlays$0();
+"#,
+        expect![[
+            r#"HINT 6:42..6:44 "This call passes no event name: this emit is not linked to any listener, and "never emitted" warnings are off for the whole workspace" [tarus/unresolved-name]"#
+        ]],
     );
 }

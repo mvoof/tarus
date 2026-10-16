@@ -10,6 +10,7 @@
 
 use crate::indexer::{
     DiagnosticInfo, DynamicUsages, GeneratorKind, IndexKey, LocationInfo, ProjectIndex,
+    UnresolvedCall,
 };
 use crate::syntax::Behavior;
 use serde_json::json;
@@ -101,9 +102,14 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
         None => return Vec::new(),
     };
 
+    let mut diagnostics: Vec<Diagnostic> = project_index
+        .unresolved_calls_in(path)
+        .iter()
+        .map(unresolved_name_hint)
+        .collect();
+
     let has_bindings = project_index.has_bindings_files();
     let dynamic = project_index.dynamic_usages();
-    let mut diagnostics = Vec::new();
 
     for key in &keys {
         let info = project_index.get_diagnostic_info(key);
@@ -137,6 +143,50 @@ pub fn compute_file_diagnostics(path: &PathBuf, project_index: &ProjectIndex) ->
     }
 
     diagnostics
+}
+
+/// Longest name argument quoted in the hint; a longer one (an expression) is
+/// described instead of quoted.
+const MAX_QUOTED_NAME_LENGTH: usize = 40;
+
+/// Explain an unresolved name where it is written, including what it costs: the
+/// "absence" checks of its kind go quiet for the whole workspace.
+fn unresolved_name_hint(call: &UnresolvedCall) -> Diagnostic {
+    let (entity, consequence) = match call.behavior {
+        Behavior::Emit => (
+            "event",
+            "this emit is not linked to any listener, and \"never emitted\" warnings are off for the whole workspace",
+        ),
+        Behavior::Listen => (
+            "event",
+            "this listener is not linked to any emitter, and \"no listeners\" warnings are off for the whole workspace",
+        ),
+        Behavior::Call | Behavior::SpectaCall | Behavior::Definition => (
+            "command",
+            "this call is not linked to its command, and \"never invoked\" warnings are off for the whole workspace",
+        ),
+    };
+
+    let is_quotable =
+        call.name_text.len() <= MAX_QUOTED_NAME_LENGTH && !call.name_text.contains('\n');
+    let message = if call.name_text.is_empty() {
+        format!("This call passes no {entity} name: {consequence}")
+    } else if is_quotable {
+        format!(
+            "Tarus cannot read the {entity} name `{}` as a string: {consequence}",
+            call.name_text
+        )
+    } else {
+        format!("Tarus cannot read the {entity} name as a string: {consequence}")
+    };
+
+    tarus_diagnostic(
+        call.range,
+        DiagnosticSeverity::HINT,
+        message,
+        Some(crate::constants::DIAG_UNRESOLVED_NAME),
+        None,
+    )
 }
 
 fn compute_structural_diagnostics(

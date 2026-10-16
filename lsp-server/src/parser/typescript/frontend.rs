@@ -1,6 +1,6 @@
 //! TypeScript/JavaScript/Vue/Svelte/Angular parsing for Tauri invoke/emit/listen calls
 
-use crate::indexer::{DynamicUsages, Finding, Forwarder};
+use crate::indexer::{DynamicUsages, Finding, Forwarder, UnresolvedCall};
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use crate::utils::{find_capture, point_to_position};
 use std::collections::HashMap;
@@ -69,6 +69,7 @@ pub struct FrontendParse {
     pub dynamic_usages: DynamicUsages,
     /// Forwarding helpers this file declares.
     pub forwarders: Vec<Forwarder>,
+    pub unresolved_calls: Vec<UnresolvedCall>,
 }
 
 /// Everything needed to turn a command/event name argument into a literal.
@@ -119,7 +120,7 @@ enum PatternOutcome {
     /// The name lives at the helper's call sites, not here.
     Forwards(Forwarder),
     /// The match is a Tauri call whose name could not be resolved to a literal.
-    Dynamic(Behavior),
+    Dynamic(UnresolvedCall),
     /// The match is not a Tauri call at all.
     NoMatch,
 }
@@ -309,21 +310,26 @@ pub fn parse_frontend(
     // Second pass: collect function calls
     let mut findings = Vec::new();
     let mut dynamic_usages = DynamicUsages::default();
+    let mut unresolved_calls = Vec::new();
     let mut forwarders = Vec::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, bytes);
+    let mut record_unresolved = |call: UnresolvedCall| {
+        dynamic_usages.record(call.behavior);
+        unresolved_calls.push(call);
+    };
 
     while let Some(m) = matches.next() {
         match process_first_arg_pattern(m, &caps, bytes, &aliases, &scope, content, line_offset) {
             PatternOutcome::Found(f) => findings.push(f),
             PatternOutcome::Forwards(fwd) => forwarders.push(fwd),
-            PatternOutcome::Dynamic(behavior) => dynamic_usages.record(behavior),
+            PatternOutcome::Dynamic(call) => record_unresolved(call),
             PatternOutcome::NoMatch => {}
         }
         match process_second_arg_pattern(m, &caps, bytes, &aliases, &scope, line_offset) {
             PatternOutcome::Found(f) => findings.push(f),
             PatternOutcome::Forwards(fwd) => forwarders.push(fwd),
-            PatternOutcome::Dynamic(behavior) => dynamic_usages.record(behavior),
+            PatternOutcome::Dynamic(call) => record_unresolved(call),
             PatternOutcome::NoMatch => {}
         }
         if let Some(f) = process_specta_call(m, &caps, bytes, content, line_offset) {
@@ -334,7 +340,7 @@ pub fn parse_frontend(
         }
         match process_forwarder_call(m, &caps, bytes, &scope, known_forwarders, line_offset) {
             PatternOutcome::Found(f) => findings.push(f),
-            PatternOutcome::Dynamic(behavior) => dynamic_usages.record(behavior),
+            PatternOutcome::Dynamic(call) => record_unresolved(call),
             PatternOutcome::Forwards(_) | PatternOutcome::NoMatch => {}
         }
     }
@@ -343,6 +349,7 @@ pub fn parse_frontend(
         findings,
         dynamic_usages,
         forwarders,
+        unresolved_calls,
     })
 }
 
@@ -466,7 +473,12 @@ fn process_forwarder_call(
         .named_children(&mut cursor)
         .nth(forwarder.param_index)
     else {
-        return PatternOutcome::Dynamic(forwarder.behavior);
+        // No argument at that position: anchor at the argument list, but quote
+        // nothing — the name is missing, not unreadable.
+        return PatternOutcome::Dynamic(UnresolvedCall {
+            name_text: String::new(),
+            ..unresolved_call(forwarder.behavior, args_cap.node, bytes, line_offset)
+        });
     };
 
     match resolve_name_argument(name_arg, bytes, scope) {
@@ -478,8 +490,33 @@ fn process_forwarder_call(
         )),
         // A forwarder fed by another forwarder's parameter would need a second
         // hop; one level is resolved, deeper chains stay unprovable.
-        ArgResolution::Unresolved => PatternOutcome::Dynamic(forwarder.behavior),
+        ArgResolution::Unresolved => PatternOutcome::Dynamic(unresolved_call(
+            forwarder.behavior,
+            name_arg,
+            bytes,
+            line_offset,
+        )),
         ArgResolution::EmptyLiteral => PatternOutcome::NoMatch,
+    }
+}
+
+/// An unresolved call anchored at the node that should have named it.
+fn unresolved_call(
+    behavior: Behavior,
+    name_node: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    line_offset: usize,
+) -> UnresolvedCall {
+    UnresolvedCall {
+        behavior,
+        name_text: name_node.utf8_text(bytes).unwrap_or_default().to_string(),
+        range: adjust_range(
+            Range {
+                start: point_to_position(name_node.start_position()),
+                end: point_to_position(name_node.end_position()),
+            },
+            line_offset,
+        ),
     }
 }
 
@@ -627,9 +664,17 @@ fn process_first_arg_pattern<'a>(
         let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
 
         return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
-            .map_or(PatternOutcome::Dynamic(pattern.behavior), |forwarder| {
-                PatternOutcome::Forwards(forwarder)
-            });
+            .map_or_else(
+                || {
+                    PatternOutcome::Dynamic(unresolved_call(
+                        pattern.behavior,
+                        arg_cap.node,
+                        bytes,
+                        line_offset,
+                    ))
+                },
+                PatternOutcome::Forwards,
+            );
     }
 
     let (resolved_arg, range) = match resolve_name_argument(arg_cap.node, bytes, scope) {
@@ -638,9 +683,17 @@ fn process_first_arg_pattern<'a>(
             let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
 
             return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
-                .map_or(PatternOutcome::Dynamic(pattern.behavior), |forwarder| {
-                    PatternOutcome::Forwards(forwarder)
-                });
+                .map_or_else(
+                    || {
+                        PatternOutcome::Dynamic(unresolved_call(
+                            pattern.behavior,
+                            arg_cap.node,
+                            bytes,
+                            line_offset,
+                        ))
+                    },
+                    PatternOutcome::Forwards,
+                );
         }
         ArgResolution::EmptyLiteral => return PatternOutcome::NoMatch,
     };
@@ -700,9 +753,17 @@ fn process_second_arg_pattern<'a>(
             let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
 
             return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
-                .map_or(PatternOutcome::Dynamic(pattern.behavior), |forwarder| {
-                    PatternOutcome::Forwards(forwarder)
-                });
+                .map_or_else(
+                    || {
+                        PatternOutcome::Dynamic(unresolved_call(
+                            pattern.behavior,
+                            arg_cap.node,
+                            bytes,
+                            line_offset,
+                        ))
+                    },
+                    PatternOutcome::Forwards,
+                );
         }
         ArgResolution::EmptyLiteral => return PatternOutcome::NoMatch,
     };
