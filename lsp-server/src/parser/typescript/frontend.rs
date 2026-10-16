@@ -1,6 +1,6 @@
 //! TypeScript/JavaScript/Vue/Svelte/Angular parsing for Tauri invoke/emit/listen calls
 
-use crate::indexer::{DynamicUsages, Finding, Forwarder, UnresolvedCall};
+use crate::indexer::{DynamicUsages, Finding, Forwarder, NameUses, UnresolvedCall};
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use crate::utils::{find_capture, point_to_position};
 use std::collections::HashMap;
@@ -70,6 +70,7 @@ pub struct FrontendParse {
     /// Forwarding helpers this file declares.
     pub forwarders: Vec<Forwarder>,
     pub unresolved_calls: Vec<UnresolvedCall>,
+    pub uses: NameUses,
 }
 
 /// Everything needed to turn a command/event name argument into a literal.
@@ -80,6 +81,8 @@ struct Scope<'a> {
     global_constants: &'a HashMap<String, String>,
     /// Identifiers the file binds itself; they shadow `global_constants`.
     bound_names: std::collections::HashSet<String>,
+    /// What the file looked up in other files, recorded as it is looked up.
+    uses: std::cell::RefCell<NameUses>,
 }
 
 impl Scope<'_> {
@@ -104,6 +107,12 @@ impl Scope<'_> {
         if self.bound_names.contains(base) {
             return None;
         }
+
+        // Recorded whether or not it is found: a constant declared later must
+        // still reach this file.
+        let mut uses = self.uses.borrow_mut();
+        uses.constants.insert(raw.to_string());
+        uses.constants.insert(last.to_string());
 
         self.global_constants
             .get(raw)
@@ -311,6 +320,7 @@ pub fn parse_frontend(
         local_constants: crate::utils::extract_js_constants(root, content, is_js),
         global_constants,
         bound_names: crate::utils::collect_bound_names(root, content),
+        uses: std::cell::RefCell::default(),
     };
 
     // Second pass: collect function calls
@@ -356,6 +366,7 @@ pub fn parse_frontend(
         dynamic_usages,
         forwarders,
         unresolved_calls,
+        uses: scope.uses.into_inner(),
     })
 }
 
@@ -460,6 +471,14 @@ fn process_forwarder_call(
     };
 
     let called = fn_cap.node.utf8_text(bytes).unwrap_or_default();
+
+    // Any function may become a helper once another file declares it as one.
+    scope
+        .uses
+        .borrow_mut()
+        .forwarders
+        .insert(called.to_string());
+
     let Some(forwarder) = known_forwarders.get(called) else {
         return PatternOutcome::NoMatch;
     };

@@ -8,8 +8,10 @@
 //! - `lens` — `CodeLens` data preparation
 //! - `reports` — debug reports and introspection
 //! - `cache` — name and diagnostic info caching
+//! - `dependents` — which files looked up which names, and what a re-index changed
 
 mod cache;
+mod dependents;
 mod generators;
 mod lens;
 mod reports;
@@ -17,6 +19,7 @@ mod schemas;
 mod symbols;
 pub mod types;
 
+pub use dependents::{FileDeclarations, NameChanges};
 pub use types::*;
 
 use crate::syntax::EntityType;
@@ -82,6 +85,11 @@ pub struct ProjectIndex {
     pub(crate) forwarders: DashMap<String, Vec<(PathBuf, Forwarder)>>,
     // Reverse index for stale removal: file_path -> declared forwarder names
     pub(crate) forwarder_paths: DashMap<PathBuf, Vec<String>>,
+    // What each file looked up among other files' declarations, by name: the files
+    // to re-parse when a name changes
+    pub(crate) rust_constant_users: dependents::NameUsers,
+    pub(crate) js_constant_users: dependents::NameUsers,
+    pub(crate) forwarder_users: dependents::NameUsers,
 }
 
 impl Default for ProjectIndex {
@@ -115,6 +123,9 @@ impl Default for ProjectIndex {
             unresolved_calls: DashMap::new(),
             forwarders: DashMap::new(),
             forwarder_paths: DashMap::new(),
+            rust_constant_users: dependents::NameUsers::default(),
+            js_constant_users: dependents::NameUsers::default(),
+            forwarder_users: dependents::NameUsers::default(),
         }
     }
 }
@@ -158,8 +169,9 @@ impl ProjectIndex {
     ///
     /// Panics if the cache lock is poisoned (only occurs if another thread panicked while holding the lock)
     pub fn add_file(&self, file_index: FileIndex) {
-        // Clear old data about this file so that there are no duplicates
-        self.remove_file(&file_index.path);
+        // Clear old data about this file so that there are no duplicates. What it
+        // looked up is replaced below, and left as it is when unchanged.
+        self.clear_file(&file_index.path);
 
         let mut keys_in_this_file = std::collections::HashSet::new();
         let path_ref = file_index.path;
@@ -177,6 +189,7 @@ impl ProjectIndex {
         }
 
         self.add_forwarders(path_ref.clone(), file_index.forwarders);
+        self.set_name_uses(&path_ref, file_index.uses);
 
         for finding in file_index.findings {
             let key = IndexKey {
@@ -203,6 +216,13 @@ impl ProjectIndex {
 
     /// Deletes all entries associated with a specific file.
     pub fn remove_file(&self, path: &Path) {
+        self.clear_file(path);
+        self.remove_name_uses(path);
+    }
+
+    /// [`Self::remove_file`] but for what the file looked up, which `add_file`
+    /// replaces itself.
+    fn clear_file(&self, path: &Path) {
         if let Some((_, keys)) = self.file_map.remove(path) {
             for key in keys {
                 self.map.entry(key.clone()).and_modify(|locs| {
@@ -325,34 +345,34 @@ impl ProjectIndex {
         self.map.get(key).map(|v| v.clone()).unwrap_or_default()
     }
 
-    /// Store Rust constants extracted from a file, replacing any previous constants for that file
+    /// Store Rust constants extracted from a file, replacing any previous constants for that file.
     ///
-    /// Storing what the file already declares changes nothing: re-adding it would
-    /// make the file the latest declarer of each name, so re-parsing an unchanged
-    /// file could switch which of two same-named constants is in use.
+    /// Only a name whose value changed becomes this file's latest declaration of it:
+    /// re-storing an unchanged name would switch which of two same-named constants is
+    /// in use without any declaration changing, out of sight of the dependent refresh.
     pub fn add_rust_constants(&self, path: PathBuf, constants: crate::utils::RustConstants) {
-        if self.rust_constants_of(&path) == constants {
-            return;
-        }
-
-        self.remove_rust_constants_for_file(&path);
-        let value_names: Vec<String> = constants.values.keys().cloned().collect();
-        let reference_names: Vec<String> = constants.references.keys().cloned().collect();
-        let alias_names: Vec<String> = constants.str_type_aliases.iter().cloned().collect();
-        for (name, value) in constants.values {
-            insert_owned(&self.rust_constants, &path, name, value);
-        }
-        for (name, reference) in constants.references {
-            insert_owned(&self.rust_constant_references, &path, name, reference);
-        }
-        for alias in constants.str_type_aliases {
-            insert_owned(&self.rust_str_type_aliases, &path, alias, ());
-        }
-        self.rust_str_type_alias_paths
-            .insert(path.clone(), alias_names);
-        self.rust_constants_paths.insert(path.clone(), value_names);
-        self.rust_constant_reference_paths
-            .insert(path, reference_names);
+        replace_owned(
+            &self.rust_constants,
+            &self.rust_constants_paths,
+            path.clone(),
+            constants.values,
+        );
+        replace_owned(
+            &self.rust_constant_references,
+            &self.rust_constant_reference_paths,
+            path.clone(),
+            constants.references,
+        );
+        replace_owned(
+            &self.rust_str_type_aliases,
+            &self.rust_str_type_alias_paths,
+            path,
+            constants
+                .str_type_aliases
+                .into_iter()
+                .map(|alias| (alias, ()))
+                .collect(),
+        );
     }
 
     /// Store JS/TS constants extracted from a file, replacing any previous constants for that file
@@ -361,22 +381,19 @@ impl ProjectIndex {
         path: PathBuf,
         constants: std::collections::HashMap<String, String>,
     ) {
-        // Unchanged, it keeps its place, as in `add_rust_constants`.
-        if owned_by(&self.js_constants, &self.js_constants_paths, &path) == constants {
-            return;
-        }
-
-        self.remove_js_constants_for_file(&path);
-        let names: Vec<String> = constants.keys().cloned().collect();
-        for (name, value) in constants {
-            insert_owned(&self.js_constants, &path, name, value);
-        }
-        self.js_constants_paths.insert(path, names);
+        // Only changed names move, as in `add_rust_constants`.
+        replace_owned(
+            &self.js_constants,
+            &self.js_constants_paths,
+            path,
+            constants,
+        );
     }
 
     /// Store the forwarding helpers declared in a file, replacing any previous set.
     pub fn add_forwarders(&self, path: PathBuf, forwarders: Vec<Forwarder>) {
-        // Unchanged, they keep their place, as in `add_rust_constants`.
+        // Unchanged, nothing to do. Unlike constants, their order never matters: a
+        // helper name is used only when every declaration of it agrees.
         if same_items(
             &owned_entries(&self.forwarders, &self.forwarder_paths, &path)
                 .into_iter()
@@ -413,6 +430,9 @@ impl ProjectIndex {
     /// following imports there is no way to tell which declaration a call site
     /// means, and guessing would attribute the event to the wrong helper.
     #[must_use]
+    // reason: the parse reads `forwarders_with`; this full view serves the library's
+    // users (tests), which the binary re-declaring every module does not have
+    #[allow(dead_code)]
     pub fn get_all_forwarders(&self) -> std::collections::HashMap<String, Forwarder> {
         unambiguous_forwarders(self.forwarders.iter().map(|entry| {
             (
@@ -561,11 +581,51 @@ impl ProjectIndex {
     }
 }
 
-/// Record that `path` declares `name`. Files keep their own entries side by side.
-fn insert_owned<T>(map: &DashMap<String, Vec<(PathBuf, T)>>, path: &Path, name: String, value: T) {
-    map.entry(name)
-        .or_default()
-        .push((path.to_path_buf(), value));
+/// Make `values` what `path` declares, leaving other files' entries. An entry whose
+/// value is unchanged keeps its place; a changed or new one becomes the latest.
+fn replace_owned<T: PartialEq>(
+    map: &DashMap<String, Vec<(PathBuf, T)>>,
+    paths: &DashMap<PathBuf, Vec<String>>,
+    path: PathBuf,
+    values: std::collections::HashMap<String, T>,
+) {
+    let dropped: Vec<String> = paths
+        .get(&path)
+        .map(|names| {
+            names
+                .iter()
+                .filter(|name| !values.contains_key(*name))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    remove_owned(map, &path, dropped);
+
+    let names: Vec<String> = values.keys().cloned().collect();
+
+    for (name, value) in values {
+        let mut entries = map.entry(name).or_default();
+
+        match entries
+            .iter()
+            .position(|(declared_in, _)| *declared_in == path)
+        {
+            Some(index) if entries[index].1 == value => {}
+
+            Some(index) => {
+                entries.remove(index);
+                entries.push((path.clone(), value));
+            }
+
+            None => entries.push((path.clone(), value)),
+        }
+    }
+
+    if names.is_empty() {
+        paths.remove(&path);
+    } else {
+        paths.insert(path, names);
+    }
 }
 
 /// Drop the entries `path` declared under `names`, leaving other files' entries.

@@ -427,7 +427,7 @@ fn a_dependent_reparsed_with_a_pending_edit_passes_its_own_change_on() {
         ("src/base.ts", "export const PREFIX = \"base://a\";\n"),
         (
             "src/names.ts",
-            "import { PREFIX } from \"./base\";\nexport const RUN = \"run://a\";\nexport const OTHER = PREFIX;\n",
+            "import { listen } from \"@tauri-apps/api/event\";\nimport { PREFIX } from \"./base\";\nexport const RUN = \"run://a\";\nlisten(PREFIX, () => {});\n",
         ),
         (
             "src/use.ts",
@@ -441,7 +441,7 @@ fn a_dependent_reparsed_with_a_pending_edit_passes_its_own_change_on() {
 
     workspace.type_unindexed(
         "src/names.ts",
-        "import { PREFIX } from \"./base\";\nexport const RUN = \"run://b\";\nexport const OTHER = PREFIX;\n",
+        "import { listen } from \"@tauri-apps/api/event\";\nimport { PREFIX } from \"./base\";\nexport const RUN = \"run://b\";\nlisten(PREFIX, () => {});\n",
     );
     workspace.edit("src/base.ts", "export const PREFIX = \"base://b\";\n");
 
@@ -510,32 +510,31 @@ fn a_late_reindex_indexes_the_current_text_not_the_one_it_was_queued_with() {
 
 #[test]
 fn a_file_reparsed_in_one_wave_is_reparsed_again_when_a_later_wave_affects_it() {
-    // `use.ts` mentions `RUN` (changed in `names.ts`) and calls `send` from
-    // `helpers.ts`, whose editor text holds an unindexed edit turning `send` into a
-    // forwarding helper. Whichever of the two is re-parsed first, `use.ts` must end
-    // up with the call through `send` resolved.
+    // `use.ts` and `helpers.ts` both use `RUN` (changed in `names.ts`), and `use.ts`
+    // calls `send` from `helpers.ts`, whose editor text holds an unindexed edit
+    // turning `send` into a forwarding helper. Whichever of the two is re-parsed
+    // first, `use.ts` must end up with the call through `send` resolved.
     let mut workspace = Workspace::new(&[
         ("src/names.ts", "export const RUN = \"run://a\";\n"),
-        ("src/helpers.ts", "export const send = (event: string) => event;\n"),
+        (
+            "src/helpers.ts",
+            "import { RUN } from \"./names\";\nimport { emit } from \"@tauri-apps/api/event\";\nexport const send = (event: string) => event;\nemit(RUN);\n",
+        ),
         (
             "src/use.ts",
             "import { listen } from \"@tauri-apps/api/event\";\nimport { RUN } from \"./names\";\nimport { send } from \"./helpers\";\nlisten(RUN, () => {});\nsend(\"run://sent\");\n",
         ),
-        (
-            "src/mentions.ts",
-            "import { RUN } from \"./names\";\nexport const again = RUN;\n",
-        ),
     ]);
     workspace.type_unindexed(
         "src/helpers.ts",
-        "import { RUN } from \"./names\";\nimport { emit } from \"@tauri-apps/api/event\";\nexport const send = (event: string) => emit(event);\nexport const unused = RUN;\n",
+        "import { RUN } from \"./names\";\nimport { emit } from \"@tauri-apps/api/event\";\nexport const send = (event: string) => emit(event);\nemit(RUN);\n",
     );
 
     workspace.edit("src/names.ts", "export const RUN = \"run://b\";\n");
 
     assert_eq!(
         workspace.event_files("run://b"),
-        vec![test_path("src/use.ts")]
+        vec![test_path("src/helpers.ts"), test_path("src/use.ts")]
     );
     assert_eq!(
         workspace.event_files("run://sent"),
@@ -795,5 +794,161 @@ fn a_file_that_does_not_parse_does_not_take_over_a_shared_constant_name() {
     assert_eq!(
         workspace.index.get_all_js_constants().get("EVENT"),
         Some(&"run://new".to_string())
+    );
+}
+
+/// Re-index `path` in `workspace` and return the files the refresh read.
+fn files_read_by_edit(workspace: &mut Workspace, path: &str, content: &str) -> Vec<PathBuf> {
+    workspace.type_unindexed(path, content);
+
+    let read = std::cell::RefCell::new(Vec::new());
+    let files = &workspace.files;
+    pipeline::reindex(
+        &test_path(path),
+        content,
+        &workspace.index,
+        |file: &Path| {
+            read.borrow_mut().push(file.to_path_buf());
+            files.get(file).cloned()
+        },
+    );
+
+    let mut read = read.into_inner();
+    read.sort();
+    read.dedup();
+    read
+}
+
+#[test]
+fn a_file_that_only_mentions_a_changed_name_is_not_reparsed() {
+    // `RUN` in a comment, a string and an unrelated local is not a use of the
+    // constant: only `use.ts`, which resolved a call through it, is read.
+    let mut workspace = Workspace::new(&[
+        ("src/names.ts", "export const RUN = \"run://a\";\n"),
+        (
+            "src/use.ts",
+            "import { listen } from \"@tauri-apps/api/event\";\nimport { RUN } from \"./names\";\nlisten(RUN, () => {});\n",
+        ),
+        (
+            "src/mentions.ts",
+            "// RUN is documented here\nconst label = \"RUN\";\nfunction f(RUN: string) { return RUN; }\n",
+        ),
+    ]);
+
+    let read = files_read_by_edit(
+        &mut workspace,
+        "src/names.ts",
+        "export const RUN = \"run://b\";\n",
+    );
+
+    assert_eq!(read, vec![test_path("src/use.ts")]);
+    assert_eq!(
+        workspace.event_files("run://b"),
+        vec![test_path("src/use.ts")]
+    );
+}
+
+#[test]
+fn a_constant_declared_later_reaches_the_call_that_could_not_resolve_it() {
+    let mut workspace = Workspace::new(&[
+        ("src/names.ts", "export const OTHER = \"x\";\n"),
+        (
+            "src/use.ts",
+            "import { listen } from \"@tauri-apps/api/event\";\nimport { RUN } from \"./names\";\nlisten(RUN, () => {});\n",
+        ),
+    ]);
+    assert!(workspace.event_files("run://a").is_empty());
+
+    workspace.edit(
+        "src/names.ts",
+        "export const OTHER = \"x\";\nexport const RUN = \"run://a\";\n",
+    );
+
+    assert_eq!(
+        workspace.event_files("run://a"),
+        vec![test_path("src/use.ts")]
+    );
+}
+
+#[test]
+fn a_helper_declared_later_reaches_the_calls_to_it() {
+    let mut workspace = Workspace::new(&[
+        (
+            "src/helpers.ts",
+            "export const send = (event: string) => event;\n",
+        ),
+        (
+            "src/use.ts",
+            "import { send } from \"./helpers\";\nsend(\"run://sent\");\n",
+        ),
+    ]);
+    assert!(workspace.event_files("run://sent").is_empty());
+
+    workspace.edit(
+        "src/helpers.ts",
+        "import { emit } from \"@tauri-apps/api/event\";\nexport const send = (event: string) => emit(event);\n",
+    );
+
+    assert_eq!(
+        workspace.event_files("run://sent"),
+        vec![test_path("src/use.ts")]
+    );
+}
+
+#[test]
+fn a_changed_rust_constant_reaches_a_call_through_a_reference_to_it() {
+    // `run.rs` emits `RUN`, which is `BASE` from another file: changing `BASE`
+    // changes `RUN` though `run.rs` never names `BASE`.
+    let mut workspace = Workspace::new(&[
+        (
+            "src-tauri/src/base.rs",
+            r#"pub const BASE: &str = "run://a";"#,
+        ),
+        (
+            "src-tauri/src/names.rs",
+            "pub const RUN: &str = crate::base::BASE;",
+        ),
+        (
+            "src-tauri/src/run.rs",
+            "fn start(app: &AppHandle) { app.emit(crate::names::RUN, ()).ok(); }",
+        ),
+        ("src-tauri/src/other.rs", "fn other() {}"),
+    ]);
+    assert_eq!(
+        workspace.event_files("run://a"),
+        vec![test_path("src-tauri/src/run.rs")]
+    );
+
+    let read = files_read_by_edit(
+        &mut workspace,
+        "src-tauri/src/base.rs",
+        r#"pub const BASE: &str = "run://b";"#,
+    );
+
+    assert_eq!(read, vec![test_path("src-tauri/src/run.rs")]);
+    assert_eq!(
+        workspace.event_files("run://b"),
+        vec![test_path("src-tauri/src/run.rs")]
+    );
+}
+
+#[test]
+fn renaming_one_constant_does_not_hand_a_shared_name_to_the_edited_file() {
+    // Both files declare `EVENT`; `b.ts` was indexed last, so its value is in use.
+    // Editing another constant in `a.ts` must leave `EVENT` with `b.ts`.
+    let mut workspace = Workspace::new(&[(
+        "src/a.ts",
+        "export const EVENT = \"run://a\";\nexport const X = \"x\";\n",
+    )]);
+    workspace.edit("src/b.ts", "export const EVENT = \"run://b\";\n");
+
+    workspace.edit(
+        "src/a.ts",
+        "export const EVENT = \"run://a\";\nexport const X = \"y\";\n",
+    );
+
+    assert_eq!(
+        workspace.index.get_all_js_constants().get("EVENT"),
+        Some(&"run://b".to_string())
     );
 }
