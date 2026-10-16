@@ -40,6 +40,9 @@ pub struct ProjectIndex {
     pub(crate) reference_limit: AtomicUsize,
     // Schema storage: command_name -> CommandSchema
     pub(crate) command_schemas: DashMap<String, CommandSchema>,
+    // Every file's declaration of each command, to fall back on when the file whose
+    // schema is in `command_schemas` drops it
+    pub(crate) command_schema_candidates: DashMap<String, Vec<CommandSchema>>,
     // Reverse index: source_path -> list of command names (for stale removal)
     pub(crate) generated_file_paths: DashMap<PathBuf, Vec<String>>,
     // Type alias storage: alias_name -> type definition string
@@ -48,6 +51,8 @@ pub struct ProjectIndex {
     pub(crate) generated_alias_paths: DashMap<PathBuf, Vec<String>>,
     // Event schema storage: event_name -> EventSchema
     pub(crate) event_schemas: DashMap<String, EventSchema>,
+    // Every file's declaration of each event, as `command_schema_candidates`
+    pub(crate) event_schema_candidates: DashMap<String, Vec<EventSchema>>,
     // Reverse index: source_path -> list of event names (for stale removal)
     pub(crate) generated_event_paths: DashMap<PathBuf, Vec<String>>,
     // Generators discovered from project configuration files
@@ -90,10 +95,12 @@ impl Default for ProjectIndex {
             parse_errors: DashMap::new(),
             reference_limit: AtomicUsize::new(crate::constants::DEFAULT_REFERENCE_LIMIT),
             command_schemas: DashMap::new(),
+            command_schema_candidates: DashMap::new(),
             generated_file_paths: DashMap::new(),
             type_aliases: DashMap::new(),
             generated_alias_paths: DashMap::new(),
             event_schemas: DashMap::new(),
+            event_schema_candidates: DashMap::new(),
             generated_event_paths: DashMap::new(),
             generator_bindings: RwLock::new(Vec::new()),
             rust_constants: DashMap::new(),
@@ -244,6 +251,31 @@ impl ProjectIndex {
         merged
     }
 
+    /// Unresolved Tauri call sites in `path` alone.
+    #[must_use]
+    pub fn dynamic_usages_of(&self, path: &Path) -> DynamicUsages {
+        self.dynamic_usages
+            .get(path)
+            .map(|entry| *entry.value())
+            .unwrap_or_default()
+    }
+
+    /// [`Self::dynamic_usages`] of every file but `path`.
+    #[must_use]
+    pub fn dynamic_usages_except(&self, path: &Path) -> DynamicUsages {
+        let mut merged = DynamicUsages::default();
+
+        for entry in self
+            .dynamic_usages
+            .iter()
+            .filter(|entry| entry.key() != path)
+        {
+            merged.merge(*entry.value());
+        }
+
+        merged
+    }
+
     /// Store a parse error for a file
     pub fn set_parse_error(&self, path: PathBuf, error: String) {
         self.parse_errors.insert(path, error);
@@ -277,6 +309,12 @@ impl ProjectIndex {
             .unwrap_or_default()
     }
 
+    /// Whether `path` is in the index.
+    #[must_use]
+    pub fn is_indexed(&self, path: &Path) -> bool {
+        self.file_map.contains_key(path)
+    }
+
     /// Get all indexed file paths (for iterating over the entire index)
     pub fn get_indexed_paths(&self) -> Vec<PathBuf> {
         self.file_map.iter().map(|e| e.key().clone()).collect()
@@ -288,7 +326,15 @@ impl ProjectIndex {
     }
 
     /// Store Rust constants extracted from a file, replacing any previous constants for that file
+    ///
+    /// Storing what the file already declares changes nothing: re-adding it would
+    /// make the file the latest declarer of each name, so re-parsing an unchanged
+    /// file could switch which of two same-named constants is in use.
     pub fn add_rust_constants(&self, path: PathBuf, constants: crate::utils::RustConstants) {
+        if self.rust_constants_of(&path) == constants {
+            return;
+        }
+
         self.remove_rust_constants_for_file(&path);
         let value_names: Vec<String> = constants.values.keys().cloned().collect();
         let reference_names: Vec<String> = constants.references.keys().cloned().collect();
@@ -315,6 +361,11 @@ impl ProjectIndex {
         path: PathBuf,
         constants: std::collections::HashMap<String, String>,
     ) {
+        // Unchanged, it keeps its place, as in `add_rust_constants`.
+        if owned_by(&self.js_constants, &self.js_constants_paths, &path) == constants {
+            return;
+        }
+
         self.remove_js_constants_for_file(&path);
         let names: Vec<String> = constants.keys().cloned().collect();
         for (name, value) in constants {
@@ -325,6 +376,17 @@ impl ProjectIndex {
 
     /// Store the forwarding helpers declared in a file, replacing any previous set.
     pub fn add_forwarders(&self, path: PathBuf, forwarders: Vec<Forwarder>) {
+        // Unchanged, they keep their place, as in `add_rust_constants`.
+        if same_items(
+            &owned_entries(&self.forwarders, &self.forwarder_paths, &path)
+                .into_iter()
+                .map(|(_, forwarder)| forwarder)
+                .collect::<Vec<_>>(),
+            &forwarders,
+        ) {
+            return;
+        }
+
         self.remove_forwarders_for_file(&path);
         let names: Vec<String> = forwarders.iter().map(|f| f.function_name.clone()).collect();
 
@@ -352,16 +414,50 @@ impl ProjectIndex {
     /// means, and guessing would attribute the event to the wrong helper.
     #[must_use]
     pub fn get_all_forwarders(&self) -> std::collections::HashMap<String, Forwarder> {
-        self.forwarders
-            .iter()
-            .filter_map(|entry| {
-                let (first, rest) = entry.value().split_first()?;
+        unambiguous_forwarders(self.forwarders.iter().map(|entry| {
+            (
+                entry.key().clone(),
+                entry
+                    .value()
+                    .iter()
+                    .map(|(_, forwarder)| forwarder.clone())
+                    .collect(),
+            )
+        }))
+    }
 
-                rest.iter()
-                    .all(|(_, other)| other == &first.1)
-                    .then(|| (entry.key().clone(), first.1.clone()))
+    /// [`Self::get_all_forwarders`] as it would be with `path` declaring `own`
+    /// instead of what it declares now, leaving the index as it is.
+    #[must_use]
+    pub fn forwarders_with(
+        &self,
+        path: &Path,
+        own: &[Forwarder],
+    ) -> std::collections::HashMap<String, Forwarder> {
+        let mut by_name: std::collections::HashMap<String, Vec<Forwarder>> = self
+            .forwarders
+            .iter()
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    entry
+                        .value()
+                        .iter()
+                        .filter(|(declared_in, _)| declared_in != path)
+                        .map(|(_, forwarder)| forwarder.clone())
+                        .collect(),
+                )
             })
-            .collect()
+            .collect();
+
+        for forwarder in own {
+            by_name
+                .entry(forwarder.function_name.clone())
+                .or_default()
+                .push(forwarder.clone());
+        }
+
+        unambiguous_forwarders(by_name)
     }
 
     /// Remove all Rust constants associated with a file
@@ -387,29 +483,81 @@ impl ProjectIndex {
     /// Collect all global Rust constants as a `HashMap` (for passing to parsers),
     /// with `const A: &str = B;` resolved across files
     pub fn get_all_rust_constants(&self) -> std::collections::HashMap<String, String> {
-        let mut values = latest_owned(&self.rust_constants);
-        let str_type_aliases: std::collections::HashSet<String> = self
+        let str_type_aliases = self
             .rust_str_type_aliases
             .iter()
             .map(|entry| entry.key().clone())
             .collect();
-        let references = crate::utils::str_typed_references(
+
+        resolve_rust_constants(
+            latest_owned(&self.rust_constants),
             latest_owned(&self.rust_constant_references),
             &str_type_aliases,
-        );
+        )
+    }
 
-        crate::utils::resolve_constant_references(
-            &mut values,
-            &references,
-            &std::collections::HashMap::new(),
-        );
+    /// [`Self::get_all_rust_constants`] as it would be with `path` declaring `own`
+    /// instead of what it declares now, leaving the index as it is: what a parse
+    /// resolves through before its result is known to be good enough to store.
+    #[must_use]
+    pub fn rust_constants_with(
+        &self,
+        path: &Path,
+        own: &crate::utils::RustConstants,
+    ) -> std::collections::HashMap<String, String> {
+        let mut str_type_aliases: std::collections::HashSet<String> = self
+            .rust_str_type_aliases
+            .iter()
+            .filter(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .any(|(declared_in, ())| declared_in != path)
+            })
+            .map(|entry| entry.key().clone())
+            .collect();
+        str_type_aliases.extend(own.str_type_aliases.iter().cloned());
 
-        values
+        resolve_rust_constants(
+            latest_owned_with(&self.rust_constants, path, &own.values),
+            latest_owned_with(&self.rust_constant_references, path, &own.references),
+            &str_type_aliases,
+        )
+    }
+
+    /// The Rust constants `path` declares now.
+    fn rust_constants_of(&self, path: &Path) -> crate::utils::RustConstants {
+        crate::utils::RustConstants {
+            values: owned_by(&self.rust_constants, &self.rust_constants_paths, path),
+            references: owned_by(
+                &self.rust_constant_references,
+                &self.rust_constant_reference_paths,
+                path,
+            ),
+            str_type_aliases: owned_by(
+                &self.rust_str_type_aliases,
+                &self.rust_str_type_alias_paths,
+                path,
+            )
+            .into_keys()
+            .collect(),
+        }
     }
 
     /// Collect all global JS/TS constants as a `HashMap` (for passing to parsers)
     pub fn get_all_js_constants(&self) -> std::collections::HashMap<String, String> {
         latest_owned(&self.js_constants)
+    }
+
+    /// [`Self::get_all_js_constants`] with `path` declaring `own`, as
+    /// [`Self::rust_constants_with`].
+    #[must_use]
+    pub fn js_constants_with(
+        &self,
+        path: &Path,
+        own: &std::collections::HashMap<String, String>,
+    ) -> std::collections::HashMap<String, String> {
+        latest_owned_with(&self.js_constants, path, own)
     }
 }
 
@@ -435,6 +583,40 @@ fn remove_owned<T>(map: &DashMap<String, Vec<(PathBuf, T)>>, path: &Path, names:
     }
 }
 
+/// The entries `path` declared, by name, one per name.
+fn owned_by<T: Clone>(
+    map: &DashMap<String, Vec<(PathBuf, T)>>,
+    paths: &DashMap<PathBuf, Vec<String>>,
+    path: &Path,
+) -> std::collections::HashMap<String, T> {
+    owned_entries(map, paths, path).into_iter().collect()
+}
+
+/// Every entry `path` declared, with its name: one name can occur more than once.
+fn owned_entries<T: Clone>(
+    map: &DashMap<String, Vec<(PathBuf, T)>>,
+    paths: &DashMap<PathBuf, Vec<String>>,
+    path: &Path,
+) -> Vec<(String, T)> {
+    let Some(names) = paths.get(path) else {
+        return Vec::new();
+    };
+
+    let names: std::collections::HashSet<&String> = names.iter().collect();
+
+    names
+        .into_iter()
+        .filter_map(|name| map.get(name).map(|entries| (name, entries)))
+        .flat_map(|(name, entries)| {
+            entries
+                .iter()
+                .filter(|(declared_in, _)| declared_in == path)
+                .map(|(_, value)| (name.clone(), value.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// One value per name: the most recently indexed file's, as a single map always gave.
 fn latest_owned<T: Clone>(
     map: &DashMap<String, Vec<(PathBuf, T)>>,
@@ -446,4 +628,79 @@ fn latest_owned<T: Clone>(
             Some((entry.key().clone(), value.clone()))
         })
         .collect()
+}
+
+/// [`latest_owned`] with `path`'s entries replaced by `own`, which count as the
+/// latest: `path` would be the most recently indexed file once they are stored.
+fn latest_owned_with<T: Clone>(
+    map: &DashMap<String, Vec<(PathBuf, T)>>,
+    path: &Path,
+    own: &std::collections::HashMap<String, T>,
+) -> std::collections::HashMap<String, T> {
+    let mut values: std::collections::HashMap<String, T> = map
+        .iter()
+        .filter_map(|entry| {
+            let (_, value) = entry
+                .value()
+                .iter()
+                .rev()
+                .find(|(declared_in, _)| declared_in != path)?;
+
+            Some((entry.key().clone(), value.clone()))
+        })
+        .collect();
+
+    values.extend(
+        own.iter()
+            .map(|(name, value)| (name.clone(), value.clone())),
+    );
+
+    values
+}
+
+/// String constants by name, with `const A: &str = B;` resolved through them.
+fn resolve_rust_constants(
+    mut values: std::collections::HashMap<String, String>,
+    references: std::collections::HashMap<String, crate::utils::ConstantReference>,
+    str_type_aliases: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, String> {
+    let references = crate::utils::str_typed_references(references, str_type_aliases);
+
+    crate::utils::resolve_constant_references(
+        &mut values,
+        &references,
+        &std::collections::HashMap::new(),
+    );
+
+    values
+}
+
+/// One forwarder per name, for each name all of whose declarations agree.
+fn unambiguous_forwarders(
+    by_name: impl IntoIterator<Item = (String, Vec<Forwarder>)>,
+) -> std::collections::HashMap<String, Forwarder> {
+    by_name
+        .into_iter()
+        .filter_map(|(name, declared)| {
+            let (first, rest) = declared.split_first()?;
+
+            rest.iter()
+                .all(|other| other == first)
+                .then(|| (name, first.clone()))
+        })
+        .collect()
+}
+
+/// Whether `a` and `b` hold the same items, in any order.
+fn same_items<T: PartialEq>(a: &[T], b: &[T]) -> bool {
+    let mut unmatched: Vec<&T> = b.iter().collect();
+
+    a.len() == b.len()
+        && a.iter().all(|item| {
+            unmatched
+                .iter()
+                .position(|other| *other == item)
+                .map(|index| unmatched.swap_remove(index))
+                .is_some()
+        })
 }

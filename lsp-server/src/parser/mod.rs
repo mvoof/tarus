@@ -116,6 +116,9 @@ pub struct RustFileIndex {
     pub file_index: FileIndex,
     pub command_schemas: Vec<CommandSchema>,
     pub event_schemas: Vec<EventSchema>,
+    /// The tree holds ERROR or MISSING nodes: a file mid-edit, or syntax the grammar
+    /// does not know. What parsed is still here; what did not is missing.
+    pub has_syntax_errors: bool,
 }
 
 /// Parse a Rust file in a single pass, extracting findings, command schemas, and event schemas.
@@ -155,5 +158,6 @@ pub fn parse_rust_full(
         },
         command_schemas,
         event_schemas,
+        has_syntax_errors: root.has_error(),
     })
 }

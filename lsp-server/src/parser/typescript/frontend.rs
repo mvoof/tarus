@@ -140,11 +140,17 @@ const FUNCTION_KINDS: [&str; 5] = [
 /// Anonymous callbacks are skipped: with no name there is no call site to look up.
 fn detect_forwarder(
     node: tree_sitter::Node<'_>,
-    name: &str,
     bytes: &[u8],
     entity: EntityType,
     behavior: Behavior,
 ) -> Option<Forwarder> {
+    let node = unwrap_value(node);
+
+    if node.kind() != "identifier" {
+        return None;
+    }
+
+    let name = node.utf8_text(bytes).unwrap_or_default();
     let mut current = node.parent();
 
     while let Some(candidate) = current {
@@ -379,10 +385,10 @@ pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forw
         .parse(content, None)
         .ok_or_else(|| ParseError::SyntaxError(format!("Failed to parse {lang:?} file")))?;
 
-    // No `has_error` bail-out here: helpers are cross-file, so discarding every
-    // declaration in a file that is merely mid-edit would silently turn each of its
-    // call sites elsewhere into an unresolved dynamic usage. Tree-sitter still
-    // recovers the intact subtrees, and the main pass parses on the same terms.
+    // No `has_error` bail-out here: at startup this is the only source of a broken
+    // file's helpers, and discarding them all would turn each of their call sites
+    // elsewhere into an unresolved dynamic usage. Tree-sitter still recovers the
+    // intact subtrees. On an edit, the main pass decides whether they are stored.
     let query = Query::new(&ts_lang, get_query_source(lang))
         .map_err(|e| ParseError::QueryError(format!("Failed to create {lang:?} query: {e}")))?;
 
@@ -410,11 +416,6 @@ pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forw
                 continue;
             };
 
-            // Only a bare identifier can be a forwarded parameter.
-            if arg_cap.node.kind() != "identifier" {
-                continue;
-            }
-
             let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
             let Some(original_name) = aliases.get(func_name).copied() else {
                 continue;
@@ -427,10 +428,8 @@ pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forw
                 continue;
             };
 
-            let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-
             if let Some(forwarder) =
-                detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+                detect_forwarder(arg_cap.node, bytes, pattern.entity, pattern.behavior)
             {
                 forwarders.push(forwarder);
             }
@@ -571,6 +570,37 @@ enum ArgResolution {
     Unresolved,
 }
 
+/// Node kinds that wrap a value without changing it: `(x)`, `x as T`, `x!`,
+/// `x satisfies T`, `<T>x`.
+const VALUE_WRAPPER_KINDS: [&str; 5] = [
+    "parenthesized_expression",
+    "as_expression",
+    "non_null_expression",
+    "satisfies_expression",
+    "type_assertion",
+];
+
+/// The value inside any parentheses and type-only wrappers: `(EVENT as string)!`
+/// names whatever `EVENT` names.
+fn unwrap_value(mut node: tree_sitter::Node<'_>) -> tree_sitter::Node<'_> {
+    while VALUE_WRAPPER_KINDS.contains(&node.kind()) {
+        // `<T>x` puts the type first; every other wrapper puts the value first.
+        let value = if node.kind() == "type_assertion" {
+            node.named_child(node.named_child_count().saturating_sub(1))
+        } else {
+            node.named_child(0)
+        };
+
+        let Some(inner) = value else {
+            break;
+        };
+
+        node = inner;
+    }
+
+    node
+}
+
 /// Whether the node spells a name out in full.
 ///
 /// A template literal qualifies as long as nothing is interpolated: `` `greet` ``
@@ -586,11 +616,121 @@ fn is_literal_name_node(node: tree_sitter::Node<'_>) -> bool {
     }
 }
 
+/// The dotted name a node spells, to look up as a constant: `Events.STARTED` as
+/// written, and `Events["STARTED"]` as `Events.STARTED`. None for anything that is
+/// not a name all the way down, such as `Events[key]`, `getEvents().STARTED` or
+/// `prefix + Events.STARTED`.
+fn name_path(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
+    let (object, key) = match node.kind() {
+        // `this.STARTED` and `super.STARTED` resolve by their last segment, as
+        // a class's static constant is looked up.
+        "identifier" | "this" | "super" => {
+            return node.utf8_text(bytes).ok().map(str::to_string);
+        }
+
+        "member_expression" => {
+            let property = node.child_by_field_name("property")?;
+
+            if property.kind() != "property_identifier" {
+                return None;
+            }
+
+            (
+                node.child_by_field_name("object")?,
+                property.utf8_text(bytes).ok()?.to_string(),
+            )
+        }
+
+        "subscript_expression" => (
+            node.child_by_field_name("object")?,
+            literal_key(unwrap_value(node.child_by_field_name("index")?), bytes)?,
+        ),
+
+        _ => return None,
+    };
+
+    let object = name_path(unwrap_value(object), bytes)?;
+
+    Some(format!("{object}.{key}"))
+}
+
+/// The key a subscript literal spells: `"STARTED"`, and `"A\u0042"` as `AB`. None
+/// for anything else and for `""`.
+fn literal_key(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
+    if !is_literal_name_node(node) {
+        return None;
+    }
+
+    literal_text(node, bytes).filter(|key| !key.is_empty())
+}
+
+/// The string a literal holds, its escapes decoded: `"run\u003Aa"` holds `run:a`,
+/// and `"\uD83D\uDE00"` the one character the surrogate pair spells. None when an
+/// escape cannot be decoded, such as a legacy octal `"\1"` or a lone surrogate.
+fn literal_text(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
+    // JavaScript strings are UTF-16: a `\uXXXX` may be half of a pair, so the
+    // units are collected first and decoded together.
+    let mut units: Vec<u16> = Vec::new();
+
+    for part in node.named_children(&mut node.walk()) {
+        let raw = part.utf8_text(bytes).ok()?;
+
+        match part.kind() {
+            "string_fragment" => units.extend(raw.encode_utf16()),
+            "escape_sequence" => units.extend(decode_escape(raw)?),
+            _ => return None,
+        }
+    }
+
+    String::from_utf16(&units).ok()
+}
+
+/// The UTF-16 units one JavaScript escape sequence stands for: `\n`, `\x41`,
+/// `\u0041`, `\u{1F600}`, a line continuation, or `\` before any other character.
+fn decode_escape(escape: &str) -> Option<Vec<u16>> {
+    let rest = escape.strip_prefix('\\')?;
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    let tail = chars.as_str();
+
+    let units = |text: &str| Some(text.encode_utf16().collect());
+    let code_point = |digits: &str| {
+        u32::from_str_radix(digits, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .map(|c| c.encode_utf16(&mut [0; 2]).to_vec())
+    };
+
+    match first {
+        'n' if tail.is_empty() => units("\n"),
+        't' if tail.is_empty() => units("\t"),
+        'r' if tail.is_empty() => units("\r"),
+        'b' if tail.is_empty() => units("\u{8}"),
+        'f' if tail.is_empty() => units("\u{c}"),
+        'v' if tail.is_empty() => units("\u{b}"),
+        '0' if tail.is_empty() => units("\0"),
+        'x' if tail.len() == 2 => code_point(tail),
+        // Four digits name one UTF-16 unit, a surrogate half included.
+        'u' if tail.len() == 4 && !tail.starts_with('{') => {
+            u16::from_str_radix(tail, 16).ok().map(|unit| vec![unit])
+        }
+        'u' => tail
+            .strip_prefix('{')
+            .and_then(|braced| braced.strip_suffix('}'))
+            .and_then(code_point),
+        '\n' | '\r' | '\u{2028}' | '\u{2029}' => Some(Vec::new()),
+        '1'..='9' => None,
+        other if tail.is_empty() => Some(other.encode_utf16(&mut [0; 2]).to_vec()),
+        _ => None,
+    }
+}
+
 fn resolve_name_argument(
     arg: tree_sitter::Node<'_>,
     bytes: &[u8],
     scope: &Scope<'_>,
 ) -> ArgResolution {
+    let arg = unwrap_value(arg);
     let raw = arg.utf8_text(bytes).unwrap_or_default();
 
     let range = Range {
@@ -599,19 +739,38 @@ fn resolve_name_argument(
     };
 
     if !is_literal_name_node(arg) {
+        // Only a name can stand for a constant. `prefix + Events.STARTED` or
+        // `flag ? Events.A : Events.B` is some event, but not `Events.STARTED` or
+        // `Events.B` — the lookup by last segment would claim it was.
+        let Some(path) = name_path(arg, bytes) else {
+            return ArgResolution::Unresolved;
+        };
+
         return scope
-            .resolve(raw)
+            .resolve(&path)
             .map_or(ArgResolution::Unresolved, |name| {
                 ArgResolution::Resolved(name, range)
             });
     }
 
-    if let Some(fragment) = arg.named_child(0) {
+    if let (Some(first), Some(last)) = (
+        arg.named_child(0),
+        arg.named_child(arg.named_child_count().saturating_sub(1)),
+    ) {
+        // `"run\u003Aa"` names `run:a`, not its first fragment `run`.
+        let Some(name) = literal_text(arg, bytes) else {
+            return ArgResolution::Unresolved;
+        };
+
+        if name.is_empty() {
+            return ArgResolution::EmptyLiteral;
+        }
+
         return ArgResolution::Resolved(
-            fragment.utf8_text(bytes).unwrap_or_default().to_string(),
+            name,
             Range {
-                start: point_to_position(fragment.start_position()),
-                end: point_to_position(fragment.end_position()),
+                start: point_to_position(first.start_position()),
+                end: point_to_position(last.end_position()),
             },
         );
     }
@@ -660,10 +819,8 @@ fn process_first_arg_pattern<'a>(
     // `invoke` is deliberately literal-only — a command name is never resolved
     // through the constant table. A forwarded parameter is different: the literal
     // does exist, at the helper's call sites, so it is still worth recovering.
-    if original_name == "invoke" && !is_literal_name_node(arg_cap.node) {
-        let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-
-        return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+    if original_name == "invoke" && !is_literal_name_node(unwrap_value(arg_cap.node)) {
+        return detect_forwarder(arg_cap.node, bytes, pattern.entity, pattern.behavior)
             .map_or_else(
                 || {
                     PatternOutcome::Dynamic(unresolved_call(
@@ -680,9 +837,7 @@ fn process_first_arg_pattern<'a>(
     let (resolved_arg, range) = match resolve_name_argument(arg_cap.node, bytes, scope) {
         ArgResolution::Resolved(name, range) => (name, range),
         ArgResolution::Unresolved => {
-            let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-
-            return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+            return detect_forwarder(arg_cap.node, bytes, pattern.entity, pattern.behavior)
                 .map_or_else(
                     || {
                         PatternOutcome::Dynamic(unresolved_call(
@@ -750,9 +905,7 @@ fn process_second_arg_pattern<'a>(
     let (resolved_arg, range) = match resolve_name_argument(arg_cap.node, bytes, scope) {
         ArgResolution::Resolved(name, range) => (name, range),
         ArgResolution::Unresolved => {
-            let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-
-            return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+            return detect_forwarder(arg_cap.node, bytes, pattern.entity, pattern.behavior)
                 .map_or_else(
                     || {
                         PatternOutcome::Dynamic(unresolved_call(

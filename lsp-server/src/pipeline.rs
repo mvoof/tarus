@@ -1,18 +1,18 @@
 //! File processing utilities
 
-use crate::indexer::{DynamicUsages, GeneratorKind, IndexKey, ProjectIndex};
+use crate::indexer::{DynamicUsages, Forwarder, GeneratorKind, IndexKey, ProjectIndex};
 use crate::parser;
 use crate::parser::typescript::bindings as bindings_reader;
 use crate::syntax::{Behavior, EntityType};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// What the index held for one file before it is re-indexed: enough to tell
-/// afterwards whose diagnostics the change can reach.
+/// What the index held before one file is re-indexed: enough to tell afterwards
+/// whose diagnostics the change can reach, and whose parse it invalidated.
 #[derive(Debug, Clone)]
 pub struct IndexSnapshot {
-    keys: Vec<IndexKey>,
-    dynamic: DynamicUsages,
+    file: FileState,
+    names: NameState,
 }
 
 impl IndexSnapshot {
@@ -20,10 +20,286 @@ impl IndexSnapshot {
     #[must_use]
     pub fn before(path: &Path, project_index: &ProjectIndex) -> Self {
         Self {
-            keys: project_index.get_file_keys(path),
-            dynamic: project_index.dynamic_usages(),
+            file: FileState::of(path, project_index),
+            names: NameState::of(project_index),
         }
     }
+}
+
+/// One file's part of the index: the names it holds and its own unresolved-call
+/// flags, which is what a change to it can reach.
+#[derive(Debug, Clone)]
+struct FileState {
+    keys: Vec<IndexKey>,
+    dynamic: DynamicUsages,
+}
+
+impl FileState {
+    fn of(path: &Path, project_index: &ProjectIndex) -> Self {
+        Self {
+            keys: project_index.get_file_keys(path),
+            dynamic: project_index.dynamic_usages_of(path),
+        }
+    }
+}
+
+/// Every constant and forwarding helper in the workspace: what a parse resolves
+/// names through.
+#[derive(Debug, Clone)]
+struct NameState {
+    rust_constants: HashMap<String, String>,
+    js_constants: HashMap<String, String>,
+    forwarders: HashMap<String, Forwarder>,
+}
+
+impl NameState {
+    fn of(project_index: &ProjectIndex) -> Self {
+        Self {
+            rust_constants: project_index.get_all_rust_constants(),
+            js_constants: project_index.get_all_js_constants(),
+            forwarders: project_index.get_all_forwarders(),
+        }
+    }
+
+    /// Rust and frontend names whose value differs in `after`: constants, and for
+    /// the frontend also forwarding helpers.
+    fn changed_to(&self, after: &Self) -> (Vec<String>, Vec<String>) {
+        let rust_names = changed_names(&self.rust_constants, &after.rust_constants);
+        let mut frontend_names = changed_names(&self.js_constants, &after.js_constants);
+        frontend_names.extend(changed_names(&self.forwarders, &after.forwarders));
+
+        (rust_names, frontend_names)
+    }
+}
+
+/// Re-index `path` from `content`, re-parse what that invalidated, and return every
+/// file whose diagnostics to publish.
+///
+/// A file that fails to parse on a half-typed line keeps its last good index —
+/// constants and helpers included, so the files using them keep resolving — and
+/// nothing is published: every file keeps its last good diagnostics rather than
+/// losing them mid-edit. Once the typo is fixed, whatever the edit changed is passed on.
+pub fn reindex(
+    path: &Path,
+    content: &str,
+    project_index: &ProjectIndex,
+    read_file: impl Fn(&Path) -> Option<String>,
+) -> Vec<PathBuf> {
+    let before = IndexSnapshot::before(path, project_index);
+
+    // A failed parse leaves the index as it was, so nothing else has changed either.
+    if !process_file_content(path, content, project_index) {
+        return Vec::new();
+    }
+
+    refresh_after(path, &before, project_index, read_file)
+}
+
+/// [`reindex`] `path` from its text as it is when this runs, read through
+/// `read_file` — the editor's copy for an open file, the disk's otherwise.
+///
+/// Re-index jobs for one file can queue up and run in any order; each indexing the
+/// text it was created with would let an older edit land after a newer one. Read
+/// at run time, a late job indexes the newest text, so the order stops mattering.
+pub fn reindex_current(
+    path: &Path,
+    project_index: &ProjectIndex,
+    read_file: impl Fn(&Path) -> std::io::Result<String>,
+) -> Vec<PathBuf> {
+    if !is_supported_file(path) {
+        return Vec::new();
+    }
+
+    let read_dependent = |file: &Path| read_file(file).ok();
+
+    match read_file(path) {
+        Ok(content) => reindex(path, &content, project_index, read_dependent),
+
+        // No text in the editor or on disk: the file is gone (deleted on disk, then
+        // its tab closed). Indexing nothing would keep its old entries forever, and
+        // nothing else clears its diagnostics, so it is published too — empty now.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut files = forget(path, project_index, read_dependent);
+            files.push(path.to_path_buf());
+
+            files
+        }
+
+        // The file is there but its text is not: invalid UTF-8, no permission, a
+        // save in progress. That says nothing about what it declares, so its entries
+        // stay until a read succeeds, and so do its diagnostics.
+        Err(error) => {
+            project_index
+                .set_parse_error(path.to_path_buf(), format!("Failed to read file: {error}"));
+
+            Vec::new()
+        }
+    }
+}
+
+/// Drop a deleted file from the index, re-parse what used its constants or helpers,
+/// and return the other files whose diagnostics to publish.
+pub fn forget(
+    path: &Path,
+    project_index: &ProjectIndex,
+    read_file: impl Fn(&Path) -> Option<String>,
+) -> Vec<PathBuf> {
+    let before = IndexSnapshot::before(path, project_index);
+
+    project_index.remove_file(path);
+    // `remove_file` keeps what re-indexing replaces anyway — constants, schemas, type
+    // aliases; a deleted file has no replacement, so they go here.
+    project_index.remove_rust_constants_for_file(path);
+    project_index.remove_js_constants_for_file(path);
+    project_index.remove_schemas_for_file(path);
+    project_index.remove_event_schemas_for_file(path);
+    project_index.remove_type_aliases_for_file(path);
+
+    refresh_after(path, &before, project_index, read_file)
+        .into_iter()
+        .filter(|file| file != path)
+        .collect()
+}
+
+/// Most waves one refresh runs. Each file can change constants or helpers on its
+/// first re-parse only, so real chains end far sooner; this only bounds a surprise.
+const MAX_REFRESH_WAVES: usize = 64;
+
+/// Bring the index up to date after `path` was re-indexed or removed, and return
+/// every file whose diagnostics to publish.
+///
+/// A file that calls `emit(EVENT_X)` stores the event name `EVENT_X` resolved to
+/// when it was parsed, and a call through a forwarding helper is resolved the same
+/// way. So when `path` changes a constant's value or a helper, the files using it
+/// hold stale names until they are parsed again: each of them is re-parsed here.
+/// Only files of the same language whose text mentions a changed name are
+/// touched, which keeps an ordinary edit from re-parsing anything else.
+///
+/// `read_file` returns a file's current text — the editor's copy for an open file.
+pub fn refresh_after(
+    path: &Path,
+    before: &IndexSnapshot,
+    project_index: &ProjectIndex,
+    read_file: impl Fn(&Path) -> Option<String>,
+) -> Vec<PathBuf> {
+    let mut files = files_reached_from(path, &before.file, project_index);
+
+    // A re-parsed dependent reads the editor's text, which may hold an edit still
+    // waiting on its own debounce. That edit lands in the index here, so its debounce
+    // will find nothing to pass on: whatever it changed is passed on in this pass,
+    // wave after wave — to files already re-parsed in an earlier wave too.
+    //
+    // Each wave compares the names against one copy taken as it starts, so a wave
+    // sees exactly what the one before it changed. This ends on its own: a file's
+    // constants and helpers come from its own text alone, which does not change
+    // during the pass, and storing them unchanged leaves the index as it was — it
+    // does not even make the file the latest declarer of a shared name. The wave
+    // limit is a guard, not the stopping rule.
+    let mut names_before = before.names.clone();
+
+    for wave in 0..MAX_REFRESH_WAVES {
+        let names_now = NameState::of(project_index);
+        let (rust_names, frontend_names) = names_before.changed_to(&names_now);
+
+        if rust_names.is_empty() && frontend_names.is_empty() {
+            break;
+        }
+
+        names_before = names_now;
+
+        for dependent in project_index.get_indexed_paths() {
+            // The changed file was just parsed; in the first wave it only mentions
+            // its own new names.
+            if wave == 0 && dependent == path {
+                continue;
+            }
+
+            let names = if dependent.extension().is_some_and(|ext| ext == "rs") {
+                &rust_names
+            } else {
+                &frontend_names
+            };
+
+            if names.is_empty() {
+                continue;
+            }
+
+            let Some(content) = read_file(&dependent) else {
+                continue;
+            };
+
+            if !names.iter().any(|name| mentions_identifier(&content, name)) {
+                continue;
+            }
+
+            let dependent_before = FileState::of(&dependent, project_index);
+
+            // A dependent mid-edit keeps its last good diagnostics, as the edited
+            // file does in `reindex`.
+            if !process_file_content(&dependent, &content, project_index) {
+                continue;
+            }
+
+            files.extend(files_reached_from(
+                &dependent,
+                &dependent_before,
+                project_index,
+            ));
+        }
+    }
+
+    // Type checks read the generated bindings when diagnostics are computed, so a
+    // regenerated bindings file only needs every typed call site refreshed.
+    if project_index.get_generator_for_file(path).is_some() {
+        files.extend(files_with_call_sites(project_index));
+    }
+
+    files.into_iter().collect()
+}
+
+/// Whether `name` occurs in `content` as a whole identifier: `ID` in `emit(ID)`,
+/// not in `VALID_ID` or `IDENTITY`. A short constant name would otherwise match
+/// nearly every file and re-parse the workspace on each change.
+fn mentions_identifier(content: &str, name: &str) -> bool {
+    let is_identifier_char = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+
+    content.match_indices(name).any(|(start, _)| {
+        let before = content[..start].chars().next_back();
+        let after = content[start + name.len()..].chars().next();
+
+        !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char)
+    })
+}
+
+/// Names added, removed or given a different value between two snapshots.
+fn changed_names<V: PartialEq>(
+    before: &HashMap<String, V>,
+    after: &HashMap<String, V>,
+) -> Vec<String> {
+    before
+        .keys()
+        .chain(after.keys())
+        .filter(|name| before.get(*name) != after.get(*name))
+        .cloned()
+        .collect::<HashSet<String>>()
+        .into_iter()
+        .collect()
+}
+
+/// Files holding an `invoke`, `emit` or `listen` — the call sites type checks run on.
+fn files_with_call_sites(project_index: &ProjectIndex) -> HashSet<PathBuf> {
+    project_index
+        .map
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .value()
+                .iter()
+                .filter(|location| location.behavior != Behavior::Definition)
+                .map(|location| location.path.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Files whose diagnostics may have changed after `path` was re-indexed: the file
@@ -35,12 +311,11 @@ impl IndexSnapshot {
 /// holding a diagnostic gated by that flag is added too. Edits are debounced, so a
 /// flag can still flip on each pause while a name is being typed; limiting the
 /// refresh to the gated files keeps that from touching the whole workspace.
-#[must_use]
-pub fn files_to_republish(
+fn files_reached_from(
     path: &Path,
-    before: &IndexSnapshot,
+    before: &FileState,
     project_index: &ProjectIndex,
-) -> Vec<PathBuf> {
+) -> HashSet<PathBuf> {
     let mut files: HashSet<PathBuf> = HashSet::from([path.to_path_buf()]);
     let after = project_index.get_file_keys(path);
 
@@ -50,18 +325,29 @@ pub fn files_to_republish(
         }
     }
 
-    let now = project_index.dynamic_usages();
-    let flipped = DynamicUsages {
-        invokes: now.invokes != before.dynamic.invokes,
-        emitters: now.emitters != before.dynamic.emitters,
-        listeners: now.listeners != before.dynamic.listeners,
-    };
+    // Only this file changed, so a workspace flag can only have flipped if its own
+    // flags did; merging every file's flags is left for that rare case.
+    let own_now = project_index.dynamic_usages_of(path);
 
-    if !flipped.is_empty() {
-        files.extend(files_gated_by(flipped, project_index));
+    if own_now != before.dynamic {
+        let others = project_index.dynamic_usages_except(path);
+        let mut was = others;
+        was.merge(before.dynamic);
+        let mut now = others;
+        now.merge(own_now);
+
+        let flipped = DynamicUsages {
+            invokes: now.invokes != was.invokes,
+            emitters: now.emitters != was.emitters,
+            listeners: now.listeners != was.listeners,
+        };
+
+        if !flipped.is_empty() {
+            files.extend(files_gated_by(flipped, project_index));
+        }
     }
 
-    files.into_iter().collect()
+    files
 }
 
 /// Files holding a location whose diagnostic depends on one of the `flipped` flags,
@@ -101,7 +387,15 @@ pub fn is_supported_file(path: &Path) -> bool {
 
 /// Process file content from editor buffer.
 ///
-/// Returns `true` if the file was successfully routed and processed.
+/// Returns `true` if the file was successfully routed and processed. The parse
+/// resolves through the workspace's names with this file's new ones in place of its
+/// old, but they are stored only once the parse is good: read from a broken tree,
+/// they would be dropped or mangled for every file resolving through them.
+///
+/// A TypeScript/JavaScript file with syntax errors is not indexed at all and keeps
+/// its last good index. A Rust file with syntax errors is indexed from the parts
+/// that parsed — tree-sitter-rust may not know newer syntax, and dropping the whole
+/// file would lose every command in it — but keeps its earlier constants.
 ///
 /// # Panics
 ///
@@ -120,88 +414,113 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
     }
 
     if path.extension().is_some_and(|s| s == "rs") {
-        // Extract constants from this file and store globally, then get all global Rust constants
-        let local_constants = crate::utils::extract_rust_constant_decls_from_content(content);
-        project_index.add_rust_constants(path.to_path_buf(), local_constants);
-        let global_constants = project_index.get_all_rust_constants();
-
-        match parser::parse_rust_full(content, path, &global_constants) {
-            Ok(rust_index) => {
-                let path_buf = path.to_path_buf();
-
-                project_index.remove_schemas_for_file(&path_buf);
-                project_index.remove_event_schemas_for_file(&path_buf);
-
-                project_index.add_file(rust_index.file_index);
-
-                for schema in rust_index.command_schemas {
-                    add_command_schema_if_higher_priority(schema, project_index);
-                }
-
-                for schema in rust_index.event_schemas {
-                    add_event_schema_if_higher_priority(schema, project_index);
-                }
-
-                true
-            }
-
-            Err(e) => {
-                project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
-                false
-            }
-        }
+        process_rust_file(path, content, project_index)
     } else {
-        // Extract constants from this file and store globally, then get all global JS/TS constants
-        let is_js = path.extension().is_some_and(|e| e == "js" || e == "jsx");
-        let local_constants = crate::utils::extract_js_constants_from_content(content, is_js);
-        project_index.add_js_constants(path.to_path_buf(), local_constants);
-        let global_constants = project_index.get_all_js_constants();
+        process_frontend_file(path, content, project_index)
+    }
+}
 
-        // Re-register this file's helpers before the main pass reads the global set:
-        // an edit that declares a helper and calls it in the same file would otherwise
-        // be parsed against the pre-edit snapshot and leave the call site unresolved.
-        project_index.add_forwarders(path.to_path_buf(), extract_file_forwarders(path, content));
+fn process_rust_file(path: &Path, content: &str, project_index: &ProjectIndex) -> bool {
+    let local_constants = crate::utils::extract_rust_constant_decls_from_content(content);
+    let global_constants = project_index.rust_constants_with(path, &local_constants);
 
-        let known_forwarders = project_index.get_all_forwarders();
+    let parsed = match parser::parse_rust_full(content, path, &global_constants) {
+        // A broken file that has an earlier index keeps its constants, and is parsed
+        // again against them: its own call sites must not resolve through what the
+        // broken text spells either. One indexed for the first time has nothing
+        // better to keep.
+        Ok(rust_index) if rust_index.has_syntax_errors && project_index.is_indexed(path) => {
+            parser::parse_rust_full(content, path, &project_index.get_all_rust_constants())
+        }
 
-        match parser::parse(path, content, &global_constants, &known_forwarders) {
-            Ok(file_index) => {
-                project_index.add_file(file_index);
-
-                true
+        parsed => {
+            if parsed.is_ok() {
+                project_index.add_rust_constants(path.to_path_buf(), local_constants);
             }
 
-            Err(e) => {
-                project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
+            parsed
+        }
+    };
 
-                false
+    match parsed {
+        Ok(rust_index) => {
+            project_index.remove_schemas_for_file(path);
+            project_index.remove_event_schemas_for_file(path);
+
+            project_index.add_file(rust_index.file_index);
+
+            for schema in rust_index.command_schemas {
+                add_command_schema_if_higher_priority(schema, project_index);
             }
+
+            for schema in rust_index.event_schemas {
+                add_event_schema_if_higher_priority(schema, project_index);
+            }
+
+            true
+        }
+
+        Err(e) => {
+            project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
+
+            false
         }
     }
 }
 
-/// Add a command schema only if no higher-priority (non-RustSource) schema already exists.
+fn process_frontend_file(path: &Path, content: &str, project_index: &ProjectIndex) -> bool {
+    let is_js = path.extension().is_some_and(|e| e == "js" || e == "jsx");
+    let local_constants = crate::utils::extract_js_constants_from_content(content, is_js);
+    let global_constants = project_index.js_constants_with(path, &local_constants);
+
+    // This file's own helpers count: an edit that declares a helper and calls it in
+    // the same file would otherwise leave the call site unresolved.
+    let known_forwarders =
+        project_index.forwarders_with(path, &extract_file_forwarders(path, content));
+
+    match parser::parse(path, content, &global_constants, &known_forwarders) {
+        Ok(file_index) => {
+            project_index.add_js_constants(path.to_path_buf(), local_constants);
+            project_index.add_file(file_index);
+
+            true
+        }
+
+        Err(e) => {
+            project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
+
+            false
+        }
+    }
+}
+
+/// Add a command schema, in use only if no higher-priority (non-RustSource) schema
+/// already is; otherwise it waits as a fallback for when that one is dropped.
 fn add_command_schema_if_higher_priority(
     schema: crate::indexer::CommandSchema,
     project_index: &ProjectIndex,
 ) {
-    if !project_index
+    if project_index
         .get_schema(&schema.command_name)
         .is_some_and(|e| e.generator != GeneratorKind::RustSource)
     {
+        project_index.add_schema_candidate(schema);
+    } else {
         project_index.add_schema(schema);
     }
 }
 
-/// Add an event schema only if no higher-priority (non-RustSource) schema already exists.
+/// Add an event schema, as [`add_command_schema_if_higher_priority`] does a command's.
 fn add_event_schema_if_higher_priority(
     schema: crate::indexer::EventSchema,
     project_index: &ProjectIndex,
 ) {
-    if !project_index
+    if project_index
         .get_event_schema(&schema.event_name)
         .is_some_and(|e| e.generator != GeneratorKind::RustSource)
     {
+        project_index.add_event_schema_candidate(schema);
+    } else {
         project_index.add_event_schema(schema);
     }
 }
@@ -257,11 +576,44 @@ fn process_bindings_file(
     }
 }
 
-/// First-pass: extract and store constants from a file without full parsing.
+/// Whether `content` parses without syntax errors, as `path`'s language reads it.
+#[must_use]
+pub fn parses_cleanly(path: &Path, content: &str) -> bool {
+    if path.extension().is_some_and(|s| s == "rs") {
+        parser::parse_rust_full(content, path, &HashMap::new())
+            .is_ok_and(|rust_index| !rust_index.has_syntax_errors)
+    } else {
+        parser::parse(path, content, &HashMap::new(), &HashMap::new()).is_ok()
+    }
+}
+
+/// The text startup pass 1 reads `path`'s names from, given its current text.
+///
+/// An open file mid-edit would give half-typed names: its saved text, read through
+/// `read_saved` and used when it parses, gives the last good ones. Otherwise the
+/// current text is all there is.
+pub fn startup_names_text(
+    path: &Path,
+    current: String,
+    is_open: bool,
+    read_saved: impl FnOnce() -> Option<String>,
+) -> String {
+    if !is_open || parses_cleanly(path, &current) {
+        return current;
+    }
+
+    read_saved()
+        .filter(|saved| parses_cleanly(path, saved))
+        .unwrap_or(current)
+}
+
+/// First-pass: extract and store constants from a file's `content` without full parsing.
 ///
 /// Called during the initial workspace scan before full indexing so that
 /// cross-file constant references are available when the main parse pass runs.
-pub fn collect_constants_from_file(path: &Path, project_index: &ProjectIndex) {
+/// `content` is the file's current text, the editor's copy for an open file: the
+/// disk's would overwrite what an edit indexed while the scan runs stored.
+pub fn collect_constants_from_file(path: &Path, content: &str, project_index: &ProjectIndex) {
     if !is_supported_file(path) {
         return;
     }
@@ -269,20 +621,17 @@ pub fn collect_constants_from_file(path: &Path, project_index: &ProjectIndex) {
     if project_index.get_generator_for_file(path).is_some() {
         return;
     }
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return;
-    };
     if path.extension().is_some_and(|e| e == "rs") {
-        let constants = crate::utils::extract_rust_constant_decls_from_content(&content);
+        let constants = crate::utils::extract_rust_constant_decls_from_content(content);
         project_index.add_rust_constants(path.to_path_buf(), constants);
     } else {
         let is_js = path.extension().is_some_and(|e| e == "js" || e == "jsx");
-        let constants = crate::utils::extract_js_constants_from_content(&content, is_js);
+        let constants = crate::utils::extract_js_constants_from_content(content, is_js);
         project_index.add_js_constants(path.to_path_buf(), constants);
 
         // Forwarding helpers are cross-file: a call site is only resolvable once the
         // helper that owns it is known, so they must be collected before the main pass.
-        project_index.add_forwarders(path.to_path_buf(), extract_file_forwarders(path, &content));
+        project_index.add_forwarders(path.to_path_buf(), extract_file_forwarders(path, content));
     }
 }
 
@@ -318,21 +667,6 @@ fn extract_file_forwarders(path: &Path, content: &str) -> Vec<crate::indexer::ty
         }
 
         _ => parser::typescript::frontend::extract_forwarders(content, lang).unwrap_or_default(),
-    }
-}
-
-/// Process file from disk
-pub fn process_file_index(path: PathBuf, project_index: &ProjectIndex) -> bool {
-    if !is_supported_file(&path) {
-        return false;
-    }
-
-    match std::fs::read_to_string(&path) {
-        Ok(content) => process_file_content(&path, &content, project_index),
-        Err(e) => {
-            project_index.set_parse_error(path, format!("Failed to read file: {e}"));
-            false
-        }
     }
 }
 
@@ -374,6 +708,45 @@ broadcast("units-changed", "metric");
             index.map.contains_key(&key),
             "call site of a helper declared in the same edit should be indexed"
         );
+    }
+
+    #[test]
+    fn test_startup_reads_an_open_broken_file_s_names_from_its_saved_text() {
+        let path = Path::new("names.ts");
+        let saved = "export const RUN = \"run://a\";\n".to_string();
+        let broken = "export const RUN = \"run://b\";\nlisten(\"x, () => {});\n".to_string();
+
+        let text = startup_names_text(path, broken, true, || Some(saved.clone()));
+
+        assert_eq!(text, saved);
+    }
+
+    #[test]
+    fn test_startup_keeps_an_open_file_s_text_when_it_parses() {
+        let path = Path::new("names.ts");
+        let edited = "export const RUN = \"run://b\";\n".to_string();
+
+        let text = startup_names_text(path, edited.clone(), true, || {
+            panic!("the saved text is not needed")
+        });
+
+        assert_eq!(text, edited);
+    }
+
+    #[test]
+    fn test_startup_keeps_a_broken_text_when_nothing_better_parses() {
+        // A closed file has only its disk text; an open one whose saved text is
+        // broken too has nothing better either.
+        let path = Path::new("names.ts");
+        let broken = "export const RUN = \"run://b\";\nlisten(\"x, () => {});\n".to_string();
+
+        let closed = startup_names_text(path, broken.clone(), false, || {
+            panic!("a closed file's text is its saved text")
+        });
+        let open = startup_names_text(path, broken.clone(), true, || Some(broken.clone()));
+
+        assert_eq!(closed, broken);
+        assert_eq!(open, broken);
     }
 
     #[test]

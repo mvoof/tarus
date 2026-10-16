@@ -8,6 +8,21 @@ use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::{Position, Range};
 use tree_sitter::{Query, QueryCursor};
 
+/// A file's current text: the editor's copy when it is open, the disk's otherwise.
+///
+/// # Errors
+///
+/// The disk read's error when the file is not open: `NotFound` once it is deleted.
+pub fn read_current_text(
+    path: &std::path::Path,
+    document_cache: &dashmap::DashMap<std::path::PathBuf, String>,
+) -> std::io::Result<String> {
+    document_cache.get(path).map_or_else(
+        || std::fs::read_to_string(path),
+        |content| Ok(content.value().clone()),
+    )
+}
+
 static RUST_CONSTANTS_QUERY: LazyLock<Query> = LazyLock::new(|| {
     let ts_lang = tree_sitter_rust::LANGUAGE.into();
     Query::new(

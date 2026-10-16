@@ -2,7 +2,12 @@
 
 /// Query files embedded at compile time
 pub(crate) const RUST_QUERY: &str = include_str!("../queries/rust.scm");
-pub(crate) const TS_QUERY: &str = include_str!("../queries/typescript.scm");
+pub(crate) const TS_QUERY: &str = concat!(
+    include_str!("../queries/typescript.scm"),
+    "\n",
+    include_str!("../queries/typescript_type_assertion.scm"),
+);
+pub(crate) const TSX_QUERY: &str = include_str!("../queries/typescript.scm");
 pub(crate) const JS_QUERY: &str = include_str!("../queries/javascript.scm");
 
 /// Supported language types
@@ -39,11 +44,8 @@ impl LangType {
 pub(crate) fn get_query_source(lang: LangType) -> &'static str {
     match lang {
         LangType::Rust => RUST_QUERY,
-        LangType::TypeScript
-        | LangType::TypeScriptJsx
-        | LangType::Vue
-        | LangType::Svelte
-        | LangType::Angular => TS_QUERY,
+        LangType::TypeScript | LangType::Vue | LangType::Svelte | LangType::Angular => TS_QUERY,
+        LangType::TypeScriptJsx => TSX_QUERY,
         LangType::JavaScript | LangType::JavaScriptJsx => JS_QUERY,
     }
 }

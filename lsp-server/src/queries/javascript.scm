@@ -21,13 +21,14 @@
   function: (identifier) @func_name
   arguments: (arguments
     .
-    (member_expression) @arg_value)
+    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (await_expression) (new_expression) (unary_expression) (sequence_expression)] @arg_value)
 ) @call_simple
 
 ; Function calls with second argument: emitTo("target", "event")
 (call_expression
   function: (identifier) @func_name_second
   arguments: (arguments
+    .
     (_)
     .
     [(string) (template_string)] @arg_value_second)
@@ -36,6 +37,7 @@
 (call_expression
   function: (identifier) @func_name_second
   arguments: (arguments
+    .
     (_)
     .
     (identifier) @arg_value_second)
@@ -44,9 +46,10 @@
 (call_expression
   function: (identifier) @func_name_second
   arguments: (arguments
+    .
     (_)
     .
-    (member_expression) @arg_value_second)
+    [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (await_expression) (new_expression) (unary_expression) (sequence_expression)] @arg_value_second)
 ) @call_second_arg
 
 ; Import specifiers with alias and source
