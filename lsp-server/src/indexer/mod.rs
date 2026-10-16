@@ -430,9 +430,6 @@ impl ProjectIndex {
     /// following imports there is no way to tell which declaration a call site
     /// means, and guessing would attribute the event to the wrong helper.
     #[must_use]
-    // reason: the parse reads `forwarders_with`; this full view serves the library's
-    // users (tests), which the binary re-declaring every module does not have
-    #[allow(dead_code)]
     pub fn get_all_forwarders(&self) -> std::collections::HashMap<String, Forwarder> {
         unambiguous_forwarders(self.forwarders.iter().map(|entry| {
             (

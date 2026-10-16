@@ -9,6 +9,7 @@ pub mod indexer;
 pub mod parser;
 pub mod pipeline;
 pub mod scheduling;
+pub mod server;
 pub mod syntax;
 pub mod utils;
 
