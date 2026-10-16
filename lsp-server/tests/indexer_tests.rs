@@ -466,3 +466,68 @@ fn test_stale_rust_event_schema_cleared_on_reparse() {
         "Stale event schema should be cleared on reparse"
     );
 }
+
+#[test]
+fn test_rust_constant_reference_resolves_across_files() {
+    let index = ProjectIndex::new();
+    let names_file = test_path("src-tauri/src/names.rs");
+    let events_file = test_path("src-tauri/src/events.rs");
+
+    index.add_rust_constants(
+        events_file,
+        lsp_server::utils::extract_rust_constant_decls_from_content(
+            "pub const EVENT_RUN: &str = crate::names::RUN;",
+        ),
+    );
+    assert_eq!(index.get_all_rust_constants().get("EVENT_RUN"), None);
+
+    index.add_rust_constants(
+        names_file.clone(),
+        lsp_server::utils::extract_rust_constant_decls_from_content(
+            r#"pub const RUN: &str = r"run://start";"#,
+        ),
+    );
+    assert_eq!(
+        index
+            .get_all_rust_constants()
+            .get("EVENT_RUN")
+            .map(String::as_str),
+        Some("run://start")
+    );
+
+    index.remove_rust_constants_for_file(&names_file);
+    assert_eq!(index.get_all_rust_constants().get("EVENT_RUN"), None);
+}
+
+#[test]
+fn test_reindexing_a_same_name_reexport_keeps_the_original_value() {
+    // `lib.rs` re-exports `EVENT_X` under the same name. Re-indexing it (any edit)
+    // must drop only its own reference, not the value `events.rs` declared.
+    let index = ProjectIndex::new();
+    let events_file = test_path("src-tauri/src/events.rs");
+    let lib_file = test_path("src-tauri/src/lib.rs");
+    let reexport = "pub const EVENT_X: &str = crate::events::EVENT_X;";
+
+    index.add_rust_constants(
+        events_file,
+        lsp_server::utils::extract_rust_constant_decls_from_content(
+            r#"pub const EVENT_X: &str = "x";"#,
+        ),
+    );
+    index.add_rust_constants(
+        lib_file.clone(),
+        lsp_server::utils::extract_rust_constant_decls_from_content(reexport),
+    );
+    index.add_rust_constants(
+        lib_file,
+        lsp_server::utils::extract_rust_constant_decls_from_content(reexport),
+    );
+
+    assert_eq!(
+        index
+            .get_all_rust_constants()
+            .get("EVENT_X")
+            .map(String::as_str),
+        Some("x")
+    );
+}

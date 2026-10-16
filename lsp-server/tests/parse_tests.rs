@@ -596,7 +596,9 @@ fn on_connected(app: &AppHandle) {
 "#;
 
     // Pass 1: collect constants from the definitions file
-    let rust_constants = lsp_server::utils::extract_rust_constants_from_content(emitter_content);
+    let rust_constants =
+        lsp_server::utils::extract_rust_constant_decls_from_content(emitter_content)
+            .resolved(&std::collections::HashMap::new());
 
     // Pass 2: parse the consumer file with global constants available
     let result = lsp_server::tree_parser::parse_rust_full(lib_content, &lib_path, &rust_constants)
@@ -630,7 +632,9 @@ pub fn run() {
 }
 "#;
 
-    let rust_constants = lsp_server::utils::extract_rust_constants_from_content(constants_content);
+    let rust_constants =
+        lsp_server::utils::extract_rust_constant_decls_from_content(constants_content)
+            .resolved(&std::collections::HashMap::new());
 
     let result = lsp_server::tree_parser::parse_rust_full(lib_content, &lib_path, &rust_constants)
         .expect("parse should succeed");
@@ -664,7 +668,8 @@ ts_values! {
 const SHADOWED: &str = "from-item";
 "#;
 
-    let constants = lsp_server::utils::extract_rust_constants_from_content(content);
+    let constants = lsp_server::utils::extract_rust_constant_decls_from_content(content)
+        .resolved(&std::collections::HashMap::new());
     let mut pairs: Vec<String> = constants.iter().map(|(k, v)| format!("{k}={v}")).collect();
     pairs.sort();
 
@@ -741,7 +746,9 @@ fn on_connected(app: &AppHandle, source: &Source) {
 }
 "#;
 
-    let rust_constants = lsp_server::utils::extract_rust_constants_from_content(emitter_content);
+    let rust_constants =
+        lsp_server::utils::extract_rust_constant_decls_from_content(emitter_content)
+            .resolved(&std::collections::HashMap::new());
     let result = lsp_server::tree_parser::parse_rust_full(lib_content, &lib_path, &rust_constants)
         .expect("parse should succeed");
 
@@ -787,7 +794,8 @@ pub fn run() {
 }
 "#;
 
-    let rust_constants = lsp_server::utils::extract_rust_constants_from_content(constants_rs);
+    let rust_constants = lsp_server::utils::extract_rust_constant_decls_from_content(constants_rs)
+        .resolved(&std::collections::HashMap::new());
     eprintln!("rust_constants: {rust_constants:?}");
 
     let result = lsp_server::tree_parser::parse_rust_full(lib_content, &lib_path, &rust_constants)
@@ -832,7 +840,9 @@ pub fn run() {
 }
 "#;
 
-    let rust_constants = lsp_server::utils::extract_rust_constants_from_content(constants_content);
+    let rust_constants =
+        lsp_server::utils::extract_rust_constant_decls_from_content(constants_content)
+            .resolved(&std::collections::HashMap::new());
     eprintln!("rust_constants: {rust_constants:?}");
 
     let result = lsp_server::tree_parser::parse_rust_full(lib_content, &lib_path, &rust_constants)
@@ -1051,4 +1061,43 @@ export const emitStandingsScroll = (delta: number) =>
               Event Emit "steering-lock-changed" 14:18..14:39
               Event Emit "standings-scroll" 17:18..17:34"#]],
     );
+}
+
+#[test]
+fn parse_rust_raw_string_and_reference_constants() {
+    // Raw strings carry their value; a const naming another const resolves through
+    // it, in an item or a macro body. A value only the compiler can produce does not.
+    let content = r###"
+const RAW: &str = r"raw://plain";
+const RAW_HASHED: &str = r#"raw://"hashed""#;
+const ALIAS: &str = RAW;
+const SCOPED_ALIAS: &str = crate::events::RAW;
+const CHAIN: &str = ALIAS;
+const LOOP_A: &str = LOOP_B;
+const LOOP_B: &str = LOOP_A;
+const UNKNOWN_TARGET: &str = NOT_DECLARED_ANYWHERE;
+const COMPUTED: &str = concat!("a", "b");
+
+names! {
+    pub const MACRO_RAW: &str = r#"raw://macro"# => MACRO_RAW;
+    pub const MACRO_ALIAS: &str = crate::events::RAW => MACRO_ALIAS;
+    pub const MACRO_CALL: &str = make_name(RAW) => MACRO_CALL;
+    pub const MACRO_CONCAT: &str = concat!("a", "b") => MACRO_CONCAT;
+}
+"###;
+
+    let constants = lsp_server::utils::extract_rust_constant_decls_from_content(content)
+        .resolved(&std::collections::HashMap::new());
+    let mut pairs: Vec<String> = constants.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    pairs.sort();
+
+    expect![[r#"
+        ALIAS=raw://plain
+        CHAIN=raw://plain
+        MACRO_ALIAS=raw://plain
+        MACRO_RAW=raw://macro
+        RAW=raw://plain
+        RAW_HASHED=raw://"hashed"
+        SCOPED_ALIAS=raw://plain"#]]
+    .assert_eq(&pairs.join("\n"));
 }
