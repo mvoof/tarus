@@ -76,6 +76,7 @@ Real-time analysis to detect errors before they reach the browser:
 - **Undefined Commands**: Warns if you invoke a command missing from Rust.
 - **Payload Validation**: Detects missing or extra keys in `invoke` arguments.
 - **Event Desync**: Identifies unlistened or unhandled events.
+- **Unresolved Names**: Hints at a call whose name is not a string Tarus can read (`concat!`, a computed value), since such a call turns the event-desync checks off for the whole workspace.
 
 </td>
 <td align="center">

@@ -45,6 +45,7 @@ pub fn parse(
     };
 
     let mut dynamic_usages = DynamicUsages::default();
+    let mut unresolved_calls = Vec::new();
     let mut forwarders = Vec::new();
 
     let findings = match lang {
@@ -60,6 +61,7 @@ pub fn parse(
             let parsed =
                 extract_rust_findings(tree.root_node(), content, &ts_lang, global_constants)?;
             dynamic_usages.merge(parsed.dynamic_usages);
+            unresolved_calls.extend(parsed.unresolved_calls);
 
             parsed.findings
         }
@@ -72,6 +74,7 @@ pub fn parse(
         ) => {
             let parsed = parse_frontend(content, lang_val, 0, global_constants, known_forwarders)?;
             dynamic_usages.merge(parsed.dynamic_usages);
+            unresolved_calls.extend(parsed.unresolved_calls);
             forwarders.extend(parsed.forwarders);
 
             parsed.findings
@@ -89,6 +92,7 @@ pub fn parse(
                     known_forwarders,
                 )?;
                 dynamic_usages.merge(parsed.dynamic_usages);
+                unresolved_calls.extend(parsed.unresolved_calls);
                 forwarders.extend(parsed.forwarders);
                 all_findings.extend(parsed.findings);
             }
@@ -103,6 +107,7 @@ pub fn parse(
         findings,
         dynamic_usages,
         forwarders,
+        unresolved_calls,
     })
 }
 
@@ -146,6 +151,7 @@ pub fn parse_rust_full(
             findings: parsed.findings,
             dynamic_usages: parsed.dynamic_usages,
             forwarders: Vec::new(),
+            unresolved_calls: parsed.unresolved_calls,
         },
         command_schemas,
         event_schemas,

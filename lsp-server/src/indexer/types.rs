@@ -99,6 +99,21 @@ impl From<(&PathBuf, Finding)> for LocationInfo {
     }
 }
 
+/// A Tauri call site whose command/event name could not be resolved to a string,
+/// e.g. `emit(EVENT_X, ..)` where `EVENT_X = concat!(..)`, or a parameter.
+///
+/// Reported as a hint where it is written: such a call switches the matching
+/// "absence" checks off for the whole workspace (see [`DynamicUsages`]), and nothing
+/// else would tell the user why those checks went quiet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedCall {
+    pub behavior: Behavior,
+    /// The name argument as written: `EVENT_X`, `prefix + id`. Empty when the call
+    /// passes no name argument at all.
+    pub name_text: String,
+    pub range: Range,
+}
+
 /// Tauri call sites in a file whose command/event name could not be resolved to a
 /// string literal — e.g. `emit(eventName, payload)` where `eventName` is a parameter.
 ///
@@ -163,6 +178,7 @@ pub struct FileIndex {
     pub findings: Vec<Finding>,
     pub dynamic_usages: DynamicUsages,
     pub forwarders: Vec<Forwarder>,
+    pub unresolved_calls: Vec<UnresolvedCall>,
 }
 
 /// Search Key (Hashmap Key)

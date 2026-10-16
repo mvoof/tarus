@@ -13,6 +13,7 @@ pub const DIAG_RETURN_TYPE_MISSING: &str = "tarus/return-type-missing";
 pub const DIAG_RETURN_TYPE_MISMATCH: &str = "tarus/return-type-mismatch";
 pub const DIAG_EVENT_PAYLOAD_MISSING: &str = "tarus/event-payload-missing";
 pub const DIAG_EVENT_PAYLOAD_MISMATCH: &str = "tarus/event-payload-mismatch";
+pub const DIAG_UNRESOLVED_NAME: &str = "tarus/unresolved-name";
 
 // ---------------------------------------------------------------------------
 // File priority scores for code-action candidate ranking.

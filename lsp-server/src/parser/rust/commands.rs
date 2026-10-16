@@ -1,6 +1,6 @@
 //! Rust source code parsing for Tauri commands and events
 
-use crate::indexer::{DynamicUsages, Finding};
+use crate::indexer::{DynamicUsages, Finding, UnresolvedCall};
 use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
 use crate::utils::{find_capture, point_to_position};
 use std::collections::HashMap;
@@ -31,6 +31,7 @@ static RUST_EVENT_PATTERNS: LazyLock<HashMap<&'static str, (EntityType, Behavior
 pub struct RustParse {
     pub findings: Vec<Finding>,
     pub dynamic_usages: DynamicUsages,
+    pub unresolved_calls: Vec<UnresolvedCall>,
 }
 
 /// Extract findings from a pre-parsed Rust tree root node.
@@ -69,6 +70,7 @@ pub fn extract_rust_findings(
 
     let mut findings = Vec::new();
     let mut dynamic_usages = DynamicUsages::default();
+    let mut unresolved_calls = Vec::new();
     let mut matches = cursor.matches(&query, root, bytes);
 
     while let Some(m) = matches.next() {
@@ -86,7 +88,10 @@ pub fn extract_rust_findings(
         }
         match process_event_call(m, method_name_idx, event_name_idx, bytes, &local_constants) {
             EventCallOutcome::Found(f) => findings.push(f),
-            EventCallOutcome::Dynamic(behavior) => dynamic_usages.record(behavior),
+            EventCallOutcome::Dynamic(call) => {
+                dynamic_usages.record(call.behavior);
+                unresolved_calls.push(call);
+            }
             EventCallOutcome::NoMatch => {}
         }
     }
@@ -94,6 +99,7 @@ pub fn extract_rust_findings(
     Ok(RustParse {
         findings,
         dynamic_usages,
+        unresolved_calls,
     })
 }
 
@@ -177,7 +183,7 @@ enum EventCallOutcome {
     /// The call names a known event.
     Found(Finding),
     /// The call is an event call whose name could not be resolved to a literal.
-    Dynamic(Behavior),
+    Dynamic(UnresolvedCall),
     /// The match is not an event call at all.
     NoMatch,
 }
@@ -232,7 +238,16 @@ fn process_event_call(
             .or_else(|| constants.get(lookup_key))
         {
             Some(value) => value.clone(),
-            None => return EventCallOutcome::Dynamic(*behavior),
+            None => {
+                return EventCallOutcome::Dynamic(UnresolvedCall {
+                    behavior: *behavior,
+                    name_text: raw_event_name.to_string(),
+                    range: Range {
+                        start: point_to_position(event_cap.node.start_position()),
+                        end: point_to_position(event_cap.node.end_position()),
+                    },
+                });
+            }
         }
     };
 

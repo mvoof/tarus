@@ -69,6 +69,8 @@ pub struct ProjectIndex {
     pub(crate) js_constants_paths: DashMap<PathBuf, Vec<String>>,
     // Files holding Tauri calls whose name could not be resolved to a literal
     pub(crate) dynamic_usages: DashMap<PathBuf, DynamicUsages>,
+    // The same calls with where they are written, for the per-file hint
+    pub(crate) unresolved_calls: DashMap<PathBuf, Vec<UnresolvedCall>>,
     // Helpers that forward a parameter into a Tauri call: function_name -> every
     // declaration seen under that name. Kept as a list so that two files declaring
     // the same helper name are detected as ambiguous instead of overwriting.
@@ -103,6 +105,7 @@ impl Default for ProjectIndex {
             rust_str_type_alias_paths: DashMap::new(),
             js_constants_paths: DashMap::new(),
             dynamic_usages: DashMap::new(),
+            unresolved_calls: DashMap::new(),
             forwarders: DashMap::new(),
             forwarder_paths: DashMap::new(),
         }
@@ -161,6 +164,11 @@ impl ProjectIndex {
                 .insert(path_ref.clone(), file_index.dynamic_usages);
         }
 
+        if !file_index.unresolved_calls.is_empty() {
+            self.unresolved_calls
+                .insert(path_ref.clone(), file_index.unresolved_calls);
+        }
+
         self.add_forwarders(path_ref.clone(), file_index.forwarders);
 
         for finding in file_index.findings {
@@ -211,7 +219,17 @@ impl ProjectIndex {
         // constants and break cross-file constant resolution.
         self.parse_errors.remove(path);
         self.dynamic_usages.remove(path);
+        self.unresolved_calls.remove(path);
         self.remove_forwarders_for_file(path);
+    }
+
+    /// Tauri calls in `path` whose name could not be resolved to a string.
+    #[must_use]
+    pub fn unresolved_calls_in(&self, path: &Path) -> Vec<UnresolvedCall> {
+        self.unresolved_calls
+            .get(path)
+            .map(|calls| calls.value().clone())
+            .unwrap_or_default()
     }
 
     /// Unresolved Tauri call sites across the whole workspace, folded into one value.

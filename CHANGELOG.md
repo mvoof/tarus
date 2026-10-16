@@ -9,6 +9,7 @@
 - **Added**
   - Rust constants written as raw strings (`const EVENT_X: &str = r"x";`, `r#"x"#`) are now resolved as command and event names, in an item or a macro body
   - Rust constants that name another constant (`const EVENT_X: &str = OTHER;`, `crate::events::OTHER`) now resolve through it, across files and through chains. Only a string constant is read this way — typed `&str`, `&'static str`, or a type alias of one (`type EventName = &'static str;`, from any file) — so `const L: Level = Level::Info;` is never taken for a name. A chain that loops or ends in an unknown name is left unresolved instead of guessed
+  - A hint (`tarus/unresolved-name`) on every `invoke`/`emit`/`listen` whose name Tarus cannot read as a string — `concat!`, a value computed at runtime, a field of a parameter. Such a call already switched "never emitted", "no listeners" or "never invoked" warnings off for the whole workspace, silently; the hint now says so where the call is written
 
 ### [0.12.2] - 2026-09-30
 
