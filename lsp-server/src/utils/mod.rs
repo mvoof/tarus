@@ -122,7 +122,83 @@ pub fn extract_rust_constants(
             constants.insert(name, value);
         }
     }
+
+    collect_macro_constants(root, bytes, &mut constants);
+
     constants
+}
+
+/// Collect `const NAME: &str = "value"` written inside a macro invocation.
+///
+/// Tree-sitter does not parse a macro body as items: `ts_values! { pub const A: &str
+/// = "a" => B; }` is one flat `token_tree`, so the query above never sees the const.
+/// The tokens are still all there, so the declaration is matched by its shape:
+/// `const`/`static`, a name, then the first string literal after `=` before `;`.
+/// A literal-producing expression (`concat!`, a call) yields no string literal
+/// token right after `=` and is skipped rather than guessed.
+fn collect_macro_constants(
+    root: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    constants: &mut std::collections::HashMap<String, String>,
+) {
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        let children: Vec<tree_sitter::Node<'_>> = node.children(&mut cursor).collect();
+
+        if node.kind() == "token_tree" {
+            collect_constants_from_tokens(&children, bytes, constants);
+        }
+
+        stack.extend(children);
+    }
+}
+
+fn collect_constants_from_tokens(
+    tokens: &[tree_sitter::Node<'_>],
+    bytes: &[u8],
+    constants: &mut std::collections::HashMap<String, String>,
+) {
+    let text = |node: &tree_sitter::Node<'_>| node.utf8_text(bytes).unwrap_or_default();
+
+    for (position, token) in tokens.iter().enumerate() {
+        if !matches!(text(token), "const" | "static") {
+            continue;
+        }
+
+        let Some(name) = tokens
+            .get(position + 1)
+            .filter(|n| n.kind() == "identifier")
+        else {
+            continue;
+        };
+
+        let rest = &tokens[position + 2..];
+        let Some(equals) = rest
+            .iter()
+            .take_while(|n| text(n) != ";")
+            .position(|n| text(n) == "=")
+        else {
+            continue;
+        };
+
+        let Some(literal) = rest
+            .get(equals + 1)
+            .filter(|n| n.kind() == "string_literal")
+        else {
+            continue;
+        };
+
+        let value = literal
+            .named_child(0)
+            .filter(|n| n.kind() == "string_content")
+            .map_or("", |n| text(&n));
+
+        constants
+            .entry(text(name).to_string())
+            .or_insert_with(|| value.to_string());
+    }
 }
 
 /// Collect every identifier the file binds itself: function parameters, catch
