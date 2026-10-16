@@ -1,9 +1,95 @@
 //! File processing utilities
 
-use crate::indexer::{GeneratorKind, ProjectIndex};
+use crate::indexer::{DynamicUsages, GeneratorKind, IndexKey, ProjectIndex};
 use crate::parser;
 use crate::parser::typescript::bindings as bindings_reader;
+use crate::syntax::{Behavior, EntityType};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// What the index held for one file before it is re-indexed: enough to tell
+/// afterwards whose diagnostics the change can reach.
+#[derive(Debug, Clone)]
+pub struct IndexSnapshot {
+    keys: Vec<IndexKey>,
+    dynamic: DynamicUsages,
+}
+
+impl IndexSnapshot {
+    /// Take the snapshot; call it right before re-indexing or removing `path`.
+    #[must_use]
+    pub fn before(path: &Path, project_index: &ProjectIndex) -> Self {
+        Self {
+            keys: project_index.get_file_keys(path),
+            dynamic: project_index.dynamic_usages(),
+        }
+    }
+}
+
+/// Files whose diagnostics may have changed after `path` was re-indexed: the file
+/// itself and every file sharing a command or event with it, before or after.
+///
+/// An unresolved call has no name to share, yet it switches "never emitted" /
+/// "no listeners" / "never invoked" on or off for every file at once. So when a
+/// workspace-wide [`DynamicUsages`] flag differs from the snapshot, every file
+/// holding a diagnostic gated by that flag is added too. Edits are debounced, so a
+/// flag can still flip on each pause while a name is being typed; limiting the
+/// refresh to the gated files keeps that from touching the whole workspace.
+#[must_use]
+pub fn files_to_republish(
+    path: &Path,
+    before: &IndexSnapshot,
+    project_index: &ProjectIndex,
+) -> Vec<PathBuf> {
+    let mut files: HashSet<PathBuf> = HashSet::from([path.to_path_buf()]);
+    let after = project_index.get_file_keys(path);
+
+    for key in before.keys.iter().chain(after.iter()) {
+        for location in project_index.get_locations_for_key(key) {
+            files.insert(location.path);
+        }
+    }
+
+    let now = project_index.dynamic_usages();
+    let flipped = DynamicUsages {
+        invokes: now.invokes != before.dynamic.invokes,
+        emitters: now.emitters != before.dynamic.emitters,
+        listeners: now.listeners != before.dynamic.listeners,
+    };
+
+    if !flipped.is_empty() {
+        files.extend(files_gated_by(flipped, project_index));
+    }
+
+    files.into_iter().collect()
+}
+
+/// Files holding a location whose diagnostic depends on one of the `flipped` flags,
+/// mirroring the `dynamic.*` gates in `compute_structural_diagnostics`.
+fn files_gated_by(flipped: DynamicUsages, project_index: &ProjectIndex) -> HashSet<PathBuf> {
+    let is_gated = |entity: EntityType, behavior: Behavior| match (entity, behavior) {
+        (EntityType::Command, Behavior::Definition) => flipped.invokes,
+        (EntityType::Event, Behavior::Definition) => flipped.emitters || flipped.listeners,
+        (_, Behavior::Listen) => flipped.emitters,
+        (_, Behavior::Emit) => flipped.listeners,
+        _ => false,
+    };
+
+    project_index
+        .map
+        .iter()
+        .flat_map(|entry| {
+            let entity = entry.key().entity;
+
+            entry
+                .value()
+                .iter()
+                .filter(|location| is_gated(entity, location.behavior))
+                .map(|location| location.path.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
 
 /// Check if file extension is supported
 #[must_use]

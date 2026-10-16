@@ -1,8 +1,7 @@
 #![warn(clippy::all, clippy::pedantic)]
 
 use dashmap::DashMap;
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::OnceCell;
 use tower_lsp_server::jsonrpc::Result;
@@ -30,9 +29,10 @@ mod utils;
 
 use crate::discovery::config_reader;
 use crate::discovery::scanner;
+use crate::pipeline::IndexSnapshot;
 
 use capabilities::{build_server_capabilities, diagnostics};
-use indexer::{IndexKey, ProjectIndex};
+use indexer::ProjectIndex;
 use scanner::{is_tauri_project, scan_workspace_files};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -82,15 +82,10 @@ impl Backend {
         }
     }
 
-    async fn publish_diagnostics_for_file(&self, path: &PathBuf) {
-        let Some(uri) = Uri::from_file_path(path) else {
-            return;
-        };
-
-        let diagnostics = diagnostics::compute_file_diagnostics(path, &self.project_index);
-        self.client
-            .publish_diagnostics(uri, diagnostics, None)
-            .await;
+    /// Publish fresh diagnostics for every file the re-index of `path` can reach.
+    async fn republish_after(&self, path: &Path, before: &IndexSnapshot) {
+        let files = pipeline::files_to_republish(path, before, &self.project_index);
+        publish_diagnostics_for(files, &self.project_index, &self.client).await;
     }
 
     /// Load developer mode and reference limit from VS Code configuration.
@@ -517,12 +512,14 @@ impl LanguageServer for Backend {
                 return;
             }
 
+            let before = IndexSnapshot::before(&path, &self.project_index);
+
             if pipeline::process_file_content(&path, &content, &self.project_index) {
                 let report = self.project_index.file_report(&path);
                 self.log_dev_info(&report).await;
             }
 
-            self.publish_diagnostics_for_file(&path).await;
+            self.republish_after(&path, &before).await;
         }
     }
 
@@ -576,8 +573,9 @@ impl LanguageServer for Backend {
         }
 
         if let Some(path) = indexable_path(&params.text_document.uri) {
+            let before = IndexSnapshot::before(&path, &self.project_index);
             self.on_change(path.clone()).await;
-            self.publish_diagnostics_for_file(&path).await;
+            self.republish_after(&path, &before).await;
         }
     }
 
@@ -596,15 +594,25 @@ impl LanguageServer for Backend {
                 continue;
             }
 
+            let before = IndexSnapshot::before(&path, &self.project_index);
+
             if event.typ == FileChangeType::DELETED {
                 self.project_index.remove_file(&path);
                 if let Some(uri) = Uri::from_file_path(&path) {
                     self.client.publish_diagnostics(uri, vec![], None).await;
                 }
+
+                // The deleted file's own diagnostics were just cleared above; the
+                // files it shared names with, or silenced, still need fresh ones.
+                let others = pipeline::files_to_republish(&path, &before, &self.project_index)
+                    .into_iter()
+                    .filter(|file| *file != path)
+                    .collect();
+                publish_diagnostics_for(others, &self.project_index, &self.client).await;
             } else {
                 // CREATED or CHANGED
                 self.on_change(path.clone()).await;
-                self.publish_diagnostics_for_file(&path).await;
+                self.republish_after(&path, &before).await;
             }
         }
     }
@@ -655,8 +663,7 @@ async fn process_debounced_change(
     client: &Client,
     is_dev_mode: &Arc<AtomicBool>,
 ) {
-    // Get OLD keys before processing (will be removed)
-    let old_keys: Vec<IndexKey> = project_index.get_file_keys(path);
+    let before = IndexSnapshot::before(path, project_index);
 
     if !pipeline::process_file_content(path, content, project_index) {
         return;
@@ -678,27 +685,17 @@ async fn process_debounced_change(
         }
     }
 
-    // Get NEW keys after processing
-    let new_keys: Vec<IndexKey> = project_index.get_file_keys(path);
+    let files = pipeline::files_to_republish(path, &before, project_index);
+    publish_diagnostics_for(files, project_index, client).await;
+}
 
-    // Combine old and new keys to find all affected commands/events
-    let mut all_keys = HashSet::new();
-    for key in old_keys.iter().chain(new_keys.iter()) {
-        all_keys.insert(key.clone());
-    }
-
-    // Collect all files that contain these commands/events
-    let mut affected_files = HashSet::new();
-    affected_files.insert(path.to_path_buf());
-
-    for key in &all_keys {
-        for loc in project_index.get_locations_for_key(key) {
-            affected_files.insert(loc.path.clone());
-        }
-    }
-
-    // Publish diagnostics for all affected files
-    for file in affected_files {
+/// Compute and publish diagnostics for each of `files`.
+async fn publish_diagnostics_for(
+    files: Vec<PathBuf>,
+    project_index: &ProjectIndex,
+    client: &Client,
+) {
+    for file in files {
         if let Some(uri) = Uri::from_file_path(&file) {
             let diagnostics = diagnostics::compute_file_diagnostics(&file, project_index);
             client.publish_diagnostics(uri, diagnostics, None).await;
