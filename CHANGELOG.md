@@ -3,6 +3,8 @@
 ### [Unreleased]
 
 - **Bug fixes**
+  - Fixed "never emitted", "no listeners" and "never invoked" warnings in other files not updating when a call's name became resolvable or unresolvable (e.g. replacing a `concat!` name with a string). Such a call shares no name with those files, so they kept their old diagnostics until edited themselves; now every file holding such a warning is refreshed when that happens
+  - Fixed saving a file, or changing or deleting it outside the editor, refreshing diagnostics in that file only. Files sharing a command or event with it are now refreshed too, as they already were while typing
   - Fixed event and command names declared as constants inside a macro body (`my_names! { pub const EVENT_X: &str = "x" => X; }`) not being resolved. Tree-sitter reads a macro body as plain tokens, so such a const was never indexed: every `emit(EVENT_X, ..)` became an unknown name, its `listen` lost navigation and CodeLens, and one unknown emit turned off "never emitted" / "no listeners" checks for the whole workspace
   - Fixed editing one file dropping a same-named constant declared in another file, in Rust and in TypeScript/JavaScript. Two files declaring `EVENT_X` shared one entry, so re-indexing either removed it for both, and every call through `EVENT_X` became an unknown name until the other file was indexed again. Each file now keeps and removes only its own declarations
 
