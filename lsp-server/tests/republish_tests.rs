@@ -641,3 +641,86 @@ fn a_file_that_cannot_be_read_keeps_its_index_entries() {
     assert!(workspace.index.get_schema("greet").is_some());
     assert!(workspace.index.get_parse_error(&path).is_some());
 }
+
+#[test]
+fn a_rust_file_that_does_not_parse_keeps_its_constants_until_it_does() {
+    // Rust follows the same rule as the frontend: a half-typed string must not
+    // replace the constant every file using it resolves through.
+    let mut workspace = Workspace::new(&[
+        (
+            "src-tauri/src/events.rs",
+            r#"pub const EVENT_RUN: &str = "run://a";"#,
+        ),
+        (
+            "src-tauri/src/run.rs",
+            "fn start(app: &AppHandle) { app.emit(crate::events::EVENT_RUN, ()).ok(); }",
+        ),
+    ]);
+
+    let files = workspace.edit(
+        "src-tauri/src/events.rs",
+        "pub const EVENT_RUN: &str = \"run://a\";\npub const EVENT_STOP: &str = \"run://b",
+    );
+
+    assert!(files.is_empty(), "{files:?}");
+    assert_eq!(
+        workspace.event_files("run://a"),
+        vec![test_path("src-tauri/src/run.rs")]
+    );
+    assert!(workspace
+        .index
+        .get_all_rust_constants()
+        .contains_key("EVENT_RUN"));
+}
+
+#[test]
+fn a_broken_edit_republishes_nothing() {
+    // Nothing in the index changed, so neither the file nor those sharing a name
+    // with it need fresh diagnostics.
+    let mut workspace = Workspace::new(&[
+        (
+            "src/emit.ts",
+            "import { emit } from \"@tauri-apps/api/event\";\nemit(\"run://a\");\n",
+        ),
+        (
+            "src/listen.ts",
+            "import { listen } from \"@tauri-apps/api/event\";\nlisten(\"run://a\", () => {});\n",
+        ),
+    ]);
+
+    let files = workspace.edit(
+        "src/emit.ts",
+        "import { emit } from \"@tauri-apps/api/event\";\nemit(\"run://a\");\nemit(\"x);\n",
+    );
+
+    assert!(files.is_empty(), "{files:?}");
+}
+
+#[test]
+fn deleting_the_file_whose_command_schema_is_in_use_falls_back_to_another() {
+    // Both files define `greet`; `old.rs` was indexed last, so its schema is in use.
+    let command = "#[tauri::command]\nfn greet(name: String) -> String { name }\n";
+    let mut workspace = Workspace::new(&[("src-tauri/src/new.rs", command)]);
+
+    workspace.edit("src-tauri/src/old.rs", command);
+    workspace.delete("src-tauri/src/old.rs");
+
+    let schema = workspace.index.get_schema("greet");
+    assert_eq!(
+        schema.map(|schema| schema.source_path),
+        Some(test_path("src-tauri/src/new.rs"))
+    );
+}
+
+#[test]
+fn a_file_that_does_not_parse_keeps_its_same_named_helpers_ambiguous() {
+    // `relay` both listens to and emits its parameter: two helpers under one name,
+    // which no call site can be attributed to. A broken edit must restore both.
+    let helper = "import { emit, listen } from \"@tauri-apps/api/event\";\nexport function relay(e: string) {\n  listen(e, () => {});\n  emit(e);\n}\n";
+    let mut workspace = Workspace::new(&[("src/relay.ts", helper)]);
+    assert!(!workspace.index.get_all_forwarders().contains_key("relay"));
+
+    workspace.edit("src/relay.ts", &format!("{helper}emit(\"x);\n"));
+
+    assert!(!workspace.index.get_all_forwarders().contains_key("relay"));
+}

@@ -89,6 +89,7 @@
   function: (identifier) @func_name_second
   !type_arguments
   arguments: (arguments
+    .
     (_)
     .
     [(string) (template_string)] @arg_value_second)
@@ -98,6 +99,7 @@
   function: (identifier) @func_name_second
   !type_arguments
   arguments: (arguments
+    .
     (_)
     .
     (identifier) @arg_value_second)
@@ -107,6 +109,7 @@
   function: (identifier) @func_name_second
   !type_arguments
   arguments: (arguments
+    .
     (_)
     .
     [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value_second)
@@ -118,6 +121,7 @@
     (identifier) @func_name_second)
   !type_arguments
   arguments: (arguments
+    .
     (_)
     .
     [(string) (template_string)] @arg_value_second)
@@ -128,6 +132,7 @@
     (identifier) @func_name_second)
   !type_arguments
   arguments: (arguments
+    .
     (_)
     .
     (identifier) @arg_value_second)
@@ -138,6 +143,7 @@
     (identifier) @func_name_second)
   !type_arguments
   arguments: (arguments
+    .
     (_)
     .
     [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value_second)
@@ -203,6 +209,7 @@
   function: (identifier) @func_name_second
   type_arguments: (type_arguments)
   arguments: (arguments
+    .
     (_)
     .
     [(string) (template_string)] @arg_value_second)
@@ -212,6 +219,7 @@
   function: (identifier) @func_name_second
   type_arguments: (type_arguments)
   arguments: (arguments
+    .
     (_)
     .
     (identifier) @arg_value_second)
@@ -221,6 +229,7 @@
   function: (identifier) @func_name_second
   type_arguments: (type_arguments)
   arguments: (arguments
+    .
     (_)
     .
     [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value_second)
@@ -232,6 +241,7 @@
     (identifier) @func_name_second)
   type_arguments: (type_arguments)
   arguments: (arguments
+    .
     (_)
     .
     [(string) (template_string)] @arg_value_second)
@@ -242,6 +252,7 @@
     (identifier) @func_name_second)
   type_arguments: (type_arguments)
   arguments: (arguments
+    .
     (_)
     .
     (identifier) @arg_value_second)
@@ -252,6 +263,7 @@
     (identifier) @func_name_second)
   type_arguments: (type_arguments)
   arguments: (arguments
+    .
     (_)
     .
     [(member_expression) (binary_expression) (call_expression) (subscript_expression) (ternary_expression) (parenthesized_expression) (as_expression) (non_null_expression) (satisfies_expression)] @arg_value_second)

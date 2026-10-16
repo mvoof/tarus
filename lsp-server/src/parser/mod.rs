@@ -139,6 +139,15 @@ pub fn parse_rust_full(
         .parse(content, None)
         .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
 
+    // As in `parse_frontend`: a file broken mid-edit still parses into a tree, and
+    // what it yields — `const EVENT: &str = "run://a` with the quote not yet closed —
+    // would replace the last good constants every file using them resolves through.
+    if tree.root_node().has_error() {
+        return Err(ParseError::SyntaxError(
+            "Rust file has syntax errors; keeping last valid index".to_string(),
+        ));
+    }
+
     let root = tree.root_node();
 
     let parsed = extract_rust_findings(root, content, &ts_lang, global_constants)?;

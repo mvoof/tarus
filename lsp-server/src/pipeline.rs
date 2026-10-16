@@ -76,9 +76,9 @@ impl NameState {
 /// file whose diagnostics to publish.
 ///
 /// A file that fails to parse on a half-typed line keeps its last good index —
-/// constants and helpers included, so the files using them keep resolving — and is
-/// left out of the result: it keeps its last good diagnostics rather than losing
-/// them mid-edit. Once the typo is fixed, whatever the edit changed is passed on.
+/// constants and helpers included, so the files using them keep resolving — and
+/// nothing is published: every file keeps its last good diagnostics rather than
+/// losing them mid-edit. Once the typo is fixed, whatever the edit changed is passed on.
 pub fn reindex(
     path: &Path,
     content: &str,
@@ -86,14 +86,13 @@ pub fn reindex(
     read_file: impl Fn(&Path) -> Option<String>,
 ) -> Vec<PathBuf> {
     let before = IndexSnapshot::before(path, project_index);
-    let parsed = process_file_content(path, content, project_index);
-    let mut files = refresh_after(path, &before, project_index, read_file);
 
-    if !parsed {
-        files.retain(|file| file != path);
+    // A failed parse leaves the index as it was, so nothing else has changed either.
+    if !process_file_content(path, content, project_index) {
+        return Vec::new();
     }
 
-    files
+    refresh_after(path, &before, project_index, read_file)
 }
 
 /// [`reindex`] `path` from its text as it is when this runs, read through
@@ -471,28 +470,33 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
     }
 }
 
-/// Add a command schema only if no higher-priority (non-RustSource) schema already exists.
+/// Add a command schema, in use only if no higher-priority (non-RustSource) schema
+/// already is; otherwise it waits as a fallback for when that one is dropped.
 fn add_command_schema_if_higher_priority(
     schema: crate::indexer::CommandSchema,
     project_index: &ProjectIndex,
 ) {
-    if !project_index
+    if project_index
         .get_schema(&schema.command_name)
         .is_some_and(|e| e.generator != GeneratorKind::RustSource)
     {
+        project_index.add_schema_candidate(schema);
+    } else {
         project_index.add_schema(schema);
     }
 }
 
-/// Add an event schema only if no higher-priority (non-RustSource) schema already exists.
+/// Add an event schema, as [`add_command_schema_if_higher_priority`] does a command's.
 fn add_event_schema_if_higher_priority(
     schema: crate::indexer::EventSchema,
     project_index: &ProjectIndex,
 ) {
-    if !project_index
+    if project_index
         .get_event_schema(&schema.event_name)
         .is_some_and(|e| e.generator != GeneratorKind::RustSource)
     {
+        project_index.add_event_schema_candidate(schema);
+    } else {
         project_index.add_event_schema(schema);
     }
 }

@@ -48,6 +48,9 @@ pub struct ProjectIndex {
     pub(crate) reference_limit: AtomicUsize,
     // Schema storage: command_name -> CommandSchema
     pub(crate) command_schemas: DashMap<String, CommandSchema>,
+    // Every file's declaration of each command, to fall back on when the file whose
+    // schema is in `command_schemas` drops it
+    pub(crate) command_schema_candidates: DashMap<String, Vec<CommandSchema>>,
     // Reverse index: source_path -> list of command names (for stale removal)
     pub(crate) generated_file_paths: DashMap<PathBuf, Vec<String>>,
     // Type alias storage: alias_name -> type definition string
@@ -56,6 +59,8 @@ pub struct ProjectIndex {
     pub(crate) generated_alias_paths: DashMap<PathBuf, Vec<String>>,
     // Event schema storage: event_name -> EventSchema
     pub(crate) event_schemas: DashMap<String, EventSchema>,
+    // Every file's declaration of each event, as `command_schema_candidates`
+    pub(crate) event_schema_candidates: DashMap<String, Vec<EventSchema>>,
     // Reverse index: source_path -> list of event names (for stale removal)
     pub(crate) generated_event_paths: DashMap<PathBuf, Vec<String>>,
     // Generators discovered from project configuration files
@@ -98,10 +103,12 @@ impl Default for ProjectIndex {
             parse_errors: DashMap::new(),
             reference_limit: AtomicUsize::new(crate::constants::DEFAULT_REFERENCE_LIMIT),
             command_schemas: DashMap::new(),
+            command_schema_candidates: DashMap::new(),
             generated_file_paths: DashMap::new(),
             type_aliases: DashMap::new(),
             generated_alias_paths: DashMap::new(),
             event_schemas: DashMap::new(),
+            event_schema_candidates: DashMap::new(),
             generated_event_paths: DashMap::new(),
             generator_bindings: RwLock::new(Vec::new()),
             rust_constants: DashMap::new(),
@@ -300,8 +307,11 @@ impl ProjectIndex {
         FileNames {
             rust,
             js: owned_by(&self.js_constants, &self.js_constants_paths, path),
-            forwarders: owned_by(&self.forwarders, &self.forwarder_paths, path)
-                .into_values()
+            // All of them, not one per name: two same-named helpers in one file are
+            // ambiguous, and restoring one would make it look settled.
+            forwarders: owned_entries(&self.forwarders, &self.forwarder_paths, path)
+                .into_iter()
+                .map(|(_, forwarder)| forwarder)
                 .collect(),
         }
     }
@@ -510,25 +520,36 @@ fn remove_owned<T>(map: &DashMap<String, Vec<(PathBuf, T)>>, path: &Path, names:
     }
 }
 
-/// The entries `path` declared, by name.
+/// The entries `path` declared, by name, one per name.
 fn owned_by<T: Clone>(
     map: &DashMap<String, Vec<(PathBuf, T)>>,
     paths: &DashMap<PathBuf, Vec<String>>,
     path: &Path,
 ) -> std::collections::HashMap<String, T> {
+    owned_entries(map, paths, path).into_iter().collect()
+}
+
+/// Every entry `path` declared, with its name: one name can occur more than once.
+fn owned_entries<T: Clone>(
+    map: &DashMap<String, Vec<(PathBuf, T)>>,
+    paths: &DashMap<PathBuf, Vec<String>>,
+    path: &Path,
+) -> Vec<(String, T)> {
     let Some(names) = paths.get(path) else {
-        return std::collections::HashMap::new();
+        return Vec::new();
     };
 
-    names
-        .iter()
-        .filter_map(|name| {
-            let entries = map.get(name)?;
-            let (_, value) = entries
-                .iter()
-                .find(|(declared_in, _)| declared_in == path)?;
+    let names: std::collections::HashSet<&String> = names.iter().collect();
 
-            Some((name.clone(), value.clone()))
+    names
+        .into_iter()
+        .filter_map(|name| map.get(name).map(|entries| (name, entries)))
+        .flat_map(|(name, entries)| {
+            entries
+                .iter()
+                .filter(|(declared_in, _)| declared_in == path)
+                .map(|(_, value)| (name.clone(), value.clone()))
+                .collect::<Vec<_>>()
         })
         .collect()
 }

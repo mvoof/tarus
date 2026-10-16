@@ -1,31 +1,67 @@
 //! Command schema, type alias, and event schema CRUD operations
 
 use super::types::{CommandSchema, EventSchema};
-use super::ProjectIndex;
+use super::{GeneratorKind, ProjectIndex};
+use dashmap::DashMap;
 use std::path::{Path, PathBuf};
+
+/// What choosing between two files' schemas for one name needs.
+trait Schema: Clone {
+    fn source_path(&self) -> &Path;
+    fn generator(&self) -> GeneratorKind;
+}
+
+impl Schema for CommandSchema {
+    fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+
+    fn generator(&self) -> GeneratorKind {
+        self.generator
+    }
+}
+
+impl Schema for EventSchema {
+    fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+
+    fn generator(&self) -> GeneratorKind {
+        self.generator
+    }
+}
 
 impl ProjectIndex {
     /// Store a command schema (replaces any existing schema for the same command name)
     pub fn add_schema(&self, schema: CommandSchema) {
-        let path = schema.source_path.clone();
+        self.command_schemas
+            .insert(schema.command_name.clone(), schema.clone());
+        self.add_schema_candidate(schema);
+    }
+
+    /// Record a command schema without making it the one in use: a lower-priority
+    /// declaration that takes over once the file whose schema is in use drops it.
+    pub fn add_schema_candidate(&self, schema: CommandSchema) {
         let name = schema.command_name.clone();
-        self.command_schemas.insert(name.clone(), schema);
+        record_candidate(&self.command_schema_candidates, &name, schema.clone());
         self.generated_file_paths
-            .entry(path)
+            .entry(schema.source_path)
             .or_default()
             .push(name);
     }
 
     /// Remove all schemas associated with a specific file.
     ///
-    /// A name another file has since claimed is left alone: when `new.rs` takes over
-    /// `greet` before `old.rs` is deleted, deleting `old.rs` must not drop it.
+    /// A name another file still declares falls back to that file's schema: when
+    /// `old.rs` and `new.rs` both define `greet`, deleting either keeps `greet`.
     pub fn remove_schemas_for_file(&self, path: &Path) {
         if let Some((_, names)) = self.generated_file_paths.remove(path) {
-            for name in names {
-                self.command_schemas
-                    .remove_if(&name, |_, schema| schema.source_path == path);
-            }
+            drop_file_schemas(
+                &self.command_schemas,
+                &self.command_schema_candidates,
+                path,
+                names,
+            );
         }
     }
 
@@ -54,28 +90,34 @@ impl ProjectIndex {
 
     /// Store an event schema (replaces any existing schema for the same event name)
     pub fn add_event_schema(&self, schema: EventSchema) {
-        let path = schema.source_path.clone();
         let name = schema.event_name.clone();
-        self.event_schemas.insert(name.clone(), schema);
+        self.event_schemas.insert(name.clone(), schema.clone());
         self.forget_event_diagnostic_info(&name);
+        self.add_event_schema_candidate(schema);
+    }
+
+    /// Record an event schema without making it the one in use, as
+    /// [`Self::add_schema_candidate`] does for commands.
+    pub fn add_event_schema_candidate(&self, schema: EventSchema) {
+        let name = schema.event_name.clone();
+        record_candidate(&self.event_schema_candidates, &name, schema.clone());
         self.generated_event_paths
-            .entry(path)
+            .entry(schema.source_path)
             .or_default()
             .push(name);
     }
 
-    /// Remove all event schemas associated with a specific file, leaving a name
-    /// another file has since claimed, as [`Self::remove_schemas_for_file`] does.
+    /// Remove all event schemas associated with a specific file, falling back to
+    /// another file's schema as [`Self::remove_schemas_for_file`] does.
     pub fn remove_event_schemas_for_file(&self, path: &Path) {
         if let Some((_, names)) = self.generated_event_paths.remove(path) {
-            for name in names {
-                if self
-                    .event_schemas
-                    .remove_if(&name, |_, schema| schema.source_path == path)
-                    .is_some()
-                {
-                    self.forget_event_diagnostic_info(&name);
-                }
+            for name in drop_file_schemas(
+                &self.event_schemas,
+                &self.event_schema_candidates,
+                path,
+                names,
+            ) {
+                self.forget_event_diagnostic_info(&name);
             }
         }
     }
@@ -93,6 +135,62 @@ impl ProjectIndex {
     pub fn get_event_schema(&self, name: &str) -> Option<EventSchema> {
         self.event_schemas.get(name).map(|v| v.clone())
     }
+}
+
+/// Keep `schema` as its file's declaration of `name`, replacing an earlier one.
+fn record_candidate<S: Schema>(candidates: &DashMap<String, Vec<S>>, name: &str, schema: S) {
+    let mut entry = candidates.entry(name.to_string()).or_default();
+    entry.retain(|candidate| candidate.source_path() != schema.source_path());
+    entry.push(schema);
+}
+
+/// Drop what `path` declared under `names`. A name whose schema in use came from
+/// `path` falls back to another file's: a generated binding first, as indexing
+/// prefers, then the most recently indexed. Returns the names whose schema in use
+/// changed.
+fn drop_file_schemas<S: Schema>(
+    active: &DashMap<String, S>,
+    candidates: &DashMap<String, Vec<S>>,
+    path: &Path,
+    names: Vec<String>,
+) -> Vec<String> {
+    let mut changed = Vec::new();
+
+    for name in names {
+        let fallback = candidates.get_mut(&name).and_then(|mut entry| {
+            entry.retain(|candidate| candidate.source_path() != path);
+
+            entry
+                .iter()
+                .rev()
+                .find(|candidate| candidate.generator() != GeneratorKind::RustSource)
+                .or_else(|| entry.last())
+                .cloned()
+        });
+
+        candidates.remove_if(&name, |_, entry| entry.is_empty());
+
+        if active
+            .get(&name)
+            .is_none_or(|schema| schema.source_path() != path)
+        {
+            continue;
+        }
+
+        match fallback {
+            Some(schema) => {
+                active.insert(name.clone(), schema);
+            }
+
+            None => {
+                active.remove(&name);
+            }
+        }
+
+        changed.push(name);
+    }
+
+    changed
 }
 
 #[cfg(test)]
@@ -179,5 +277,37 @@ mod tests {
             index.get_event_schema("progress").map(|s| s.source_path),
             Some(PathBuf::from("new.rs"))
         );
+    }
+
+    #[test]
+    fn test_removing_a_bindings_file_falls_back_to_the_schema_it_shadowed() {
+        use crate::indexer::GeneratorKind;
+
+        let index = ProjectIndex::new();
+        let schema = |source: &str, generator| CommandSchema {
+            command_name: "greet".to_string(),
+            params: Vec::new(),
+            return_type: "string".to_string(),
+            source_path: PathBuf::from(source),
+            generator,
+        };
+
+        index.add_schema(schema("bindings.ts", GeneratorKind::Specta));
+        index.add_schema_candidate(schema("commands.rs", GeneratorKind::RustSource));
+        assert_eq!(
+            index.get_schema("greet").map(|s| s.generator),
+            Some(GeneratorKind::Specta)
+        );
+
+        index.remove_schemas_for_file(Path::new("bindings.ts"));
+
+        assert_eq!(
+            index.get_schema("greet").map(|s| s.source_path),
+            Some(PathBuf::from("commands.rs"))
+        );
+
+        index.remove_schemas_for_file(Path::new("commands.rs"));
+
+        assert!(index.get_schema("greet").is_none());
     }
 }

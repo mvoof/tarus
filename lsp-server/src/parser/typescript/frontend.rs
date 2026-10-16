@@ -427,6 +427,7 @@ pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forw
             else {
                 continue;
             };
+
             if let Some(forwarder) =
                 detect_forwarder(arg_cap.node, bytes, pattern.entity, pattern.behavior)
             {
@@ -613,7 +614,11 @@ fn is_literal_name_node(node: tree_sitter::Node<'_>) -> bool {
 /// `prefix + Events.STARTED`.
 fn name_path(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
     let (object, key) = match node.kind() {
-        "identifier" => return node.utf8_text(bytes).ok().map(str::to_string),
+        // `this.STARTED` and `super.STARTED` resolve by their last segment, as
+        // a class's static constant is looked up.
+        "identifier" | "this" | "super" => {
+            return node.utf8_text(bytes).ok().map(str::to_string);
+        }
 
         "member_expression" => {
             let property = node.child_by_field_name("property")?;
@@ -624,7 +629,7 @@ fn name_path(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
 
             (
                 node.child_by_field_name("object")?,
-                property.utf8_text(bytes).ok()?,
+                property.utf8_text(bytes).ok()?.to_string(),
             )
         }
 
@@ -641,22 +646,67 @@ fn name_path(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
     Some(format!("{object}.{key}"))
 }
 
-/// The text of a literal written as a single plain fragment: `"STARTED"`. None for
-/// `"A\u0042"`, whose escape the fragment text does not spell out, and for `""`.
-fn literal_key<'a>(node: tree_sitter::Node<'_>, bytes: &'a [u8]) -> Option<&'a str> {
+/// The key a subscript literal spells: `"STARTED"`, and `"A\u0042"` as `AB`. None
+/// for anything else and for `""`.
+fn literal_key(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
     if !is_literal_name_node(node) {
         return None;
     }
 
-    let mut cursor = node.walk();
-    let mut parts = node.named_children(&mut cursor);
-    let fragment = parts.next()?;
+    literal_text(node, bytes).filter(|key| !key.is_empty())
+}
 
-    if fragment.kind() != "string_fragment" || parts.next().is_some() {
-        return None;
+/// The string a literal holds, its escapes decoded: `"run\u003Aa"` holds `run:a`.
+/// None when an escape cannot be decoded, such as a legacy octal `"\1"`.
+fn literal_text(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
+    let mut text = String::new();
+
+    for part in node.named_children(&mut node.walk()) {
+        let raw = part.utf8_text(bytes).ok()?;
+
+        match part.kind() {
+            "string_fragment" => text.push_str(raw),
+            "escape_sequence" => text.push_str(&decode_escape(raw)?),
+            _ => return None,
+        }
     }
 
-    fragment.utf8_text(bytes).ok()
+    Some(text)
+}
+
+/// The text one JavaScript escape sequence stands for: `\n`, `\x41`, `\u0041`,
+/// `\u{1F600}`, a line continuation, or `\` before any other character.
+fn decode_escape(escape: &str) -> Option<String> {
+    let rest = escape.strip_prefix('\\')?;
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    let tail = chars.as_str();
+
+    let hex = |digits: &str| {
+        u32::from_str_radix(digits, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .map(String::from)
+    };
+
+    match first {
+        'n' if tail.is_empty() => Some("\n".to_string()),
+        't' if tail.is_empty() => Some("\t".to_string()),
+        'r' if tail.is_empty() => Some("\r".to_string()),
+        'b' if tail.is_empty() => Some("\u{8}".to_string()),
+        'f' if tail.is_empty() => Some("\u{c}".to_string()),
+        'v' if tail.is_empty() => Some("\u{b}".to_string()),
+        '0' if tail.is_empty() => Some("\0".to_string()),
+        'x' if tail.len() == 2 => hex(tail),
+        'u' => tail
+            .strip_prefix('{')
+            .and_then(|braced| braced.strip_suffix('}'))
+            .map_or_else(|| hex(tail).filter(|_| tail.len() == 4), hex),
+        '\n' | '\r' | '\u{2028}' | '\u{2029}' => Some(String::new()),
+        '1'..='9' => None,
+        other if tail.is_empty() => Some(other.to_string()),
+        _ => None,
+    }
 }
 
 fn resolve_name_argument(
@@ -687,12 +737,24 @@ fn resolve_name_argument(
             });
     }
 
-    if let Some(fragment) = arg.named_child(0) {
+    if let (Some(first), Some(last)) = (
+        arg.named_child(0),
+        arg.named_child(arg.named_child_count().saturating_sub(1)),
+    ) {
+        // `"run\u003Aa"` names `run:a`, not its first fragment `run`.
+        let Some(name) = literal_text(arg, bytes) else {
+            return ArgResolution::Unresolved;
+        };
+
+        if name.is_empty() {
+            return ArgResolution::EmptyLiteral;
+        }
+
         return ArgResolution::Resolved(
-            fragment.utf8_text(bytes).unwrap_or_default().to_string(),
+            name,
             Range {
-                start: point_to_position(fragment.start_position()),
-                end: point_to_position(fragment.end_position()),
+                start: point_to_position(first.start_position()),
+                end: point_to_position(last.end_position()),
             },
         );
     }

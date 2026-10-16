@@ -1489,3 +1489,28 @@ $0"#,
             HINT 4:5..4:22 "Tarus cannot read the event name `Events["A\u0042"]` as a string: this emit is not linked to any listener, and "never emitted" warnings are off for the whole workspace" [tarus/unresolved-name]"#]],
     );
 }
+
+#[test]
+fn diag_a_member_of_this_resolves_by_its_last_segment() {
+    // `this.events.STARTED` names whatever `STARTED` names, as it did before
+    // member paths were checked.
+    helpers::check_diagnostics(
+        r#"
+//- /runner.ts
+import { emit, listen } from "@tauri-apps/api/event";
+
+const Events = { STARTED: "started" };
+
+class Runner {
+  events = Events;
+
+  start() {
+    emit(this.events.STARTED);
+  }
+}
+
+listen("$0started", () => {});
+"#,
+        expect!["(none)"],
+    );
+}

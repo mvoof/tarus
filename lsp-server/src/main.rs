@@ -233,10 +233,12 @@ impl Backend {
                             continue;
                         };
 
-                        // An open file mid-edit has no earlier good index to keep, so
-                        // the saved text stands in until the edit parses.
+                        // An open file mid-edit that no edit has indexed yet has no
+                        // earlier good index to keep, so the saved text stands in until
+                        // the edit parses. One an edit already indexed keeps that.
                         if !pipeline::process_file_content(&path, &content, &project_index)
                             && document_cache.contains_key(&path)
+                            && !project_index.is_indexed(&path)
                         {
                             if let Ok(saved) = std::fs::read_to_string(&path) {
                                 pipeline::process_file_content(&path, &saved, &project_index);
@@ -251,12 +253,13 @@ impl Backend {
             // own files, and one that finished before is covered by the loop below.
             index_ready.store(true, Ordering::Release);
 
-            for path in project_index.get_indexed_paths() {
-                if let Some(uri) = Uri::from_file_path(&path) {
-                    let diags = diagnostics::compute_file_diagnostics(&path, &project_index);
-                    client.publish_diagnostics(uri, diags, None).await;
-                }
-            }
+            publish_diagnostics_for(
+                project_index.get_indexed_paths(),
+                &project_index,
+                &client,
+                &index_ready,
+            )
+            .await;
 
             // Trigger VS Code to re-request CodeLens for all open editors now that
             // the index is fully populated with resolved constants.
@@ -682,10 +685,6 @@ impl LanguageServer for Backend {
             if event.typ == FileChangeType::DELETED {
                 let job_path = path.clone();
 
-                if let Some(uri) = Uri::from_file_path(&path) {
-                    self.client.publish_diagnostics(uri, vec![], None).await;
-                }
-
                 let others = in_background(
                     &self.project_index,
                     &self.document_cache,
@@ -693,6 +692,14 @@ impl LanguageServer for Backend {
                     move |index, read| pipeline::forget(&job_path, index, |file| read(file).ok()),
                 )
                 .await;
+
+                // Cleared once the file is out of the index: a publish computed from
+                // here on finds nothing for it either, so none can bring them back.
+                if let Some(uri) = Uri::from_file_path(&path) {
+                    let _guard = PUBLISH_LOCK.lock().await;
+                    self.client.publish_diagnostics(uri, vec![], None).await;
+                }
+
                 publish_diagnostics_for(
                     others,
                     &self.project_index,
@@ -825,6 +832,9 @@ where
     })
 }
 
+/// Held from computing one file's diagnostics until they are sent.
+static PUBLISH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Compute and publish diagnostics for each of `files` — none before `index_ready`,
 /// see [`Backend::index_ready`].
 async fn publish_diagnostics_for(
@@ -839,6 +849,9 @@ async fn publish_diagnostics_for(
 
     for file in files {
         if let Some(uri) = Uri::from_file_path(&file) {
+            // Computed and sent under one lock: a publish computed earlier cannot be
+            // sent after one computed later and overwrite it.
+            let _guard = PUBLISH_LOCK.lock().await;
             let diagnostics = diagnostics::compute_file_diagnostics(&file, project_index);
             client.publish_diagnostics(uri, diagnostics, None).await;
         }

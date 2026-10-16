@@ -1191,3 +1191,40 @@ ts_values! {
         RUN_RAW=run"#]]
     .assert_eq(&pairs.join("\n"));
 }
+
+#[test]
+fn parse_ts_literal_with_escapes_names_what_it_spells() {
+    // `"run\u003Asent"` is `run:sent`, not its first fragment `run`; the finding
+    // spans every part between the quotes.
+    helpers::check_parse(
+        r#"
+//- /runs.ts
+import { emit, listen } from "@tauri-apps/api/event";
+emit("run\u003Asent");
+listen('a\'b', () => {});
+"#,
+        expect![[r#"
+            /runs.ts:
+              Event Emit "run:sent" 1:6..1:19
+              Event Listen "a'b" 2:8..2:12"#]],
+    );
+}
+
+#[test]
+fn parse_ts_payload_after_the_event_name_is_not_a_name() {
+    // Only `emitTo`'s second argument names the event, whatever its payload is.
+    helpers::check_parse(
+        r#"
+//- /send.ts
+import { emitTo } from "@tauri-apps/api/event";
+emitTo("main", "run://sent", JSON.stringify(x));
+emitTo("main", "run://sent", { a } as Payload);
+emitTo("main", "run://sent", a + b);
+"#,
+        expect![[r#"
+            /send.ts:
+              Event Emit "run://sent" 1:16..1:26
+              Event Emit "run://sent" 2:16..2:26
+              Event Emit "run://sent" 3:16..3:26"#]],
+    );
+}
