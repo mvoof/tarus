@@ -12,14 +12,12 @@ static RUST_CONSTANTS_QUERY: LazyLock<Query> = LazyLock::new(|| {
     let ts_lang = tree_sitter_rust::LANGUAGE.into();
     Query::new(
         &ts_lang,
-        r"
+        r#"
         (const_item
           name: (identifier) @name
           value: [
             (string_literal (string_content) @value)
             (raw_string_literal (string_content) @value)
-            (identifier) @reference
-            (scoped_identifier name: (identifier) @reference)
           ]
         )
         (static_item
@@ -27,11 +25,32 @@ static RUST_CONSTANTS_QUERY: LazyLock<Query> = LazyLock::new(|| {
           value: [
             (string_literal (string_content) @value)
             (raw_string_literal (string_content) @value)
+          ]
+        )
+        ; `const A: T = B;` — whether `T` is a string type is decided in code
+        (const_item
+          name: (identifier) @name
+          type: (_) @declared_type
+          value: [
             (identifier) @reference
             (scoped_identifier name: (identifier) @reference)
           ]
         )
-        ",
+        (static_item
+          name: (identifier) @name
+          type: (_) @declared_type
+          value: [
+            (identifier) @reference
+            (scoped_identifier name: (identifier) @reference)
+          ]
+        )
+        ; `type EventName = &str;` — makes `const A: EventName = B;` a string reference
+        (type_item
+          name: (type_identifier) @str_alias
+          type: (reference_type type: (primitive_type) @aliased_type)
+          (#eq? @aliased_type "str")
+        )
+        "#,
     )
     .expect("Failed to parse Rust constants query")
 });
@@ -105,28 +124,74 @@ pub fn find_capture<'a>(
 /// Real chains are one or two hops; the limit only stops a cycle.
 const MAX_CONSTANT_REFERENCE_DEPTH: usize = 8;
 
+/// `const NAME: T = OTHER;` — a constant that takes the value of another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstantReference {
+    /// The constant it points at. Only the last path segment is kept, the same way
+    /// call sites are looked up.
+    pub target: String,
+    /// `None` when declared `&str` / `&'static str`. `Some(alias)` when declared
+    /// through a named type: the reference counts only if that name is a
+    /// `type alias = &str;`, so `const L: Level = Level::Info;` is never read as a
+    /// string constant.
+    pub type_alias: Option<String>,
+}
+
+impl ConstantReference {
+    /// Whether the declared type is known to be a string type.
+    #[must_use]
+    pub fn is_str_typed<S: std::hash::BuildHasher>(
+        &self,
+        str_type_aliases: &std::collections::HashSet<String, S>,
+    ) -> bool {
+        self.type_alias
+            .as_ref()
+            .is_none_or(|alias| str_type_aliases.contains(alias))
+    }
+}
+
 /// String constants declared in one Rust file.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RustConstants {
     /// `const NAME: &str = "value"` (or `r"value"`): name to value.
     pub values: std::collections::HashMap<String, String>,
-    /// `const NAME: &str = OTHER` (or `path::OTHER`): name to the name it points at.
-    /// Only the last path segment is kept, the same way call sites are looked up.
-    pub references: std::collections::HashMap<String, String>,
+    /// `const NAME: T = OTHER` (or `path::OTHER`): name to what it points at.
+    pub references: std::collections::HashMap<String, ConstantReference>,
+    /// `type NAME = &str;` (or `&'static str`).
+    pub str_type_aliases: std::collections::HashSet<String>,
 }
 
 impl RustConstants {
-    /// The values, plus every reference that resolves through them or `fallback`.
+    /// The values, plus every string-typed reference that resolves through them or
+    /// `fallback`. Only this file's type aliases are known here.
     #[must_use]
     pub fn resolved(
         &self,
         fallback: &std::collections::HashMap<String, String>,
     ) -> std::collections::HashMap<String, String> {
         let mut values = self.values.clone();
-        resolve_constant_references(&mut values, &self.references, fallback);
+        let references = str_typed_references(
+            self.references
+                .iter()
+                .map(|(name, reference)| (name.clone(), reference.clone())),
+            &self.str_type_aliases,
+        );
+        resolve_constant_references(&mut values, &references, fallback);
 
         values
     }
+}
+
+/// Keep the references whose declared type is a string type, as name to target.
+pub fn str_typed_references<S: std::hash::BuildHasher>(
+    references: impl IntoIterator<Item = (String, ConstantReference)>,
+    str_type_aliases: &std::collections::HashSet<String, S>,
+) -> std::collections::HashMap<String, String> {
+    references
+        .into_iter()
+        .filter(|(_, reference)| reference.is_str_typed(str_type_aliases))
+        .map(|(name, reference)| (name, reference.target))
+        .collect()
 }
 
 /// Add to `values` every reference whose chain ends in a known value.
@@ -170,8 +235,43 @@ pub fn extract_rust_constants(
     extract_rust_constant_decls(root, content).resolved(&std::collections::HashMap::new())
 }
 
-/// Extract string constants and references to other constants from a Rust AST root
-/// node, unresolved, for a workspace-wide map to resolve.
+/// What a const's declared type says about a `= OTHER` value.
+enum DeclaredType {
+    /// `&str` / `&'static str`.
+    Str,
+    /// A named type that is a string type only if it aliases `&str`.
+    Named(String),
+}
+
+impl DeclaredType {
+    fn into_type_alias(self) -> Option<String> {
+        match self {
+            Self::Str => None,
+            Self::Named(name) => Some(name),
+        }
+    }
+}
+
+/// The declared type of a `const A: T = B;`, or `None` when `T` cannot be a string
+/// type (`u32`, `&[u8]`, a generic).
+fn declared_type_of_node(type_node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<DeclaredType> {
+    let text = |node: tree_sitter::Node<'_>| node.utf8_text(bytes).unwrap_or_default().to_string();
+
+    match type_node.kind() {
+        "reference_type" => type_node
+            .child_by_field_name("type")
+            .filter(|inner| inner.kind() == "primitive_type" && text(*inner) == "str")
+            .map(|_| DeclaredType::Str),
+        "type_identifier" => Some(DeclaredType::Named(text(type_node))),
+        "scoped_type_identifier" => type_node
+            .child_by_field_name("name")
+            .map(|name| DeclaredType::Named(text(name))),
+        _ => None,
+    }
+}
+
+/// Extract string constants, references to other constants and `&str` type aliases
+/// from a Rust AST root node, unresolved, for a workspace-wide map to resolve.
 #[must_use]
 pub fn extract_rust_constant_decls(root: tree_sitter::Node<'_>, content: &str) -> RustConstants {
     let mut constants = RustConstants::default();
@@ -181,8 +281,17 @@ pub fn extract_rust_constant_decls(root: tree_sitter::Node<'_>, content: &str) -
     let name_idx = RUST_CONSTANTS_QUERY.capture_index_for_name("name");
     let value_idx = RUST_CONSTANTS_QUERY.capture_index_for_name("value");
     let reference_idx = RUST_CONSTANTS_QUERY.capture_index_for_name("reference");
+    let declared_type_idx = RUST_CONSTANTS_QUERY.capture_index_for_name("declared_type");
+    let str_alias_idx = RUST_CONSTANTS_QUERY.capture_index_for_name("str_alias");
 
     while let Some(m) = matches.next() {
+        if let Some(alias_cap) = find_capture(m, str_alias_idx) {
+            let alias = alias_cap.node.utf8_text(bytes).unwrap_or_default();
+            constants.str_type_aliases.insert(alias.to_string());
+
+            continue;
+        }
+
         let Some(name_cap) = find_capture(m, name_idx) else {
             continue;
         };
@@ -196,10 +305,29 @@ pub fn extract_rust_constant_decls(root: tree_sitter::Node<'_>, content: &str) -
         if let Some(value_cap) = find_capture(m, value_idx) {
             let value = value_cap.node.utf8_text(bytes).unwrap_or_default();
             constants.values.insert(name, value.to_string());
-        } else if let Some(reference_cap) = find_capture(m, reference_idx) {
-            let target = reference_cap.node.utf8_text(bytes).unwrap_or_default();
-            constants.references.insert(name, target.to_string());
+
+            continue;
         }
+
+        let (Some(reference_cap), Some(type_cap)) = (
+            find_capture(m, reference_idx),
+            find_capture(m, declared_type_idx),
+        ) else {
+            continue;
+        };
+
+        let Some(declared_type) = declared_type_of_node(type_cap.node, bytes) else {
+            continue;
+        };
+
+        let target = reference_cap.node.utf8_text(bytes).unwrap_or_default();
+        constants.references.insert(
+            name,
+            ConstantReference {
+                target: target.to_string(),
+                type_alias: declared_type.into_type_alias(),
+            },
+        );
     }
 
     collect_macro_constants(root, bytes, &mut constants);
@@ -234,11 +362,67 @@ fn collect_macro_constants(
     }
 }
 
-/// Tokens that may make up a path to a constant: `crate::events::NAME`.
+/// Tokens that may make up a path to a constant or type: `crate::events::NAME`.
 const PATH_TOKEN_KINDS: &[&str] = &["identifier", "crate", "self", "super", "::"];
+
+/// A macro-body const's type, tokens joined without spaces, that is `&str` itself.
+const STR_TYPE_SPELLINGS: &[&str] = &["&str", "&'staticstr"];
 
 /// Tokens that end a constant's value inside a macro body.
 const DECLARATION_END_TOKENS: &[&str] = &[";", "=>", ","];
+
+/// The macro-body counterpart of [`declared_type_of_node`], from the tokens between
+/// `:` and `=`.
+fn declared_type_of_tokens(
+    type_tokens: &[tree_sitter::Node<'_>],
+    bytes: &[u8],
+) -> Option<DeclaredType> {
+    let text = |node: &tree_sitter::Node<'_>| node.utf8_text(bytes).unwrap_or_default();
+    let joined: String = type_tokens.iter().map(&text).collect();
+
+    if STR_TYPE_SPELLINGS.contains(&joined.as_str()) {
+        return Some(DeclaredType::Str);
+    }
+
+    let is_path = type_tokens
+        .iter()
+        .all(|n| PATH_TOKEN_KINDS.contains(&n.kind()));
+
+    type_tokens
+        .last()
+        .filter(|last| is_path && last.kind() == "identifier")
+        .map(|last| DeclaredType::Named(text(last).to_string()))
+}
+
+/// `type NAME = &str;` in a macro body, from the tokens after `type`.
+fn collect_str_type_alias(
+    tokens: &[tree_sitter::Node<'_>],
+    bytes: &[u8],
+    constants: &mut RustConstants,
+) {
+    let text = |node: &tree_sitter::Node<'_>| node.utf8_text(bytes).unwrap_or_default();
+
+    let Some((name, rest)) = tokens
+        .split_first()
+        .filter(|(name, _)| name.kind() == "identifier")
+    else {
+        return;
+    };
+
+    let Some((_, aliased)) = rest.split_first().filter(|(equals, _)| text(equals) == "=") else {
+        return;
+    };
+
+    let aliased: String = aliased
+        .iter()
+        .take_while(|n| text(n) != ";")
+        .map(&text)
+        .collect();
+
+    if STR_TYPE_SPELLINGS.contains(&aliased.as_str()) {
+        constants.str_type_aliases.insert(text(name).to_string());
+    }
+}
 
 fn collect_constants_from_tokens(
     tokens: &[tree_sitter::Node<'_>],
@@ -248,6 +432,12 @@ fn collect_constants_from_tokens(
     let text = |node: &tree_sitter::Node<'_>| node.utf8_text(bytes).unwrap_or_default();
 
     for (position, token) in tokens.iter().enumerate() {
+        if text(token) == "type" {
+            collect_str_type_alias(&tokens[position + 1..], bytes, constants);
+
+            continue;
+        }
+
         if !matches!(text(token), "const" | "static") {
             continue;
         }
@@ -290,6 +480,14 @@ fn collect_constants_from_tokens(
             continue;
         }
 
+        let Some(declared_type) = rest[..equals]
+            .split_first()
+            .filter(|(colon, _)| text(colon) == ":")
+            .and_then(|(_, type_tokens)| declared_type_of_tokens(type_tokens, bytes))
+        else {
+            continue;
+        };
+
         let path_length = value_tokens
             .iter()
             .take_while(|n| PATH_TOKEN_KINDS.contains(&n.kind()))
@@ -305,7 +503,13 @@ fn collect_constants_from_tokens(
             .filter(|n| n.kind() == "identifier");
 
         if let (true, Some(target)) = (ends_declaration, last_segment) {
-            constants.references.insert(name, text(target).to_string());
+            constants.references.insert(
+                name,
+                ConstantReference {
+                    target: text(target).to_string(),
+                    type_alias: declared_type.into_type_alias(),
+                },
+            );
         }
     }
 }

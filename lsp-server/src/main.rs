@@ -162,17 +162,17 @@ impl Backend {
                 pipeline::collect_constants_from_file(path, &project_index);
             }
 
-            let rust_const_count = project_index.rust_constants.len();
-            let js_const_count = project_index.js_constants.len();
-            let rust_keys: Vec<String> = project_index
-                .rust_constants
+            let rust_constants = project_index.get_all_rust_constants();
+            let js_constants = project_index.get_all_js_constants();
+            let rust_const_count = rust_constants.len();
+            let js_const_count = js_constants.len();
+            let rust_keys: Vec<String> = rust_constants
                 .iter()
-                .map(|e| format!("{}={}", e.key(), e.value()))
+                .map(|(name, value)| format!("{name}={value}"))
                 .collect();
-            let js_keys: Vec<String> = project_index
-                .js_constants
+            let js_keys: Vec<String> = js_constants
                 .iter()
-                .map(|e| format!("{}={}", e.key(), e.value()))
+                .map(|(name, value)| format!("{name}={value}"))
                 .collect();
             client
                 .log_message(

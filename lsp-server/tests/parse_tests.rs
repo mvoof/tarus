@@ -1101,3 +1101,93 @@ names! {
         SCOPED_ALIAS=raw://plain"#]]
     .assert_eq(&pairs.join("\n"));
 }
+
+#[test]
+fn parse_rust_reference_only_from_str_constants() {
+    // `Level::Info` is an enum variant, not a string constant: it must not resolve
+    // through an unrelated `Info` string. A `&'static str` reference still does.
+    let content = r#"
+const Info: &str = "info";
+const LEVEL: Level = Level::Info;
+const STATIC_ALIAS: &'static str = Info;
+
+names! {
+    pub const MACRO_LEVEL: Level = Level::Info => MACRO_LEVEL;
+    pub const MACRO_STATIC_ALIAS: &'static str = crate::levels::Info => MACRO_STATIC_ALIAS;
+}
+"#;
+
+    let constants = lsp_server::utils::extract_rust_constant_decls_from_content(content)
+        .resolved(&std::collections::HashMap::new());
+    let mut pairs: Vec<String> = constants.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    pairs.sort();
+
+    expect![[r#"
+        Info=info
+        MACRO_STATIC_ALIAS=info
+        STATIC_ALIAS=info"#]]
+    .assert_eq(&pairs.join("\n"));
+}
+
+#[test]
+fn parse_rust_reference_through_a_str_type_alias() {
+    // A const typed through `type EventName = &'static str` is still a string
+    // constant; one typed `Level` is not, whatever its value looks like.
+    let content = r#"
+type EventName = &'static str;
+type Plain = &str;
+
+const RUN_RAW: &str = "run";
+const Info: &str = "info";
+pub const RUN: EventName = crate::names::RUN_RAW;
+pub const RUN_PLAIN: Plain = RUN_RAW;
+const LEVEL: Level = Level::Info;
+
+names! {
+    pub const MACRO_RUN: EventName = RUN_RAW => MACRO_RUN;
+    pub const MACRO_LEVEL: Level = Level::Info => MACRO_LEVEL;
+}
+"#;
+
+    let constants = lsp_server::utils::extract_rust_constant_decls_from_content(content)
+        .resolved(&std::collections::HashMap::new());
+    let mut pairs: Vec<String> = constants.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    pairs.sort();
+
+    expect![[r#"
+        Info=info
+        MACRO_RUN=run
+        RUN=run
+        RUN_PLAIN=run
+        RUN_RAW=run"#]]
+    .assert_eq(&pairs.join("\n"));
+}
+
+#[test]
+fn parse_rust_str_type_alias_inside_macro_body() {
+    // The alias lives in the macro body next to the constants it types.
+    let content = r#"
+const RUN_RAW: &str = "run";
+
+ts_values! {
+    type Ev = &str;
+    pub type StaticEv = &'static str;
+    type Count = u32;
+
+    pub const A: Ev = RUN_RAW => A;
+    pub const B: StaticEv = crate::names::RUN_RAW => B;
+    pub const C: Count = RUN_RAW => C;
+}
+"#;
+
+    let constants = lsp_server::utils::extract_rust_constant_decls_from_content(content)
+        .resolved(&std::collections::HashMap::new());
+    let mut pairs: Vec<String> = constants.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    pairs.sort();
+
+    expect![[r#"
+        A=run
+        B=run
+        RUN_RAW=run"#]]
+    .assert_eq(&pairs.join("\n"));
+}
