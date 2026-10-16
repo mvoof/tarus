@@ -2,6 +2,9 @@
 
 ### [Unreleased]
 
+- **Bug fixes**
+  - Fixed event and command names declared as constants inside a macro body (`my_names! { pub const EVENT_X: &str = "x" => X; }`) not being resolved. Tree-sitter reads a macro body as plain tokens, so such a const was never indexed: every `emit(EVENT_X, ..)` became an unknown name, its `listen` lost navigation and CodeLens, and one unknown emit turned off "never emitted" / "no listeners" checks for the whole workspace
+
 ### [0.12.2] - 2026-09-30
 
 - **Bug fixes**

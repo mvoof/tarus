@@ -646,6 +646,40 @@ pub fn run() {
 }
 
 #[test]
+fn parse_rust_constants_inside_macro_body() {
+    // A macro body is a token tree, not items: the const is matched by its tokens.
+    let content = r#"
+const PLAIN: &str = "plain";
+
+ts_values! {
+    export_event_names => GENERATED_HEADER;
+
+    /// Emitted once per run.
+    pub const EVENT_PERF_BEGIN: &str = "perf://begin" => PERF_BEGIN;
+    pub const EVENT_PERF_END: &str = "perf://end" => PERF_END;
+    const COMPUTED: &str = concat!("a", "b");
+    static SHADOWED: &str = "from-macro";
+}
+
+const SHADOWED: &str = "from-item";
+"#;
+
+    let constants = lsp_server::utils::extract_rust_constants_from_content(content);
+    let mut pairs: Vec<String> = constants.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    pairs.sort();
+
+    expect![[r#"
+        EVENT_PERF_BEGIN=perf://begin
+        EVENT_PERF_END=perf://end
+        PLAIN=plain
+        SHADOWED=from-item"#]]
+    .assert_eq(&pairs.join(
+        "
+",
+    ));
+}
+
+#[test]
 fn parse_ts_event_constant_cross_file() {
     let component_path = std::path::PathBuf::from("/components/telemetry.ts");
 

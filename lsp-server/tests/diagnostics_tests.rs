@@ -1105,3 +1105,73 @@ listen("$0units-changed", () => {});
         expect![[r#"WARNING 1:8..1:21 "Event 'units-changed' is listened for but never emitted""#]],
     );
 }
+
+// ===========================================================================
+// Constants declared inside a macro body
+// ===========================================================================
+
+/// The shape of a project that declares its event names once, in a macro that
+/// also exports them to TypeScript: the body is a token tree, not items. The
+/// emit sits in the same file because the fixture resolves constants per file.
+const MACRO_DECLARED_EVENTS: &str = r#"
+//- /src-tauri/src/events.rs
+ts_values! {
+    export_event_names => GENERATED_HEADER;
+
+    /// Sent when a perf run starts.
+    pub const EVENT_PERF_BEGIN: &str = "perf://begin" => PERF_BEGIN;
+}
+
+fn start(app: &AppHandle) {
+    app.emit(EVENT_PERF_BEGIN, ()).ok();
+}
+"#;
+
+#[test]
+fn diag_macro_declared_constant_reaches_the_listener() {
+    helpers::check_diagnostics(
+        &format!(
+            r#"{MACRO_DECLARED_EVENTS}
+//- /src/perf-run.ts
+import {{ listen }} from "@tauri-apps/api/event";
+
+listen("$0perf://begin", () => {{}});
+"#
+        ),
+        expect!["(none)"],
+    );
+}
+
+#[test]
+fn diag_macro_declared_constant_keeps_other_events_checked() {
+    // Before macro bodies were read, the emit above was an unknown name, and an
+    // unknown emit switches "never emitted" off for the whole workspace.
+    helpers::check_diagnostics(
+        &format!(
+            r#"{MACRO_DECLARED_EVENTS}
+//- /src/perf-run.ts
+import {{ listen }} from "@tauri-apps/api/event";
+
+listen("perf://begin", () => {{}});
+listen("$0perf://typo", () => {{}});
+"#
+        ),
+        expect![[r#"WARNING 3:8..3:19 "Event 'perf://typo' is listened for but never emitted""#]],
+    );
+}
+
+#[test]
+fn diag_macro_declared_constant_emit_without_listener() {
+    helpers::check_diagnostics(
+        &format!(
+            r#"{MACRO_DECLARED_EVENTS}
+//- /src/other.ts
+import {{ listen }} from "@tauri-apps/api/event";
+
+listen("other", () => {{}});
+"#
+        )
+        .replace("app.emit(EVENT_PERF_BEGIN", "app.emit($0EVENT_PERF_BEGIN"),
+        expect![[r#"WARNING 8:13..8:29 "Event 'perf://begin' is emitted but no listeners found""#]],
+    );
+}
