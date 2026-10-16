@@ -179,6 +179,25 @@ pub struct FileIndex {
     pub dynamic_usages: DynamicUsages,
     pub forwarders: Vec<Forwarder>,
     pub unresolved_calls: Vec<UnresolvedCall>,
+    pub uses: NameUses,
+}
+
+/// The names a file looked up among other files' declarations, found or not: a
+/// change to any of them can change what its call sites resolve to. Names the file
+/// resolved through its own declarations, or that it binds itself, are left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NameUses {
+    /// Constants: Rust ones for a Rust file, JS/TS ones for a frontend file.
+    pub constants: std::collections::HashSet<String>,
+    /// Functions called by name, each a possible forwarding helper (frontend only).
+    pub forwarders: std::collections::HashSet<String>,
+}
+
+impl NameUses {
+    pub fn extend(&mut self, other: Self) {
+        self.constants.extend(other.constants);
+        self.forwarders.extend(other.forwarders);
+    }
 }
 
 /// Search Key (Hashmap Key)

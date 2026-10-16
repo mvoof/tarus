@@ -1,18 +1,20 @@
 //! File processing utilities
 
-use crate::indexer::{DynamicUsages, Forwarder, GeneratorKind, IndexKey, ProjectIndex};
+use crate::indexer::{
+    DynamicUsages, FileDeclarations, GeneratorKind, IndexKey, NameChanges, ProjectIndex,
+};
 use crate::parser;
 use crate::parser::typescript::bindings as bindings_reader;
 use crate::syntax::{Behavior, EntityType};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// What the index held before one file is re-indexed: enough to tell afterwards
-/// whose diagnostics the change can reach, and whose parse it invalidated.
+/// What the index held for one file before it is re-indexed: enough to tell
+/// afterwards whose diagnostics the change can reach, and whose parse it invalidated.
 #[derive(Debug, Clone)]
 pub struct IndexSnapshot {
     file: FileState,
-    names: NameState,
+    declarations: FileDeclarations,
 }
 
 impl IndexSnapshot {
@@ -21,8 +23,13 @@ impl IndexSnapshot {
     pub fn before(path: &Path, project_index: &ProjectIndex) -> Self {
         Self {
             file: FileState::of(path, project_index),
-            names: NameState::of(project_index),
+            declarations: project_index.declarations_of(path),
         }
+    }
+
+    /// The names `path` changed since the snapshot was taken.
+    fn changes(&self, path: &Path, project_index: &ProjectIndex) -> NameChanges {
+        project_index.changes_between(&self.declarations, &project_index.declarations_of(path))
     }
 }
 
@@ -40,35 +47,6 @@ impl FileState {
             keys: project_index.get_file_keys(path),
             dynamic: project_index.dynamic_usages_of(path),
         }
-    }
-}
-
-/// Every constant and forwarding helper in the workspace: what a parse resolves
-/// names through.
-#[derive(Debug, Clone)]
-struct NameState {
-    rust_constants: HashMap<String, String>,
-    js_constants: HashMap<String, String>,
-    forwarders: HashMap<String, Forwarder>,
-}
-
-impl NameState {
-    fn of(project_index: &ProjectIndex) -> Self {
-        Self {
-            rust_constants: project_index.get_all_rust_constants(),
-            js_constants: project_index.get_all_js_constants(),
-            forwarders: project_index.get_all_forwarders(),
-        }
-    }
-
-    /// Rust and frontend names whose value differs in `after`: constants, and for
-    /// the frontend also forwarding helpers.
-    fn changed_to(&self, after: &Self) -> (Vec<String>, Vec<String>) {
-        let rust_names = changed_names(&self.rust_constants, &after.rust_constants);
-        let mut frontend_names = changed_names(&self.js_constants, &after.js_constants);
-        frontend_names.extend(changed_names(&self.forwarders, &after.forwarders));
-
-        (rust_names, frontend_names)
     }
 }
 
@@ -172,8 +150,8 @@ const MAX_REFRESH_WAVES: usize = 64;
 /// when it was parsed, and a call through a forwarding helper is resolved the same
 /// way. So when `path` changes a constant's value or a helper, the files using it
 /// hold stale names until they are parsed again: each of them is re-parsed here.
-/// Only files of the same language whose text mentions a changed name are
-/// touched, which keeps an ordinary edit from re-parsing anything else.
+/// Each file records the names it looked up among other files' declarations while
+/// it was parsed, so only the files that looked up a changed name are read.
 ///
 /// `read_file` returns a file's current text — the editor's copy for an open file.
 pub fn refresh_after(
@@ -184,43 +162,30 @@ pub fn refresh_after(
 ) -> Vec<PathBuf> {
     let mut files = files_reached_from(path, &before.file, project_index);
 
-    // A re-parsed dependent reads the editor's text, which may hold an edit still
-    // waiting on its own debounce. That edit lands in the index here, so its debounce
-    // will find nothing to pass on: whatever it changed is passed on in this pass,
-    // wave after wave — to files already re-parsed in an earlier wave too.
+    // Reference chains are followed within the first wave, so later waves exist for
+    // one case only: a re-parsed dependent reads the editor's text, which may hold an
+    // edit still waiting on its own debounce. That edit lands in the index here, so
+    // its debounce will find nothing to pass on: whatever it changed is passed on in
+    // this pass, wave after wave — to files already re-parsed in an earlier wave too.
     //
-    // Each wave compares the names against one copy taken as it starts, so a wave
-    // sees exactly what the one before it changed. This ends on its own: a file's
-    // constants and helpers come from its own text alone, which does not change
-    // during the pass, and storing them unchanged leaves the index as it was — it
-    // does not even make the file the latest declarer of a shared name. The wave
-    // limit is a guard, not the stopping rule.
-    let mut names_before = before.names.clone();
+    // This ends on its own: a file's constants and helpers come from its own text
+    // alone, which does not change during the pass, so its second re-parse changes
+    // nothing. The wave limit is a guard, not the stopping rule.
+    let mut changes = before.changes(path, project_index);
 
     for wave in 0..MAX_REFRESH_WAVES {
-        let names_now = NameState::of(project_index);
-        let (rust_names, frontend_names) = names_before.changed_to(&names_now);
-
-        if rust_names.is_empty() && frontend_names.is_empty() {
+        if changes.is_empty() {
             break;
         }
 
-        names_before = names_now;
+        let mut dependents: Vec<PathBuf> =
+            project_index.dependents_of(&changes).into_iter().collect();
+        dependents.sort();
+        changes = NameChanges::default();
 
-        for dependent in project_index.get_indexed_paths() {
-            // The changed file was just parsed; in the first wave it only mentions
-            // its own new names.
+        for dependent in dependents {
+            // The changed file was just parsed against its own new names.
             if wave == 0 && dependent == path {
-                continue;
-            }
-
-            let names = if dependent.extension().is_some_and(|ext| ext == "rs") {
-                &rust_names
-            } else {
-                &frontend_names
-            };
-
-            if names.is_empty() {
                 continue;
             }
 
@@ -228,11 +193,7 @@ pub fn refresh_after(
                 continue;
             };
 
-            if !names.iter().any(|name| mentions_identifier(&content, name)) {
-                continue;
-            }
-
-            let dependent_before = FileState::of(&dependent, project_index);
+            let dependent_before = IndexSnapshot::before(&dependent, project_index);
 
             // A dependent mid-edit keeps its last good diagnostics, as the edited
             // file does in `reindex`.
@@ -240,9 +201,10 @@ pub fn refresh_after(
                 continue;
             }
 
+            changes.extend(dependent_before.changes(&dependent, project_index));
             files.extend(files_reached_from(
                 &dependent,
-                &dependent_before,
+                &dependent_before.file,
                 project_index,
             ));
         }
@@ -255,35 +217,6 @@ pub fn refresh_after(
     }
 
     files.into_iter().collect()
-}
-
-/// Whether `name` occurs in `content` as a whole identifier: `ID` in `emit(ID)`,
-/// not in `VALID_ID` or `IDENTITY`. A short constant name would otherwise match
-/// nearly every file and re-parse the workspace on each change.
-fn mentions_identifier(content: &str, name: &str) -> bool {
-    let is_identifier_char = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-
-    content.match_indices(name).any(|(start, _)| {
-        let before = content[..start].chars().next_back();
-        let after = content[start + name.len()..].chars().next();
-
-        !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char)
-    })
-}
-
-/// Names added, removed or given a different value between two snapshots.
-fn changed_names<V: PartialEq>(
-    before: &HashMap<String, V>,
-    after: &HashMap<String, V>,
-) -> Vec<String> {
-    before
-        .keys()
-        .chain(after.keys())
-        .filter(|name| before.get(*name) != after.get(*name))
-        .cloned()
-        .collect::<HashSet<String>>()
-        .into_iter()
-        .collect()
 }
 
 /// Files holding an `invoke`, `emit` or `listen` — the call sites type checks run on.

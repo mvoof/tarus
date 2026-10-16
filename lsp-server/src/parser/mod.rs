@@ -11,7 +11,7 @@ pub mod typescript;
 
 pub use lang_config::LangType;
 
-use crate::indexer::{CommandSchema, DynamicUsages, EventSchema, FileIndex, Forwarder};
+use crate::indexer::{CommandSchema, DynamicUsages, EventSchema, FileIndex, Forwarder, NameUses};
 use crate::syntax::{ParseError, ParseResult};
 use lang_config::is_angular_file;
 use rust::commands::extract_rust_findings;
@@ -47,6 +47,7 @@ pub fn parse(
     let mut dynamic_usages = DynamicUsages::default();
     let mut unresolved_calls = Vec::new();
     let mut forwarders = Vec::new();
+    let mut uses = NameUses::default();
 
     let findings = match lang {
         Some(LangType::Rust) => {
@@ -62,6 +63,7 @@ pub fn parse(
                 extract_rust_findings(tree.root_node(), content, &ts_lang, global_constants)?;
             dynamic_usages.merge(parsed.dynamic_usages);
             unresolved_calls.extend(parsed.unresolved_calls);
+            uses.constants.extend(parsed.used_constants);
 
             parsed.findings
         }
@@ -76,6 +78,7 @@ pub fn parse(
             dynamic_usages.merge(parsed.dynamic_usages);
             unresolved_calls.extend(parsed.unresolved_calls);
             forwarders.extend(parsed.forwarders);
+            uses.extend(parsed.uses);
 
             parsed.findings
         }
@@ -94,6 +97,7 @@ pub fn parse(
                 dynamic_usages.merge(parsed.dynamic_usages);
                 unresolved_calls.extend(parsed.unresolved_calls);
                 forwarders.extend(parsed.forwarders);
+                uses.extend(parsed.uses);
                 all_findings.extend(parsed.findings);
             }
 
@@ -108,6 +112,7 @@ pub fn parse(
         dynamic_usages,
         forwarders,
         unresolved_calls,
+        uses,
     })
 }
 
@@ -155,6 +160,10 @@ pub fn parse_rust_full(
             dynamic_usages: parsed.dynamic_usages,
             forwarders: Vec::new(),
             unresolved_calls: parsed.unresolved_calls,
+            uses: NameUses {
+                constants: parsed.used_constants,
+                forwarders: std::collections::HashSet::new(),
+            },
         },
         command_schemas,
         event_schemas,

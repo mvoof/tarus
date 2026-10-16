@@ -32,6 +32,8 @@ pub struct RustParse {
     pub findings: Vec<Finding>,
     pub dynamic_usages: DynamicUsages,
     pub unresolved_calls: Vec<UnresolvedCall>,
+    /// Constants looked up among other files' declarations, found or not.
+    pub used_constants: std::collections::HashSet<String>,
 }
 
 /// Extract findings from a pre-parsed Rust tree root node.
@@ -61,6 +63,9 @@ pub fn extract_rust_findings(
     let specta_emit_struct_idx = query.capture_index_for_name("specta_emit_struct");
 
     let mut local_constants = crate::utils::extract_rust_constants(root, content);
+    let own_constants: std::collections::HashSet<String> =
+        local_constants.keys().cloned().collect();
+    let mut used_constants = std::collections::HashSet::new();
     // Merge global constants as fallback (local takes priority)
     for (k, v) in global_constants {
         local_constants
@@ -86,7 +91,18 @@ pub fn extract_rust_findings(
             findings.push(f);
             continue;
         }
-        match process_event_call(m, method_name_idx, event_name_idx, bytes, &local_constants) {
+        match process_event_call(
+            m,
+            method_name_idx,
+            event_name_idx,
+            bytes,
+            &local_constants,
+            &mut |name| {
+                if !own_constants.contains(name) {
+                    used_constants.insert(name.to_string());
+                }
+            },
+        ) {
             EventCallOutcome::Found(f) => findings.push(f),
             EventCallOutcome::Dynamic(call) => {
                 dynamic_usages.record(call.behavior);
@@ -100,6 +116,7 @@ pub fn extract_rust_findings(
         findings,
         dynamic_usages,
         unresolved_calls,
+        used_constants,
     })
 }
 
@@ -194,6 +211,8 @@ fn process_event_call(
     event_name_idx: Option<u32>,
     bytes: &[u8],
     constants: &std::collections::HashMap<String, String>,
+    // Told every constant name looked up, found or not.
+    record_lookup: &mut dyn FnMut(&str),
 ) -> EventCallOutcome {
     let (Some(method_cap), Some(event_cap)) = (
         find_capture(m, method_name_idx),
@@ -232,6 +251,9 @@ fn process_event_call(
         )
     } else {
         let lookup_key = raw_event_name.rsplit("::").next().unwrap_or(raw_event_name);
+        // Constants are keyed by bare name: a `crate::events::EVENT` path is only
+        // ever found through its last segment.
+        record_lookup(lookup_key);
 
         match constants
             .get(raw_event_name)

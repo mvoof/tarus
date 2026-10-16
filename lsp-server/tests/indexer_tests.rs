@@ -5,7 +5,7 @@ mod common_paths;
 use common_paths::test_path;
 use lsp_server::indexer::{
     CommandSchema, DynamicUsages, EventSchema, FileIndex, Finding, GeneratorKind, IndexKey,
-    ParamSchema, ProjectIndex,
+    NameUses, ParamSchema, ProjectIndex,
 };
 use lsp_server::syntax::{Behavior, EntityType};
 use tower_lsp_server::lsp_types::{Position, Range};
@@ -49,6 +49,7 @@ fn test_add_file_to_index() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
 
     index.add_file(file_index);
@@ -73,6 +74,7 @@ fn test_remove_file_from_index() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
 
     index.add_file(file_index);
@@ -106,6 +108,7 @@ fn test_get_locations() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
 
     // Add frontend command call
@@ -119,6 +122,7 @@ fn test_get_locations() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
 
     index.add_file(backend_file);
@@ -167,6 +171,7 @@ fn test_get_key_at_position() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
 
     index.add_file(file_index);
@@ -201,6 +206,7 @@ fn test_get_diagnostic_info() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
 
     // Add a command call
@@ -214,6 +220,7 @@ fn test_get_diagnostic_info() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
 
     index.add_file(backend_file);
@@ -244,6 +251,7 @@ fn test_multiple_files_same_command() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     });
 
     // Add multiple calls from different files
@@ -257,6 +265,7 @@ fn test_multiple_files_same_command() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     });
 
     index.add_file(FileIndex {
@@ -269,6 +278,7 @@ fn test_multiple_files_same_command() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     });
 
     let locations = index.get_locations(EntityType::Command, "get_user");
@@ -341,6 +351,7 @@ fn test_schema_survives_file_map_remove() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     });
 
     // Add a schema from bindings
@@ -409,6 +420,7 @@ fn test_stale_rust_command_schema_cleared_on_reparse() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
     index.add_file(file_index);
     index.add_schema(CommandSchema {
@@ -429,6 +441,7 @@ fn test_stale_rust_command_schema_cleared_on_reparse() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
     index.add_file(file_index);
 
@@ -454,6 +467,7 @@ fn test_stale_rust_event_schema_cleared_on_reparse() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
     index.add_file(file_index);
     index.add_event_schema(EventSchema {
@@ -473,6 +487,7 @@ fn test_stale_rust_event_schema_cleared_on_reparse() {
         dynamic_usages: DynamicUsages::default(),
         forwarders: Vec::new(),
         unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
     };
     index.add_file(file_index);
 
