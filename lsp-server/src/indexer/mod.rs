@@ -25,6 +25,14 @@ use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// The constants and forwarding helpers one file declares.
+#[derive(Debug, Clone, Default)]
+pub struct FileNames {
+    rust: crate::utils::RustConstants,
+    js: std::collections::HashMap<String, String>,
+    forwarders: Vec<Forwarder>,
+}
+
 #[derive(Debug)]
 pub struct ProjectIndex {
     pub(crate) map: DashMap<IndexKey, Vec<LocationInfo>>,
@@ -244,6 +252,67 @@ impl ProjectIndex {
         merged
     }
 
+    /// Unresolved Tauri call sites in `path` alone.
+    #[must_use]
+    pub fn dynamic_usages_of(&self, path: &Path) -> DynamicUsages {
+        self.dynamic_usages
+            .get(path)
+            .map(|entry| *entry.value())
+            .unwrap_or_default()
+    }
+
+    /// [`Self::dynamic_usages`] of every file but `path`.
+    #[must_use]
+    pub fn dynamic_usages_except(&self, path: &Path) -> DynamicUsages {
+        let mut merged = DynamicUsages::default();
+
+        for entry in self
+            .dynamic_usages
+            .iter()
+            .filter(|entry| entry.key() != path)
+        {
+            merged.merge(*entry.value());
+        }
+
+        merged
+    }
+
+    /// The constants and forwarding helpers `path` declares: what it adds to the
+    /// names other files resolve through.
+    #[must_use]
+    pub fn file_names(&self, path: &Path) -> FileNames {
+        let rust = crate::utils::RustConstants {
+            values: owned_by(&self.rust_constants, &self.rust_constants_paths, path),
+            references: owned_by(
+                &self.rust_constant_references,
+                &self.rust_constant_reference_paths,
+                path,
+            ),
+            str_type_aliases: owned_by(
+                &self.rust_str_type_aliases,
+                &self.rust_str_type_alias_paths,
+                path,
+            )
+            .into_keys()
+            .collect(),
+        };
+
+        FileNames {
+            rust,
+            js: owned_by(&self.js_constants, &self.js_constants_paths, path),
+            forwarders: owned_by(&self.forwarders, &self.forwarder_paths, path)
+                .into_values()
+                .collect(),
+        }
+    }
+
+    /// Put back what [`Self::file_names`] returned, replacing what `path` declares now.
+    pub fn restore_file_names(&self, path: &Path, names: FileNames) {
+        self.add_rust_constants(path.to_path_buf(), names.rust);
+        self.add_js_constants(path.to_path_buf(), names.js);
+        self.add_forwarders(path.to_path_buf(), names.forwarders);
+    }
+
     /// Store a parse error for a file
     pub fn set_parse_error(&self, path: PathBuf, error: String) {
         self.parse_errors.insert(path, error);
@@ -439,6 +508,29 @@ fn remove_owned<T>(map: &DashMap<String, Vec<(PathBuf, T)>>, path: &Path, names:
 
         map.remove_if(&name, |_, entries| entries.is_empty());
     }
+}
+
+/// The entries `path` declared, by name.
+fn owned_by<T: Clone>(
+    map: &DashMap<String, Vec<(PathBuf, T)>>,
+    paths: &DashMap<PathBuf, Vec<String>>,
+    path: &Path,
+) -> std::collections::HashMap<String, T> {
+    let Some(names) = paths.get(path) else {
+        return std::collections::HashMap::new();
+    };
+
+    names
+        .iter()
+        .filter_map(|name| {
+            let entries = map.get(name)?;
+            let (_, value) = entries
+                .iter()
+                .find(|(declared_in, _)| declared_in == path)?;
+
+            Some((name.clone(), value.clone()))
+        })
+        .collect()
 }
 
 /// One value per name: the most recently indexed file's, as a single map always gave.

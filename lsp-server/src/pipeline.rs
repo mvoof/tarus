@@ -26,8 +26,8 @@ impl IndexSnapshot {
     }
 }
 
-/// One file's part of the index: the names it holds and the workspace-wide
-/// unresolved-call flags, which is what a change to it can reach.
+/// One file's part of the index: the names it holds and its own unresolved-call
+/// flags, which is what a change to it can reach.
 #[derive(Debug, Clone)]
 struct FileState {
     keys: Vec<IndexKey>,
@@ -38,7 +38,7 @@ impl FileState {
     fn of(path: &Path, project_index: &ProjectIndex) -> Self {
         Self {
             keys: project_index.get_file_keys(path),
-            dynamic: project_index.dynamic_usages(),
+            dynamic: project_index.dynamic_usages_of(path),
         }
     }
 }
@@ -75,11 +75,10 @@ impl NameState {
 /// Re-index `path` from `content`, re-parse what that invalidated, and return every
 /// file whose diagnostics to publish.
 ///
-/// The file's constants and helpers are stored before the file itself is parsed,
-/// so they change even when the parse fails on a half-typed line. Their users are
-/// refreshed either way — once the typo is fixed there is no change left to see.
-/// A file that failed to parse is left out of the result: it keeps its last good
-/// diagnostics rather than losing them mid-edit.
+/// A file that fails to parse on a half-typed line keeps its last good index —
+/// constants and helpers included, so the files using them keep resolving — and is
+/// left out of the result: it keeps its last good diagnostics rather than losing
+/// them mid-edit. Once the typo is fixed, whatever the edit changed is passed on.
 pub fn reindex(
     path: &Path,
     content: &str,
@@ -325,15 +324,26 @@ fn files_reached_from(
         }
     }
 
-    let now = project_index.dynamic_usages();
-    let flipped = DynamicUsages {
-        invokes: now.invokes != before.dynamic.invokes,
-        emitters: now.emitters != before.dynamic.emitters,
-        listeners: now.listeners != before.dynamic.listeners,
-    };
+    // Only this file changed, so a workspace flag can only have flipped if its own
+    // flags did; merging every file's flags is left for that rare case.
+    let own_now = project_index.dynamic_usages_of(path);
 
-    if !flipped.is_empty() {
-        files.extend(files_gated_by(flipped, project_index));
+    if own_now != before.dynamic {
+        let others = project_index.dynamic_usages_except(path);
+        let mut was = others;
+        was.merge(before.dynamic);
+        let mut now = others;
+        now.merge(own_now);
+
+        let flipped = DynamicUsages {
+            invokes: now.invokes != was.invokes,
+            emitters: now.emitters != was.emitters,
+            listeners: now.listeners != was.listeners,
+        };
+
+        if !flipped.is_empty() {
+            files.extend(files_gated_by(flipped, project_index));
+        }
     }
 
     files
@@ -376,7 +386,9 @@ pub fn is_supported_file(path: &Path) -> bool {
 
 /// Process file content from editor buffer.
 ///
-/// Returns `true` if the file was successfully routed and processed.
+/// Returns `true` if the file was successfully routed and processed. A file that
+/// fails to parse keeps the constants and helpers it declared before: read from a
+/// broken tree, they would be dropped or mangled for every file resolving through them.
 ///
 /// # Panics
 ///
@@ -393,6 +405,8 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
 
         return true;
     }
+
+    let previous_names = project_index.file_names(path);
 
     if path.extension().is_some_and(|s| s == "rs") {
         // Extract constants from this file and store globally, then get all global Rust constants
@@ -421,6 +435,7 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
             }
 
             Err(e) => {
+                project_index.restore_file_names(path, previous_names);
                 project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
                 false
             }
@@ -447,6 +462,7 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
             }
 
             Err(e) => {
+                project_index.restore_file_names(path, previous_names);
                 project_index.set_parse_error(path.to_path_buf(), format!("{e:?}"));
 
                 false
@@ -532,11 +548,13 @@ fn process_bindings_file(
     }
 }
 
-/// First-pass: extract and store constants from a file without full parsing.
+/// First-pass: extract and store constants from a file's `content` without full parsing.
 ///
 /// Called during the initial workspace scan before full indexing so that
 /// cross-file constant references are available when the main parse pass runs.
-pub fn collect_constants_from_file(path: &Path, project_index: &ProjectIndex) {
+/// `content` is the file's current text, the editor's copy for an open file: the
+/// disk's would overwrite what an edit indexed while the scan runs stored.
+pub fn collect_constants_from_file(path: &Path, content: &str, project_index: &ProjectIndex) {
     if !is_supported_file(path) {
         return;
     }
@@ -544,20 +562,17 @@ pub fn collect_constants_from_file(path: &Path, project_index: &ProjectIndex) {
     if project_index.get_generator_for_file(path).is_some() {
         return;
     }
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return;
-    };
     if path.extension().is_some_and(|e| e == "rs") {
-        let constants = crate::utils::extract_rust_constant_decls_from_content(&content);
+        let constants = crate::utils::extract_rust_constant_decls_from_content(content);
         project_index.add_rust_constants(path.to_path_buf(), constants);
     } else {
         let is_js = path.extension().is_some_and(|e| e == "js" || e == "jsx");
-        let constants = crate::utils::extract_js_constants_from_content(&content, is_js);
+        let constants = crate::utils::extract_js_constants_from_content(content, is_js);
         project_index.add_js_constants(path.to_path_buf(), constants);
 
         // Forwarding helpers are cross-file: a call site is only resolvable once the
         // helper that owns it is known, so they must be collected before the main pass.
-        project_index.add_forwarders(path.to_path_buf(), extract_file_forwarders(path, &content));
+        project_index.add_forwarders(path.to_path_buf(), extract_file_forwarders(path, content));
     }
 }
 

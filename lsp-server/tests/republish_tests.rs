@@ -334,10 +334,10 @@ fn regenerated_bindings_refresh_every_typed_call_site() {
 }
 
 #[test]
-fn a_constant_changed_while_its_file_does_not_parse_still_reaches_its_users() {
+fn a_file_that_does_not_parse_keeps_its_constants_until_it_does() {
     // The edit changes `RUN` while a half-typed call breaks the rest of the file.
-    // The constant is stored before the file is parsed, so its users must be
-    // re-parsed now: once the typo is fixed there is no change left to notice.
+    // Read from a broken tree, constants can be dropped or mangled, so the old one
+    // stays and its users keep resolving; the fix then passes the new value on.
     let mut workspace = Workspace::new(&[
         ("src/names.ts", "export const RUN = \"run://a\";\n"),
         (
@@ -352,11 +352,38 @@ fn a_constant_changed_while_its_file_does_not_parse_still_reaches_its_users() {
     );
 
     assert_eq!(
-        workspace.event_files("run://b"),
+        workspace.event_files("run://a"),
         vec![test_path("src/use.ts")]
     );
     // The broken file keeps its last good diagnostics rather than being cleared.
     assert!(!files.contains(&test_path("src/names.ts")), "{files:?}");
+
+    let files = workspace.edit(
+        "src/names.ts",
+        "import { listen } from \"@tauri-apps/api/event\";\nexport const RUN = \"run://b\";\nlisten(\"x\", () => {});\n",
+    );
+
+    assert_eq!(
+        workspace.event_files("run://b"),
+        vec![test_path("src/use.ts")]
+    );
+    assert!(files.contains(&test_path("src/use.ts")), "{files:?}");
+}
+
+#[test]
+fn deleting_a_file_keeps_a_command_schema_another_file_took_over() {
+    // A rename the watcher reports as CREATED(new.rs) before DELETED(old.rs).
+    let command = "#[tauri::command]\nfn greet(name: String) -> String { name }\n";
+    let mut workspace = Workspace::new(&[("src-tauri/src/old.rs", command)]);
+
+    workspace.edit("src-tauri/src/new.rs", command);
+    workspace.delete("src-tauri/src/old.rs");
+
+    let schema = workspace.index.get_schema("greet");
+    assert_eq!(
+        schema.map(|schema| schema.source_path),
+        Some(test_path("src-tauri/src/new.rs"))
+    );
 }
 
 #[test]

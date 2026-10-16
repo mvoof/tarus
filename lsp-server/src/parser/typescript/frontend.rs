@@ -416,11 +416,6 @@ pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forw
                 continue;
             };
 
-            // Only a bare identifier can be a forwarded parameter, wrappers aside.
-            if unwrap_value(arg_cap.node).kind() != "identifier" {
-                continue;
-            }
-
             let func_name = func_cap.node.utf8_text(bytes).unwrap_or_default();
             let Some(original_name) = aliases.get(func_name).copied() else {
                 continue;
@@ -614,26 +609,54 @@ fn is_literal_name_node(node: tree_sitter::Node<'_>) -> bool {
 
 /// The dotted name a node spells, to look up as a constant: `Events.STARTED` as
 /// written, and `Events["STARTED"]` as `Events.STARTED`. None for anything that is
-/// not a name, such as `Events[key]` or `prefix + Events.STARTED`.
+/// not a name all the way down, such as `Events[key]`, `getEvents().STARTED` or
+/// `prefix + Events.STARTED`.
 fn name_path(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
-    match node.kind() {
-        "identifier" | "member_expression" => node.utf8_text(bytes).ok().map(str::to_string),
+    let (object, key) = match node.kind() {
+        "identifier" => return node.utf8_text(bytes).ok().map(str::to_string),
 
-        "subscript_expression" => {
-            let index = unwrap_value(node.child_by_field_name("index")?);
+        "member_expression" => {
+            let property = node.child_by_field_name("property")?;
 
-            if !is_literal_name_node(index) {
+            if property.kind() != "property_identifier" {
                 return None;
             }
 
-            let key = index.named_child(0)?.utf8_text(bytes).ok()?;
-            let object = name_path(unwrap_value(node.child_by_field_name("object")?), bytes)?;
-
-            Some(format!("{object}.{key}"))
+            (
+                node.child_by_field_name("object")?,
+                property.utf8_text(bytes).ok()?,
+            )
         }
 
-        _ => None,
+        "subscript_expression" => (
+            node.child_by_field_name("object")?,
+            literal_key(unwrap_value(node.child_by_field_name("index")?), bytes)?,
+        ),
+
+        _ => return None,
+    };
+
+    let object = name_path(unwrap_value(object), bytes)?;
+
+    Some(format!("{object}.{key}"))
+}
+
+/// The text of a literal written as a single plain fragment: `"STARTED"`. None for
+/// `"A\u0042"`, whose escape the fragment text does not spell out, and for `""`.
+fn literal_key<'a>(node: tree_sitter::Node<'_>, bytes: &'a [u8]) -> Option<&'a str> {
+    if !is_literal_name_node(node) {
+        return None;
     }
+
+    let mut cursor = node.walk();
+    let mut parts = node.named_children(&mut cursor);
+    let fragment = parts.next()?;
+
+    if fragment.kind() != "string_fragment" || parts.next().is_some() {
+        return None;
+    }
+
+    fragment.utf8_text(bytes).ok()
 }
 
 fn resolve_name_argument(

@@ -1467,3 +1467,25 @@ listen("started", () => {});
         expect!["(none)"],
     );
 }
+
+#[test]
+fn diag_member_of_a_non_name_is_not_read_through_a_global_constant() {
+    // `STARTED` and `A` are global constants, but `getEvents().STARTED` and
+    // `Events["A\u0042"]` (key `AB`) name neither of them.
+    helpers::check_diagnostics(
+        r#"
+//- /names.ts
+export const STARTED = "run://started";
+export const A = "run://a";
+//- /use.ts
+import { emit } from "@tauri-apps/api/event";
+import { Events, getEvents } from "./events";
+
+emit(getEvents().STARTED, null);
+emit(Events["A\u0042"], null);
+$0"#,
+        expect![[r#"
+            HINT 3:5..3:24 "Tarus cannot read the event name `getEvents().STARTED` as a string: this emit is not linked to any listener, and "never emitted" warnings are off for the whole workspace" [tarus/unresolved-name]
+            HINT 4:5..4:22 "Tarus cannot read the event name `Events["A\u0042"]` as a string: this emit is not linked to any listener, and "never emitted" warnings are off for the whole workspace" [tarus/unresolved-name]"#]],
+    );
+}

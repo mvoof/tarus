@@ -49,6 +49,11 @@ struct Backend {
     /// Set to true after Pass 1 (constant collection) completes so `did_open/did_change`missing backticks
     /// can use the full global constants map for cross-file resolution.
     constants_ready: Arc<AtomicBool>,
+    /// Set to true once the startup scan has parsed every file. Until then a
+    /// re-index publishes nothing: diagnostics computed from a half-built index warn
+    /// about calls whose other side is not indexed yet. The scan publishes every
+    /// file when it is done.
+    index_ready: Arc<AtomicBool>,
 }
 
 impl Backend {
@@ -96,7 +101,7 @@ impl Backend {
                 .await;
         }
 
-        publish_diagnostics_for(files, &self.project_index, &self.client).await;
+        publish_diagnostics_for(files, &self.project_index, &self.client, &self.index_ready).await;
     }
 
     /// Load developer mode and reference limit from VS Code configuration.
@@ -154,6 +159,7 @@ impl Backend {
         let client = self.client.clone();
         let is_dev_mode = self.is_developer_mode_active.clone();
         let constants_ready = self.constants_ready.clone();
+        let index_ready = self.index_ready.clone();
 
         tokio::spawn(async move {
             client
@@ -170,11 +176,15 @@ impl Backend {
             // cross-file references are resolvable.
             let files = {
                 let project_index = project_index.clone();
+                let document_cache = document_cache.clone();
 
                 tokio::task::spawn_blocking(move || {
                     for path in &files {
                         let _guard = lock_reindex();
-                        pipeline::collect_constants_from_file(path, &project_index);
+
+                        if let Ok(content) = utils::read_current_text(path, &document_cache) {
+                            pipeline::collect_constants_from_file(path, &content, &project_index);
+                        }
                     }
 
                     files
@@ -219,13 +229,27 @@ impl Backend {
                     for path in files {
                         let _guard = lock_reindex();
 
-                        if let Ok(content) = utils::read_current_text(&path, &document_cache) {
-                            pipeline::process_file_content(&path, &content, &project_index);
+                        let Ok(content) = utils::read_current_text(&path, &document_cache) else {
+                            continue;
+                        };
+
+                        // An open file mid-edit has no earlier good index to keep, so
+                        // the saved text stands in until the edit parses.
+                        if !pipeline::process_file_content(&path, &content, &project_index)
+                            && document_cache.contains_key(&path)
+                        {
+                            if let Ok(saved) = std::fs::read_to_string(&path) {
+                                pipeline::process_file_content(&path, &saved, &project_index);
+                            }
                         }
                     }
                 })
                 .await;
             }
+
+            // Set before publishing: a re-index finishing from here on publishes its
+            // own files, and one that finished before is covered by the loop below.
+            index_ready.store(true, Ordering::Release);
 
             for path in project_index.get_indexed_paths() {
                 if let Some(uri) = Uri::from_file_path(&path) {
@@ -581,6 +605,7 @@ impl LanguageServer for Backend {
                 let client = self.client.clone();
                 let path_clone = path.clone();
                 let is_dev_mode = self.is_developer_mode_active.clone();
+                let index_ready = self.index_ready.clone();
 
                 // Only the wait is cancellable. Once it has elapsed, the re-index runs
                 // as its own task: aborting it half-way would leave the index updated
@@ -594,6 +619,7 @@ impl LanguageServer for Backend {
                             &document_cache,
                             &client,
                             &is_dev_mode,
+                            &index_ready,
                         )
                         .await;
                     });
@@ -616,6 +642,12 @@ impl LanguageServer for Backend {
 
             if let Some((_key, pending)) = self.debounce_tasks.remove(&path) {
                 pending.abort();
+            }
+
+            // Same as `did_open`: pass 2 reads the file from disk now that its editor
+            // copy is gone.
+            if !self.constants_ready.load(Ordering::Acquire) {
+                return;
             }
 
             self.reindex_and_publish(path).await;
@@ -661,7 +693,13 @@ impl LanguageServer for Backend {
                     move |index, read| pipeline::forget(&job_path, index, |file| read(file).ok()),
                 )
                 .await;
-                publish_diagnostics_for(others, &self.project_index, &self.client).await;
+                publish_diagnostics_for(
+                    others,
+                    &self.project_index,
+                    &self.client,
+                    &self.index_ready,
+                )
+                .await;
             } else {
                 // CREATED or CHANGED
                 self.reindex_and_publish(path).await;
@@ -714,6 +752,7 @@ async fn process_debounced_change(
     document_cache: &Arc<DashMap<PathBuf, String>>,
     client: &Client,
     is_dev_mode: &Arc<AtomicBool>,
+    index_ready: &AtomicBool,
 ) {
     let job_path = path.to_path_buf();
     let files = in_background(project_index, document_cache, client, move |index, read| {
@@ -737,7 +776,7 @@ async fn process_debounced_change(
         }
     }
 
-    publish_diagnostics_for(files, project_index, client).await;
+    publish_diagnostics_for(files, project_index, client, index_ready).await;
 }
 
 /// Re-indexes run one at a time, so a dependent is never re-parsed against
@@ -786,12 +825,18 @@ where
     })
 }
 
-/// Compute and publish diagnostics for each of `files`.
+/// Compute and publish diagnostics for each of `files` — none before `index_ready`,
+/// see [`Backend::index_ready`].
 async fn publish_diagnostics_for(
     files: Vec<PathBuf>,
     project_index: &ProjectIndex,
     client: &Client,
+    index_ready: &AtomicBool,
 ) {
+    if !index_ready.load(Ordering::Acquire) {
+        return;
+    }
+
     for file in files {
         if let Some(uri) = Uri::from_file_path(&file) {
             let diagnostics = diagnostics::compute_file_diagnostics(&file, project_index);
@@ -816,6 +861,7 @@ async fn main() {
         debounce_tasks: Arc::new(DashMap::new()),
         document_cache: Arc::new(DashMap::new()),
         constants_ready: Arc::new(AtomicBool::new(false)),
+        index_ready: Arc::new(AtomicBool::new(false)),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;

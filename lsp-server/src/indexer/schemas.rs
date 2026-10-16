@@ -16,11 +16,15 @@ impl ProjectIndex {
             .push(name);
     }
 
-    /// Remove all schemas associated with a specific file
+    /// Remove all schemas associated with a specific file.
+    ///
+    /// A name another file has since claimed is left alone: when `new.rs` takes over
+    /// `greet` before `old.rs` is deleted, deleting `old.rs` must not drop it.
     pub fn remove_schemas_for_file(&self, path: &Path) {
-        if let Some((_, names)) = self.generated_file_paths.remove(&path.to_path_buf()) {
+        if let Some((_, names)) = self.generated_file_paths.remove(path) {
             for name in names {
-                self.command_schemas.remove(&name);
+                self.command_schemas
+                    .remove_if(&name, |_, schema| schema.source_path == path);
             }
         }
     }
@@ -53,19 +57,36 @@ impl ProjectIndex {
         let path = schema.source_path.clone();
         let name = schema.event_name.clone();
         self.event_schemas.insert(name.clone(), schema);
+        self.forget_event_diagnostic_info(&name);
         self.generated_event_paths
             .entry(path)
             .or_default()
             .push(name);
     }
 
-    /// Remove all event schemas associated with a specific file
+    /// Remove all event schemas associated with a specific file, leaving a name
+    /// another file has since claimed, as [`Self::remove_schemas_for_file`] does.
     pub fn remove_event_schemas_for_file(&self, path: &Path) {
-        if let Some((_, names)) = self.generated_event_paths.remove(&path.to_path_buf()) {
+        if let Some((_, names)) = self.generated_event_paths.remove(path) {
             for name in names {
-                self.event_schemas.remove(&name);
+                if self
+                    .event_schemas
+                    .remove_if(&name, |_, schema| schema.source_path == path)
+                    .is_some()
+                {
+                    self.forget_event_diagnostic_info(&name);
+                }
             }
         }
+    }
+
+    /// An event schema counts as an emitter and a listener in the cached
+    /// [`super::DiagnosticInfo`], so the event's entry is stale once its schema changes.
+    fn forget_event_diagnostic_info(&self, name: &str) {
+        self.diagnostic_info_cache.remove(&super::IndexKey {
+            entity: crate::syntax::EntityType::Event,
+            name: name.to_string(),
+        });
     }
 
     /// Retrieve an event schema by event name
@@ -100,6 +121,63 @@ mod tests {
         assert!(
             !index.type_aliases.contains_key("UserProfile"),
             "Alias should be removed"
+        );
+    }
+
+    #[test]
+    fn test_event_schema_changes_reach_cached_diagnostic_info() {
+        use crate::indexer::{DiagnosticInfo, GeneratorKind, IndexKey};
+        use crate::syntax::EntityType;
+
+        let index = ProjectIndex::new();
+        let bindings = PathBuf::from("bindings.ts");
+        let key = IndexKey {
+            entity: EntityType::Event,
+            name: "progress".to_string(),
+        };
+        let has_emitters = |index: &ProjectIndex| {
+            matches!(
+                index.get_diagnostic_info(&key),
+                DiagnosticInfo::Event {
+                    has_emitters: true,
+                    ..
+                }
+            )
+        };
+
+        assert!(!has_emitters(&index));
+
+        index.add_event_schema(EventSchema {
+            event_name: "progress".to_string(),
+            payload_type: "number".to_string(),
+            source_path: bindings.clone(),
+            generator: GeneratorKind::Specta,
+        });
+        assert!(has_emitters(&index), "a schema added after a cached miss");
+
+        index.remove_event_schemas_for_file(&bindings);
+        assert!(!has_emitters(&index), "a schema removed after a cached hit");
+    }
+
+    #[test]
+    fn test_removing_a_file_keeps_an_event_schema_another_file_took_over() {
+        use crate::indexer::GeneratorKind;
+
+        let index = ProjectIndex::new();
+        let schema = |source: &str| EventSchema {
+            event_name: "progress".to_string(),
+            payload_type: "number".to_string(),
+            source_path: PathBuf::from(source),
+            generator: GeneratorKind::RustSource,
+        };
+
+        index.add_event_schema(schema("old.rs"));
+        index.add_event_schema(schema("new.rs"));
+        index.remove_event_schemas_for_file(Path::new("old.rs"));
+
+        assert_eq!(
+            index.get_event_schema("progress").map(|s| s.source_path),
+            Some(PathBuf::from("new.rs"))
         );
     }
 }
