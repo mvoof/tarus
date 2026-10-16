@@ -140,11 +140,17 @@ const FUNCTION_KINDS: [&str; 5] = [
 /// Anonymous callbacks are skipped: with no name there is no call site to look up.
 fn detect_forwarder(
     node: tree_sitter::Node<'_>,
-    name: &str,
     bytes: &[u8],
     entity: EntityType,
     behavior: Behavior,
 ) -> Option<Forwarder> {
+    let node = unwrap_value(node);
+
+    if node.kind() != "identifier" {
+        return None;
+    }
+
+    let name = node.utf8_text(bytes).unwrap_or_default();
     let mut current = node.parent();
 
     while let Some(candidate) = current {
@@ -410,8 +416,8 @@ pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forw
                 continue;
             };
 
-            // Only a bare identifier can be a forwarded parameter.
-            if arg_cap.node.kind() != "identifier" {
+            // Only a bare identifier can be a forwarded parameter, wrappers aside.
+            if unwrap_value(arg_cap.node).kind() != "identifier" {
                 continue;
             }
 
@@ -426,11 +432,8 @@ pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forw
             else {
                 continue;
             };
-
-            let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-
             if let Some(forwarder) =
-                detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+                detect_forwarder(arg_cap.node, bytes, pattern.entity, pattern.behavior)
             {
                 forwarders.push(forwarder);
             }
@@ -571,6 +574,29 @@ enum ArgResolution {
     Unresolved,
 }
 
+/// Node kinds that wrap a value without changing it: `(x)`, `x as T`, `x!`,
+/// `x satisfies T`.
+const VALUE_WRAPPER_KINDS: [&str; 4] = [
+    "parenthesized_expression",
+    "as_expression",
+    "non_null_expression",
+    "satisfies_expression",
+];
+
+/// The value inside any parentheses and type-only wrappers: `(EVENT as string)!`
+/// names whatever `EVENT` names.
+fn unwrap_value(mut node: tree_sitter::Node<'_>) -> tree_sitter::Node<'_> {
+    while VALUE_WRAPPER_KINDS.contains(&node.kind()) {
+        let Some(inner) = node.named_child(0) else {
+            break;
+        };
+
+        node = inner;
+    }
+
+    node
+}
+
 /// Whether the node spells a name out in full.
 ///
 /// A template literal qualifies as long as nothing is interpolated: `` `greet` ``
@@ -586,11 +612,36 @@ fn is_literal_name_node(node: tree_sitter::Node<'_>) -> bool {
     }
 }
 
+/// The dotted name a node spells, to look up as a constant: `Events.STARTED` as
+/// written, and `Events["STARTED"]` as `Events.STARTED`. None for anything that is
+/// not a name, such as `Events[key]` or `prefix + Events.STARTED`.
+fn name_path(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" | "member_expression" => node.utf8_text(bytes).ok().map(str::to_string),
+
+        "subscript_expression" => {
+            let index = unwrap_value(node.child_by_field_name("index")?);
+
+            if !is_literal_name_node(index) {
+                return None;
+            }
+
+            let key = index.named_child(0)?.utf8_text(bytes).ok()?;
+            let object = name_path(unwrap_value(node.child_by_field_name("object")?), bytes)?;
+
+            Some(format!("{object}.{key}"))
+        }
+
+        _ => None,
+    }
+}
+
 fn resolve_name_argument(
     arg: tree_sitter::Node<'_>,
     bytes: &[u8],
     scope: &Scope<'_>,
 ) -> ArgResolution {
+    let arg = unwrap_value(arg);
     let raw = arg.utf8_text(bytes).unwrap_or_default();
 
     let range = Range {
@@ -599,8 +650,15 @@ fn resolve_name_argument(
     };
 
     if !is_literal_name_node(arg) {
+        // Only a name can stand for a constant. `prefix + Events.STARTED` or
+        // `flag ? Events.A : Events.B` is some event, but not `Events.STARTED` or
+        // `Events.B` — the lookup by last segment would claim it was.
+        let Some(path) = name_path(arg, bytes) else {
+            return ArgResolution::Unresolved;
+        };
+
         return scope
-            .resolve(raw)
+            .resolve(&path)
             .map_or(ArgResolution::Unresolved, |name| {
                 ArgResolution::Resolved(name, range)
             });
@@ -660,10 +718,8 @@ fn process_first_arg_pattern<'a>(
     // `invoke` is deliberately literal-only — a command name is never resolved
     // through the constant table. A forwarded parameter is different: the literal
     // does exist, at the helper's call sites, so it is still worth recovering.
-    if original_name == "invoke" && !is_literal_name_node(arg_cap.node) {
-        let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-
-        return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+    if original_name == "invoke" && !is_literal_name_node(unwrap_value(arg_cap.node)) {
+        return detect_forwarder(arg_cap.node, bytes, pattern.entity, pattern.behavior)
             .map_or_else(
                 || {
                     PatternOutcome::Dynamic(unresolved_call(
@@ -680,9 +736,7 @@ fn process_first_arg_pattern<'a>(
     let (resolved_arg, range) = match resolve_name_argument(arg_cap.node, bytes, scope) {
         ArgResolution::Resolved(name, range) => (name, range),
         ArgResolution::Unresolved => {
-            let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-
-            return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+            return detect_forwarder(arg_cap.node, bytes, pattern.entity, pattern.behavior)
                 .map_or_else(
                     || {
                         PatternOutcome::Dynamic(unresolved_call(
@@ -750,9 +804,7 @@ fn process_second_arg_pattern<'a>(
     let (resolved_arg, range) = match resolve_name_argument(arg_cap.node, bytes, scope) {
         ArgResolution::Resolved(name, range) => (name, range),
         ArgResolution::Unresolved => {
-            let raw = arg_cap.node.utf8_text(bytes).unwrap_or_default();
-
-            return detect_forwarder(arg_cap.node, raw, bytes, pattern.entity, pattern.behavior)
+            return detect_forwarder(arg_cap.node, bytes, pattern.entity, pattern.behavior)
                 .map_or_else(
                     || {
                         PatternOutcome::Dynamic(unresolved_call(

@@ -9,11 +9,12 @@ use tower_lsp_server::lsp_types::{
     CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, CompletionParams,
     CompletionResponse, ConfigurationItem, ConfigurationParams, DidChangeTextDocumentParams,
     DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolParams,
-    DocumentSymbolResponse, FileChangeType, FileSystemWatcher, GlobPattern, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverParams, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, OneOf, ReferenceParams, Registration,
-    ServerCapabilities, SymbolInformation, Uri, WorkspaceSymbol, WorkspaceSymbolParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DocumentSymbolParams, DocumentSymbolResponse, FileChangeType, FileSystemWatcher, GlobPattern,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InitializeParams,
+    InitializeResult, InitializedParams, Location, MessageType, OneOf, ReferenceParams,
+    Registration, ServerCapabilities, SymbolInformation, Uri, WorkspaceSymbol,
+    WorkspaceSymbolParams,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
@@ -29,7 +30,6 @@ mod utils;
 
 use crate::discovery::config_reader;
 use crate::discovery::scanner;
-use crate::pipeline::IndexSnapshot;
 
 use capabilities::{build_server_capabilities, diagnostics};
 use indexer::ProjectIndex;
@@ -57,17 +57,6 @@ impl Backend {
         self.workspace_root.get().is_some()
     }
 
-    async fn on_change(&self, path: PathBuf) {
-        if !self.is_ready() {
-            return;
-        }
-
-        if pipeline::process_file_index(path.clone(), &self.project_index) {
-            let report = self.project_index.file_report(&path);
-            self.log_dev_info(&report).await;
-        }
-    }
-
     async fn log_dev_info(&self, message: &str) {
         if self.is_developer_mode_active.load(Ordering::Relaxed) {
             self.client.log_message(MessageType::INFO, message).await;
@@ -82,9 +71,31 @@ impl Backend {
         }
     }
 
-    /// Publish fresh diagnostics for every file the re-index of `path` can reach.
-    async fn republish_after(&self, path: &Path, before: &IndexSnapshot) {
-        let files = pipeline::files_to_republish(path, before, &self.project_index);
+    /// Re-index `path` from its current text and publish what that reaches.
+    async fn reindex_and_publish(&self, path: PathBuf) {
+        let job_path = path.clone();
+        let files = in_background(
+            &self.project_index,
+            &self.document_cache,
+            &self.client,
+            move |index, read| pipeline::reindex_current(&job_path, index, read),
+        )
+        .await;
+        self.finish_reindex(&path, files).await;
+    }
+
+    /// Publish diagnostics for `files` and, in developer mode, report on `path` —
+    /// only when it was indexed: a skipped or failed job has nothing to report, and
+    /// neither has a job that dropped the file because it is gone.
+    async fn finish_reindex(&self, path: &Path, files: Vec<PathBuf>) {
+        if !files.is_empty()
+            && self.project_index.is_indexed(path)
+            && self.project_index.get_parse_error(path).is_none()
+        {
+            self.log_dev_info(&self.project_index.file_report(path))
+                .await;
+        }
+
         publish_diagnostics_for(files, &self.project_index, &self.client).await;
     }
 
@@ -139,6 +150,7 @@ impl Backend {
     /// Spawn background task that scans workspace files, indexes them, and publishes diagnostics.
     fn spawn_indexing(&self, root: PathBuf) {
         let project_index = self.project_index.clone();
+        let document_cache = self.document_cache.clone();
         let client = self.client.clone();
         let is_dev_mode = self.is_developer_mode_active.clone();
         let constants_ready = self.constants_ready.clone();
@@ -152,10 +164,24 @@ impl Backend {
                 .await
                 .unwrap_or_default();
 
-            // Pass 1: collect all constants so cross-file references are resolvable
-            for path in &files {
-                pipeline::collect_constants_from_file(path, &project_index);
-            }
+            // Both passes take the lock editor re-indexes take, one file at a time: an
+            // edit indexed while the scan runs must not be overwritten by it, and must
+            // not wait for the whole scan either. Pass 1 collects constants so
+            // cross-file references are resolvable.
+            let files = {
+                let project_index = project_index.clone();
+
+                tokio::task::spawn_blocking(move || {
+                    for path in &files {
+                        let _guard = lock_reindex();
+                        pipeline::collect_constants_from_file(path, &project_index);
+                    }
+
+                    files
+                })
+                .await
+                .unwrap_or_default()
+            };
 
             let rust_constants = project_index.get_all_rust_constants();
             let js_constants = project_index.get_all_js_constants();
@@ -184,9 +210,21 @@ impl Backend {
             // did_open / did_change handlers can use it for cross-file resolution.
             constants_ready.store(true, Ordering::Release);
 
-            // Pass 2: full parse using the complete constants map
-            for path in files {
-                pipeline::process_file_index(path, &project_index);
+            // Pass 2: full parse using the complete constants map, from each file's
+            // current text — a file opened during the scan has the editor's copy.
+            {
+                let project_index = project_index.clone();
+
+                let _ = tokio::task::spawn_blocking(move || {
+                    for path in files {
+                        let _guard = lock_reindex();
+
+                        if let Ok(content) = utils::read_current_text(&path, &document_cache) {
+                            pipeline::process_file_content(&path, &content, &project_index);
+                        }
+                    }
+                })
+                .await;
             }
 
             for path in project_index.get_indexed_paths() {
@@ -512,14 +550,7 @@ impl LanguageServer for Backend {
                 return;
             }
 
-            let before = IndexSnapshot::before(&path, &self.project_index);
-
-            if pipeline::process_file_content(&path, &content, &self.project_index) {
-                let report = self.project_index.file_report(&path);
-                self.log_dev_info(&report).await;
-            }
-
-            self.republish_after(&path, &before).await;
+            self.reindex_and_publish(path).await;
         }
     }
 
@@ -546,24 +577,48 @@ impl LanguageServer for Backend {
 
                 // Spawn new debounced task
                 let project_index = self.project_index.clone();
+                let document_cache = self.document_cache.clone();
                 let client = self.client.clone();
                 let path_clone = path.clone();
                 let is_dev_mode = self.is_developer_mode_active.clone();
 
+                // Only the wait is cancellable. Once it has elapsed, the re-index runs
+                // as its own task: aborting it half-way would leave the index updated
+                // and the diagnostics that should follow it never published.
                 let task = tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(constants::DEBOUNCE_MS)).await;
-                    process_debounced_change(
-                        &path_clone,
-                        &content,
-                        &project_index,
-                        &client,
-                        &is_dev_mode,
-                    )
-                    .await;
+                    tokio::spawn(async move {
+                        process_debounced_change(
+                            &path_clone,
+                            &project_index,
+                            &document_cache,
+                            &client,
+                            &is_dev_mode,
+                        )
+                        .await;
+                    });
                 });
 
                 self.debounce_tasks.insert(path, task);
             }
+        }
+    }
+
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        if !self.is_ready() {
+            return;
+        }
+
+        if let Some(path) = indexable_path(&params.text_document.uri) {
+            // Closing drops the editor's copy, unsaved edits included: the disk is the
+            // file's text again, for this re-index and for any dependent refresh later.
+            self.document_cache.remove(&path);
+
+            if let Some((_key, pending)) = self.debounce_tasks.remove(&path) {
+                pending.abort();
+            }
+
+            self.reindex_and_publish(path).await;
         }
     }
 
@@ -573,9 +628,7 @@ impl LanguageServer for Backend {
         }
 
         if let Some(path) = indexable_path(&params.text_document.uri) {
-            let before = IndexSnapshot::before(&path, &self.project_index);
-            self.on_change(path.clone()).await;
-            self.republish_after(&path, &before).await;
+            self.reindex_and_publish(path).await;
         }
     }
 
@@ -594,25 +647,24 @@ impl LanguageServer for Backend {
                 continue;
             }
 
-            let before = IndexSnapshot::before(&path, &self.project_index);
-
             if event.typ == FileChangeType::DELETED {
-                self.project_index.remove_file(&path);
+                let job_path = path.clone();
+
                 if let Some(uri) = Uri::from_file_path(&path) {
                     self.client.publish_diagnostics(uri, vec![], None).await;
                 }
 
-                // The deleted file's own diagnostics were just cleared above; the
-                // files it shared names with, or silenced, still need fresh ones.
-                let others = pipeline::files_to_republish(&path, &before, &self.project_index)
-                    .into_iter()
-                    .filter(|file| *file != path)
-                    .collect();
+                let others = in_background(
+                    &self.project_index,
+                    &self.document_cache,
+                    &self.client,
+                    move |index, read| pipeline::forget(&job_path, index, |file| read(file).ok()),
+                )
+                .await;
                 publish_diagnostics_for(others, &self.project_index, &self.client).await;
             } else {
                 // CREATED or CHANGED
-                self.on_change(path.clone()).await;
-                self.republish_after(&path, &before).await;
+                self.reindex_and_publish(path).await;
             }
         }
     }
@@ -657,17 +709,17 @@ fn completion_response_len(response: &CompletionResponse) -> usize {
 /// Process a file change after debounce: parse, compute affected keys,
 /// and publish diagnostics for all impacted files.
 async fn process_debounced_change(
-    path: &std::path::Path,
-    content: &str,
+    path: &Path,
     project_index: &Arc<ProjectIndex>,
+    document_cache: &Arc<DashMap<PathBuf, String>>,
     client: &Client,
     is_dev_mode: &Arc<AtomicBool>,
 ) {
-    let before = IndexSnapshot::before(path, project_index);
-
-    if !pipeline::process_file_content(path, content, project_index) {
-        return;
-    }
+    let job_path = path.to_path_buf();
+    let files = in_background(project_index, document_cache, client, move |index, read| {
+        pipeline::reindex_current(&job_path, index, read)
+    })
+    .await;
 
     // Log parse errors in developer mode (check AFTER processing)
     if is_dev_mode.load(Ordering::Relaxed) {
@@ -685,8 +737,53 @@ async fn process_debounced_change(
         }
     }
 
-    let files = pipeline::files_to_republish(path, &before, project_index);
     publish_diagnostics_for(files, project_index, client).await;
+}
+
+/// Re-indexes run one at a time, so a dependent is never re-parsed against
+/// half-updated constants. It does not order them: each job reads the file's current
+/// text when it runs (`pipeline::reindex_current`), so their order does not matter.
+static REINDEX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take [`REINDEX_LOCK`], also after a job panicked holding it: the next job reads
+/// every file's current text afresh rather than trusting what the last one left.
+fn lock_reindex() -> std::sync::MutexGuard<'static, ()> {
+    REINDEX_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Run a re-index `job` off the async runtime, under [`REINDEX_LOCK`]: it reads files
+/// from disk and parses them, which would otherwise stall the language server. The
+/// job gets the index and a reader for any file's current text.
+async fn in_background<F>(
+    project_index: &Arc<ProjectIndex>,
+    document_cache: &Arc<DashMap<PathBuf, String>>,
+    client: &Client,
+    job: F,
+) -> Vec<PathBuf>
+where
+    F: FnOnce(&ProjectIndex, &dyn Fn(&Path) -> std::io::Result<String>) -> Vec<PathBuf>
+        + Send
+        + 'static,
+{
+    let project_index = project_index.clone();
+    let document_cache = document_cache.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let _guard = lock_reindex();
+        let read = |file: &Path| utils::read_current_text(file, &document_cache);
+
+        job(&project_index, &read)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        let message = format!("Re-index failed: {error}");
+        let client = client.clone();
+        tokio::spawn(async move { client.log_message(MessageType::ERROR, message).await });
+
+        Vec::new()
+    })
 }
 
 /// Compute and publish diagnostics for each of `files`.

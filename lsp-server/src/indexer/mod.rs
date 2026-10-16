@@ -277,6 +277,12 @@ impl ProjectIndex {
             .unwrap_or_default()
     }
 
+    /// Whether `path` is in the index.
+    #[must_use]
+    pub fn is_indexed(&self, path: &Path) -> bool {
+        self.file_map.contains_key(path)
+    }
+
     /// Get all indexed file paths (for iterating over the entire index)
     pub fn get_indexed_paths(&self) -> Vec<PathBuf> {
         self.file_map.iter().map(|e| e.key().clone()).collect()

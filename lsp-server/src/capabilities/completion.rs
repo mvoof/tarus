@@ -35,11 +35,7 @@ pub fn handle_completion(
     let path_cow = uri.to_file_path()?;
     let path: PathBuf = path_cow.to_path_buf();
 
-    // Try to get content from cache first, fallback to reading from disk
-    let content = document_cache
-        .get(&path)
-        .map(|entry| entry.value().clone())
-        .or_else(|| std::fs::read_to_string(&path).ok())?;
+    let content = crate::utils::read_current_text(&path, document_cache).ok()?;
 
     let lines: Vec<&str> = content.lines().collect();
     let line_idx =
