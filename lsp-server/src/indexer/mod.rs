@@ -54,9 +54,15 @@ pub struct ProjectIndex {
     pub(crate) generator_bindings: RwLock<Vec<DiscoveredGenerator>>,
     // Global constant storage: constant_name -> string_value
     pub(crate) rust_constants: DashMap<String, String>,
+    // `const A: &str = B;` in Rust: constant_name -> referenced constant_name
+    pub(crate) rust_constant_references: DashMap<String, String>,
     pub(crate) js_constants: DashMap<String, String>,
     // Reverse index for stale removal: file_path -> list of constant names
     pub(crate) rust_constants_paths: DashMap<PathBuf, Vec<String>>,
+    // Kept apart from `rust_constants_paths`: `pub const X: &str = crate::a::X;`
+    // re-exports a name another file holds the value of, and dropping this file's
+    // reference must not drop that value.
+    pub(crate) rust_constant_reference_paths: DashMap<PathBuf, Vec<String>>,
     pub(crate) js_constants_paths: DashMap<PathBuf, Vec<String>>,
     // Files holding Tauri calls whose name could not be resolved to a literal
     pub(crate) dynamic_usages: DashMap<PathBuf, DynamicUsages>,
@@ -86,8 +92,10 @@ impl Default for ProjectIndex {
             generated_event_paths: DashMap::new(),
             generator_bindings: RwLock::new(Vec::new()),
             rust_constants: DashMap::new(),
+            rust_constant_references: DashMap::new(),
             js_constants: DashMap::new(),
             rust_constants_paths: DashMap::new(),
+            rust_constant_reference_paths: DashMap::new(),
             js_constants_paths: DashMap::new(),
             dynamic_usages: DashMap::new(),
             forwarders: DashMap::new(),
@@ -257,17 +265,19 @@ impl ProjectIndex {
     }
 
     /// Store Rust constants extracted from a file, replacing any previous constants for that file
-    pub fn add_rust_constants(
-        &self,
-        path: PathBuf,
-        constants: std::collections::HashMap<String, String>,
-    ) {
+    pub fn add_rust_constants(&self, path: PathBuf, constants: crate::utils::RustConstants) {
         self.remove_rust_constants_for_file(&path);
-        let names: Vec<String> = constants.keys().cloned().collect();
-        for (name, value) in constants {
+        let value_names: Vec<String> = constants.values.keys().cloned().collect();
+        let reference_names: Vec<String> = constants.references.keys().cloned().collect();
+        for (name, value) in constants.values {
             self.rust_constants.insert(name, value);
         }
-        self.rust_constants_paths.insert(path, names);
+        for (name, target) in constants.references {
+            self.rust_constant_references.insert(name, target);
+        }
+        self.rust_constants_paths.insert(path.clone(), value_names);
+        self.rust_constant_reference_paths
+            .insert(path, reference_names);
     }
 
     /// Store JS/TS constants extracted from a file, replacing any previous constants for that file
@@ -342,6 +352,11 @@ impl ProjectIndex {
                 self.rust_constants.remove(&name);
             }
         }
+        if let Some((_, names)) = self.rust_constant_reference_paths.remove(path) {
+            for name in names {
+                self.rust_constant_references.remove(&name);
+            }
+        }
     }
 
     /// Remove all JS/TS constants associated with a file
@@ -353,12 +368,27 @@ impl ProjectIndex {
         }
     }
 
-    /// Collect all global Rust constants as a `HashMap` (for passing to parsers)
+    /// Collect all global Rust constants as a `HashMap` (for passing to parsers),
+    /// with `const A: &str = B;` resolved across files
     pub fn get_all_rust_constants(&self) -> std::collections::HashMap<String, String> {
-        self.rust_constants
+        let mut values: std::collections::HashMap<String, String> = self
+            .rust_constants
             .iter()
             .map(|e| (e.key().clone(), e.value().clone()))
-            .collect()
+            .collect();
+        let references: std::collections::HashMap<String, String> = self
+            .rust_constant_references
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
+
+        crate::utils::resolve_constant_references(
+            &mut values,
+            &references,
+            &std::collections::HashMap::new(),
+        );
+
+        values
     }
 
     /// Collect all global JS/TS constants as a `HashMap` (for passing to parsers)

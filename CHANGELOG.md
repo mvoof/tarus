@@ -5,6 +5,10 @@
 - **Bug fixes**
   - Fixed event and command names declared as constants inside a macro body (`my_names! { pub const EVENT_X: &str = "x" => X; }`) not being resolved. Tree-sitter reads a macro body as plain tokens, so such a const was never indexed: every `emit(EVENT_X, ..)` became an unknown name, its `listen` lost navigation and CodeLens, and one unknown emit turned off "never emitted" / "no listeners" checks for the whole workspace
 
+- **Added**
+  - Rust constants written as raw strings (`const EVENT_X: &str = r"x";`, `r#"x"#`) are now resolved as command and event names, in an item or a macro body
+  - Rust constants that name another constant (`const EVENT_X: &str = OTHER;`, `crate::events::OTHER`) now resolve through it, across files and through chains. A chain that loops or ends in an unknown name is left unresolved instead of guessed
+
 ### [0.12.2] - 2026-09-30
 
 - **Bug fixes**

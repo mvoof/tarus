@@ -35,7 +35,7 @@ pub fn process_file_content(path: &Path, content: &str, project_index: &ProjectI
 
     if path.extension().is_some_and(|s| s == "rs") {
         // Extract constants from this file and store globally, then get all global Rust constants
-        let local_constants = crate::utils::extract_rust_constants_from_content(content);
+        let local_constants = crate::utils::extract_rust_constant_decls_from_content(content);
         project_index.add_rust_constants(path.to_path_buf(), local_constants);
         let global_constants = project_index.get_all_rust_constants();
 
@@ -187,7 +187,7 @@ pub fn collect_constants_from_file(path: &Path, project_index: &ProjectIndex) {
         return;
     };
     if path.extension().is_some_and(|e| e == "rs") {
-        let constants = crate::utils::extract_rust_constants_from_content(&content);
+        let constants = crate::utils::extract_rust_constant_decls_from_content(&content);
         project_index.add_rust_constants(path.to_path_buf(), constants);
     } else {
         let is_js = path.extension().is_some_and(|e| e == "js" || e == "jsx");

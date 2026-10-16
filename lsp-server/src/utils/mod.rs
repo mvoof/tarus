@@ -15,13 +15,21 @@ static RUST_CONSTANTS_QUERY: LazyLock<Query> = LazyLock::new(|| {
         r"
         (const_item
           name: (identifier) @name
-          value: (string_literal
-            (string_content) @value)
+          value: [
+            (string_literal (string_content) @value)
+            (raw_string_literal (string_content) @value)
+            (identifier) @reference
+            (scoped_identifier name: (identifier) @reference)
+          ]
         )
         (static_item
           name: (identifier) @name
-          value: (string_literal
-            (string_content) @value)
+          value: [
+            (string_literal (string_content) @value)
+            (raw_string_literal (string_content) @value)
+            (identifier) @reference
+            (scoped_identifier name: (identifier) @reference)
+          ]
         )
         ",
     )
@@ -93,33 +101,104 @@ pub fn find_capture<'a>(
     idx.and_then(|i| m.captures.iter().find(|c| c.index == i))
 }
 
-/// Extract constant definitions from a Rust AST root node
+/// How many `const A: &str = B;` hops are followed before a chain is given up on.
+/// Real chains are one or two hops; the limit only stops a cycle.
+const MAX_CONSTANT_REFERENCE_DEPTH: usize = 8;
+
+/// String constants declared in one Rust file.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RustConstants {
+    /// `const NAME: &str = "value"` (or `r"value"`): name to value.
+    pub values: std::collections::HashMap<String, String>,
+    /// `const NAME: &str = OTHER` (or `path::OTHER`): name to the name it points at.
+    /// Only the last path segment is kept, the same way call sites are looked up.
+    pub references: std::collections::HashMap<String, String>,
+}
+
+impl RustConstants {
+    /// The values, plus every reference that resolves through them or `fallback`.
+    #[must_use]
+    pub fn resolved(
+        &self,
+        fallback: &std::collections::HashMap<String, String>,
+    ) -> std::collections::HashMap<String, String> {
+        let mut values = self.values.clone();
+        resolve_constant_references(&mut values, &self.references, fallback);
+
+        values
+    }
+}
+
+/// Add to `values` every reference whose chain ends in a known value.
+///
+/// A name that already has a value of its own keeps it. A chain that ends in an
+/// unknown name, or loops, adds nothing: the call site stays unresolved rather than
+/// pointing at a guess.
+pub fn resolve_constant_references<S: std::hash::BuildHasher>(
+    values: &mut std::collections::HashMap<String, String, S>,
+    references: &std::collections::HashMap<String, String, S>,
+    fallback: &std::collections::HashMap<String, String, S>,
+) {
+    let resolved: Vec<(String, String)> = references
+        .iter()
+        .filter(|(name, _)| !values.contains_key(*name))
+        .filter_map(|(name, target)| {
+            let mut current = target;
+
+            for _ in 0..MAX_CONSTANT_REFERENCE_DEPTH {
+                if let Some(value) = values.get(current).or_else(|| fallback.get(current)) {
+                    return Some((name.clone(), value.clone()));
+                }
+
+                current = references.get(current)?;
+            }
+
+            None
+        })
+        .collect();
+
+    values.extend(resolved);
+}
+
+/// Extract string constants from a Rust AST root node, references resolved within
+/// the file only.
 #[must_use]
 pub fn extract_rust_constants(
     root: tree_sitter::Node<'_>,
     content: &str,
 ) -> std::collections::HashMap<String, String> {
-    let mut constants = std::collections::HashMap::new();
+    extract_rust_constant_decls(root, content).resolved(&std::collections::HashMap::new())
+}
+
+/// Extract string constants and references to other constants from a Rust AST root
+/// node, unresolved, for a workspace-wide map to resolve.
+#[must_use]
+pub fn extract_rust_constant_decls(root: tree_sitter::Node<'_>, content: &str) -> RustConstants {
+    let mut constants = RustConstants::default();
     let mut cursor = QueryCursor::new();
     let bytes = content.as_bytes();
     let mut matches = cursor.matches(&RUST_CONSTANTS_QUERY, root, bytes);
     let name_idx = RUST_CONSTANTS_QUERY.capture_index_for_name("name");
     let value_idx = RUST_CONSTANTS_QUERY.capture_index_for_name("value");
+    let reference_idx = RUST_CONSTANTS_QUERY.capture_index_for_name("reference");
+
     while let Some(m) = matches.next() {
-        if let (Some(name_cap), Some(val_cap)) =
-            (find_capture(m, name_idx), find_capture(m, value_idx))
-        {
-            let name = name_cap
-                .node
-                .utf8_text(bytes)
-                .unwrap_or_default()
-                .to_string();
-            let value = val_cap
-                .node
-                .utf8_text(bytes)
-                .unwrap_or_default()
-                .to_string();
-            constants.insert(name, value);
+        let Some(name_cap) = find_capture(m, name_idx) else {
+            continue;
+        };
+
+        let name = name_cap
+            .node
+            .utf8_text(bytes)
+            .unwrap_or_default()
+            .to_string();
+
+        if let Some(value_cap) = find_capture(m, value_idx) {
+            let value = value_cap.node.utf8_text(bytes).unwrap_or_default();
+            constants.values.insert(name, value.to_string());
+        } else if let Some(reference_cap) = find_capture(m, reference_idx) {
+            let target = reference_cap.node.utf8_text(bytes).unwrap_or_default();
+            constants.references.insert(name, target.to_string());
         }
     }
 
@@ -128,18 +207,18 @@ pub fn extract_rust_constants(
     constants
 }
 
-/// Collect `const NAME: &str = "value"` written inside a macro invocation.
+/// Collect `const NAME: &str = ...` written inside a macro invocation.
 ///
 /// Tree-sitter does not parse a macro body as items: `ts_values! { pub const A: &str
 /// = "a" => B; }` is one flat `token_tree`, so the query above never sees the const.
 /// The tokens are still all there, so the declaration is matched by its shape:
-/// `const`/`static`, a name, then the first string literal after `=` before `;`.
-/// A literal-producing expression (`concat!`, a call) yields no string literal
-/// token right after `=` and is skipped rather than guessed.
+/// `const`/`static`, a name, then what follows `=` — a string or raw string literal,
+/// or a path to another constant that ends the declaration. Anything else
+/// (`concat!`, a call) is skipped rather than guessed.
 fn collect_macro_constants(
     root: tree_sitter::Node<'_>,
     bytes: &[u8],
-    constants: &mut std::collections::HashMap<String, String>,
+    constants: &mut RustConstants,
 ) {
     let mut stack = vec![root];
 
@@ -155,10 +234,16 @@ fn collect_macro_constants(
     }
 }
 
+/// Tokens that may make up a path to a constant: `crate::events::NAME`.
+const PATH_TOKEN_KINDS: &[&str] = &["identifier", "crate", "self", "super", "::"];
+
+/// Tokens that end a constant's value inside a macro body.
+const DECLARATION_END_TOKENS: &[&str] = &[";", "=>", ","];
+
 fn collect_constants_from_tokens(
     tokens: &[tree_sitter::Node<'_>],
     bytes: &[u8],
-    constants: &mut std::collections::HashMap<String, String>,
+    constants: &mut RustConstants,
 ) {
     let text = |node: &tree_sitter::Node<'_>| node.utf8_text(bytes).unwrap_or_default();
 
@@ -174,6 +259,12 @@ fn collect_constants_from_tokens(
             continue;
         };
 
+        let name = text(name).to_string();
+
+        if constants.values.contains_key(&name) || constants.references.contains_key(&name) {
+            continue;
+        }
+
         let rest = &tokens[position + 2..];
         let Some(equals) = rest
             .iter()
@@ -183,21 +274,39 @@ fn collect_constants_from_tokens(
             continue;
         };
 
-        let Some(literal) = rest
-            .get(equals + 1)
-            .filter(|n| n.kind() == "string_literal")
-        else {
+        let value_tokens = &rest[equals + 1..];
+        let Some(first) = value_tokens.first() else {
             continue;
         };
 
-        let value = literal
-            .named_child(0)
-            .filter(|n| n.kind() == "string_content")
-            .map_or("", |n| text(&n));
+        if matches!(first.kind(), "string_literal" | "raw_string_literal") {
+            let value = first
+                .named_child(0)
+                .filter(|n| n.kind() == "string_content")
+                .map_or("", |n| text(&n));
 
-        constants
-            .entry(text(name).to_string())
-            .or_insert_with(|| value.to_string());
+            constants.values.insert(name, value.to_string());
+
+            continue;
+        }
+
+        let path_length = value_tokens
+            .iter()
+            .take_while(|n| PATH_TOKEN_KINDS.contains(&n.kind()))
+            .count();
+
+        let ends_declaration = value_tokens
+            .get(path_length)
+            .is_none_or(|n| DECLARATION_END_TOKENS.contains(&text(n)));
+
+        let last_segment = path_length
+            .checked_sub(1)
+            .and_then(|last| value_tokens.get(last))
+            .filter(|n| n.kind() == "identifier");
+
+        if let (true, Some(target)) = (ends_declaration, last_segment) {
+            constants.references.insert(name, text(target).to_string());
+        }
     }
 }
 
@@ -336,20 +445,19 @@ pub fn extract_js_constants(
     constants
 }
 
-/// Extract constant definitions from Rust source content (parses content internally)
+/// Extract constants and unresolved references from Rust source content (parses
+/// content internally)
 #[must_use]
-pub fn extract_rust_constants_from_content(
-    content: &str,
-) -> std::collections::HashMap<String, String> {
+pub fn extract_rust_constant_decls_from_content(content: &str) -> RustConstants {
     let ts_lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&ts_lang).is_err() {
-        return std::collections::HashMap::new();
+        return RustConstants::default();
     }
     let Some(tree) = parser.parse(content, None) else {
-        return std::collections::HashMap::new();
+        return RustConstants::default();
     };
-    extract_rust_constants(tree.root_node(), content)
+    extract_rust_constant_decls(tree.root_node(), content)
 }
 
 /// Extract constant definitions from JS/TS source content (parses content internally)

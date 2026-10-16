@@ -1175,3 +1175,37 @@ listen("other", () => {{}});
         expect![[r#"WARNING 8:13..8:29 "Event 'perf://begin' is emitted but no listeners found""#]],
     );
 }
+
+// ===========================================================================
+// Raw strings and constants that name other constants
+// ===========================================================================
+
+#[test]
+fn diag_raw_string_and_aliased_constants_reach_their_listeners() {
+    // Before raw strings and references were read, both emits were unknown names,
+    // and an unknown emit switches "never emitted" off for the whole workspace — so
+    // the typo below went unreported.
+    helpers::check_diagnostics(
+        r###"
+//- /src-tauri/src/events.rs
+pub const EVENT_RAW: &str = r#"run://raw"#;
+pub const EVENT_ALIAS: &str = EVENT_RAW;
+
+names! {
+    pub const EVENT_MACRO_ALIAS: &str = crate::events::EVENT_RAW => MACRO_ALIAS;
+}
+
+fn start(app: &AppHandle) {
+    app.emit(EVENT_ALIAS, ()).ok();
+    app.emit(EVENT_MACRO_ALIAS, ()).ok();
+}
+
+//- /src/runs.ts
+import { listen } from "@tauri-apps/api/event";
+
+listen("run://raw", () => {});
+listen("$0run://typo", () => {});
+"###,
+        expect![[r#"WARNING 3:8..3:18 "Event 'run://typo' is listened for but never emitted""#]],
+    );
+}
