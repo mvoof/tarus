@@ -1,7 +1,11 @@
+use crate::constants::SUPPORTED_EXTENSIONS;
+use crate::indexer::DiscoveredGenerator;
+use ignore::{DirEntry, IncrementalIgnore, WalkBuilder};
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
-use walkdir::{DirEntry, WalkDir};
 
-/// Ignored folder list
+/// Ignored folder list, applied on top of the ignore files: it still covers a
+/// project that has none.
 const EXCLUDED_DIRS: &[&str] = &[
     "node_modules",
     ".git",
@@ -20,7 +24,9 @@ const EXCLUDED_FILES: &[&str] = &["vite.config.ts"];
 /// Ignored file suffixes list
 const EXCLUDED_FILE_SUFFIXES: &[&str] = &[".d.ts"];
 
-use crate::constants::SUPPORTED_EXTENSIONS;
+/// A scanned file above this size is reported: source files are rarely this big,
+/// build output that no ignore file covers usually is.
+pub const LARGE_FILE_BYTES: u64 = 512 * 1024;
 
 /// Determines if a file or directory name matches the ignore rules
 fn is_ignored_entry_name(name: &str, is_dir: bool) -> bool {
@@ -41,10 +47,77 @@ fn is_ignored_entry_name(name: &str, is_dir: bool) -> bool {
 
 /// Filter: Returns true if this is a folder or file to be IGNORED
 fn should_skip(entry: &DirEntry) -> bool {
+    // The root itself is never skipped, whatever the workspace folder is called.
+    if entry.depth() == 0 {
+        return false;
+    }
+
     let name = entry.file_name().to_str().unwrap_or("");
-    let is_dir = entry.file_type().is_dir();
+    let is_dir = entry
+        .file_type()
+        .is_some_and(|file_type| file_type.is_dir());
 
     is_ignored_entry_name(name, is_dir)
+}
+
+/// A walk over `root` that skips what git skips — `.gitignore` in every folder,
+/// `.ignore`, `.git/info/exclude`, the global excludes file — and the excluded
+/// names above.
+pub(crate) fn workspace_walk(root: &Path) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(root);
+
+    builder
+        // Hidden folders were always scanned: only the ignore files decide.
+        .hidden(false)
+        // A `.gitignore` already holds before `git init`.
+        .require_git(false)
+        .filter_entry(|entry| !should_skip(entry));
+
+    builder
+}
+
+fn has_supported_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| SUPPORTED_EXTENSIONS.contains(&ext))
+}
+
+fn is_generator_output(path: &Path, generators: &[DiscoveredGenerator]) -> bool {
+    generators.iter().any(|generator| {
+        if generator.is_directory {
+            path.starts_with(&generator.output_path)
+        } else {
+            path == generator.output_path
+        }
+    })
+}
+
+/// The files the generators wrote, whatever the ignore files say: generated
+/// bindings are often ignored by git, and they are where command types come from.
+fn generator_output_files(generators: &[DiscoveredGenerator]) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+
+    for generator in generators {
+        if generator.is_directory {
+            let in_directory = WalkBuilder::new(&generator.output_path)
+                .standard_filters(false)
+                .build()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_type()
+                        .is_some_and(|file_type| file_type.is_file())
+                })
+                .map(DirEntry::into_path)
+                .filter(|path| has_supported_extension(path));
+
+            files.extend(in_directory);
+        } else if generator.output_path.is_file() {
+            files.push(generator.output_path.clone());
+        }
+    }
+
+    files
 }
 
 /// Returns true if the path lies inside an excluded directory or is an excluded file.
@@ -123,13 +196,16 @@ fn is_tauri_config_path(path: &Path) -> bool {
 
 /// Helper: Find the first Tauri configuration file in the directory tree
 pub fn find_tauri_config(root: &Path) -> Option<PathBuf> {
-    WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !should_skip(e))
-        .filter_map(std::result::Result::ok)
-        .find(|e| e.file_type().is_file() && is_tauri_config_path(e.path()))
-        .map(walkdir::DirEntry::into_path)
+    workspace_walk(root)
+        .build()
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+                && is_tauri_config_path(entry.path())
+        })
+        .map(DirEntry::into_path)
 }
 
 /// Make sure it is a Tauri project by searching for the configuration file
@@ -145,31 +221,267 @@ pub fn find_src_tauri_dir(root: &Path) -> Option<PathBuf> {
     find_tauri_config(root).and_then(|p| p.parent().map(std::path::Path::to_path_buf))
 }
 
-/// Basic scan of files in the working directory
-/// Returns a list of all files to be indexed
-#[must_use]
-pub fn scan_workspace_files(root: &Path) -> Vec<PathBuf> {
-    WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|e| !should_skip(e))
-        .filter_map(std::result::Result::ok)
-        .filter(|e| {
-            if !e.file_type().is_file() {
-                return false;
-            }
+/// What the startup scan found
+#[derive(Debug, Default)]
+pub struct WorkspaceScan {
+    /// Files to index
+    pub files: Vec<PathBuf>,
+    /// Files among them above [`LARGE_FILE_BYTES`], with their size in bytes
+    pub large_files: Vec<(PathBuf, u64)>,
+}
 
-            e.path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| SUPPORTED_EXTENSIONS.contains(&ext))
+/// Scan the working directory for the files to index
+#[must_use]
+pub fn scan_workspace_files(root: &Path, generators: &[DiscoveredGenerator]) -> WorkspaceScan {
+    let mut files: Vec<PathBuf> = workspace_walk(root)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
         })
-        .map(walkdir::DirEntry::into_path)
-        .collect()
+        .map(DirEntry::into_path)
+        .filter(|path| has_supported_extension(path))
+        .collect();
+
+    for path in generator_output_files(generators) {
+        if !files.contains(&path) {
+            files.push(path);
+        }
+    }
+
+    let large_files = files
+        .iter()
+        .filter_map(|path| {
+            let size = std::fs::metadata(path).ok()?.len();
+
+            (size > LARGE_FILE_BYTES).then(|| (path.clone(), size))
+        })
+        .collect();
+
+    WorkspaceScan { files, large_files }
+}
+
+/// Whether a single file is left out of the index, by the rules of
+/// [`scan_workspace_files`]: for the files the editor opens and the file watcher
+/// reports, which the scan did not pick.
+///
+/// Ignore files are read once per folder, on first use: an edit to one takes
+/// effect after a server restart.
+#[derive(Debug)]
+pub struct WorkspaceFilter {
+    // `IncrementalIgnore` fills its per-folder cache through `&mut self`.
+    ignore_files: Mutex<IncrementalIgnore>,
+    generators: Vec<DiscoveredGenerator>,
+}
+
+impl WorkspaceFilter {
+    /// A filter for the workspace at `root`, keeping the files `generators` write.
+    ///
+    /// # Panics
+    ///
+    /// Never: a walk over one root builds exactly one matcher.
+    #[must_use]
+    pub fn new(root: &Path, generators: Vec<DiscoveredGenerator>) -> Self {
+        let ignore_files = workspace_walk(root)
+            .build_matchers()
+            .pop()
+            .expect("a walk over one root builds one matcher");
+
+        Self {
+            ignore_files: Mutex::new(ignore_files),
+            generators,
+        }
+    }
+
+    /// True when the scan would leave `path` out
+    #[must_use]
+    pub fn is_ignored(&self, path: &Path) -> bool {
+        if is_generator_output(path, &self.generators) {
+            return false;
+        }
+
+        if is_ignored_path(path) {
+            return true;
+        }
+
+        let mut ignore_files = self.ignore_files.lock();
+
+        // A file outside the workspace has no ignore files of its own to match.
+        let Some(relative) = ignore_files.normalize(path) else {
+            return false;
+        };
+
+        ignore_files.matched(relative, false).is_ignore()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::indexer::GeneratorKind;
+    use std::fs;
+
+    /// Writes `files` (path relative to the root, content) into a fresh folder.
+    fn workspace(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+
+        for (relative, content) in files {
+            let path = root.path().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+
+        root
+    }
+
+    /// Scanned files as sorted root-relative paths with `/` separators.
+    fn scanned(root: &Path, generators: &[DiscoveredGenerator]) -> Vec<String> {
+        let mut files: Vec<String> = scan_workspace_files(root, generators)
+            .files
+            .iter()
+            .map(|path| {
+                path.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        files.sort();
+
+        files
+    }
+
+    #[test]
+    fn scan_skips_what_the_root_gitignore_ignores() {
+        let root = workspace(&[
+            (".gitignore", "storybook-static\n"),
+            ("src/app.ts", ""),
+            ("storybook-static/assets/bundle.js", ""),
+        ]);
+
+        assert_eq!(scanned(root.path(), &[]), ["src/app.ts"]);
+    }
+
+    #[test]
+    fn scan_reads_gitignore_files_in_nested_folders() {
+        let root = workspace(&[
+            ("src-tauri/.gitignore", "/schemas\n"),
+            ("src-tauri/src/main.rs", ""),
+            ("src-tauri/schemas/generated.rs", ""),
+            ("schemas/kept.ts", ""),
+        ]);
+
+        assert_eq!(
+            scanned(root.path(), &[]),
+            ["schemas/kept.ts", "src-tauri/src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn scan_keeps_a_file_a_negated_pattern_whitelists() {
+        let root = workspace(&[
+            (".gitignore", "generated/*\n!generated/keep.ts\n"),
+            ("generated/drop.ts", ""),
+            ("generated/keep.ts", ""),
+        ]);
+
+        assert_eq!(scanned(root.path(), &[]), ["generated/keep.ts"]);
+    }
+
+    #[test]
+    fn scan_reads_git_info_exclude() {
+        let root = workspace(&[
+            (".git/info/exclude", "local-only\n"),
+            ("local-only/scratch.ts", ""),
+            ("src/app.ts", ""),
+        ]);
+
+        assert_eq!(scanned(root.path(), &[]), ["src/app.ts"]);
+    }
+
+    #[test]
+    fn scan_without_ignore_files_still_skips_excluded_folders() {
+        let root = workspace(&[
+            ("node_modules/lib/index.js", ""),
+            ("src-tauri/target/debug/build/out.rs", ""),
+            ("src/types.d.ts", ""),
+            ("src/app.ts", ""),
+        ]);
+
+        assert_eq!(scanned(root.path(), &[]), ["src/app.ts"]);
+    }
+
+    #[test]
+    fn scan_keeps_generator_output_the_gitignore_ignores() {
+        let root = workspace(&[
+            (".gitignore", "src/bindings.ts\nsrc/types/\n"),
+            ("src/bindings.ts", ""),
+            ("src/types/User.ts", ""),
+            ("src/app.ts", ""),
+        ]);
+        let generators = [
+            DiscoveredGenerator {
+                kind: GeneratorKind::Specta,
+                output_path: root.path().join("src/bindings.ts"),
+                is_directory: false,
+            },
+            DiscoveredGenerator {
+                kind: GeneratorKind::TsRs,
+                output_path: root.path().join("src/types"),
+                is_directory: true,
+            },
+        ];
+
+        assert_eq!(
+            scanned(root.path(), &generators),
+            ["src/app.ts", "src/bindings.ts", "src/types/User.ts"]
+        );
+    }
+
+    #[test]
+    fn scan_reports_files_above_the_large_file_size() {
+        let bundle = "x".repeat(usize::try_from(LARGE_FILE_BYTES).unwrap() + 1);
+        let root = workspace(&[("public/bundle.js", &bundle), ("src/app.ts", "")]);
+
+        let scan = scan_workspace_files(root.path(), &[]);
+
+        assert_eq!(scan.files.len(), 2, "a large file is reported, not skipped");
+        assert_eq!(
+            scan.large_files,
+            [(root.path().join("public/bundle.js"), LARGE_FILE_BYTES + 1)]
+        );
+    }
+
+    #[test]
+    fn workspace_filter_agrees_with_the_scan() {
+        let root = workspace(&[
+            (".gitignore", "storybook-static\n"),
+            ("src-tauri/.gitignore", "/schemas\n"),
+        ]);
+        let generators = vec![DiscoveredGenerator {
+            kind: GeneratorKind::Specta,
+            output_path: root.path().join("storybook-static/bindings.ts"),
+            is_directory: false,
+        }];
+        let filter = WorkspaceFilter::new(root.path(), generators);
+        let is_ignored = |relative: &str| filter.is_ignored(&root.path().join(relative));
+
+        assert!(is_ignored("storybook-static/assets/bundle.js"));
+        assert!(is_ignored("src-tauri/schemas/generated.rs"));
+        assert!(is_ignored("node_modules/lib/index.js"));
+        assert!(is_ignored("src/types.d.ts"));
+
+        assert!(!is_ignored("src/app.ts"));
+        assert!(!is_ignored("src-tauri/src/main.rs"));
+        assert!(
+            !is_ignored("storybook-static/bindings.ts"),
+            "generator output"
+        );
+        assert!(!filter.is_ignored(Path::new("/elsewhere/app.ts")));
+    }
 
     #[test]
     fn test_is_ignored_path() {

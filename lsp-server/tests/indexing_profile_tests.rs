@@ -73,7 +73,7 @@ fn profile_startup_scan() {
     };
 
     let started = Instant::now();
-    let files = scan_workspace_files(std::path::Path::new(&root));
+    let files = scan_workspace_files(std::path::Path::new(&root), &[]).files;
     println!("scan: {} files in {:?}", files.len(), started.elapsed());
 
     let contents: Vec<_> = files

@@ -9,7 +9,6 @@ use crate::utils::ts_tree_utils::parse_rust;
 use std::path::{Component, Path, PathBuf};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Query, QueryCursor};
-use walkdir::WalkDir;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -82,14 +81,16 @@ fn discover_specta_generators(src_tauri_dir: &Path) -> Vec<DiscoveredGenerator> 
     generators
 }
 
-/// Iterate `src_tauri_dir` recursively and return `(path, content)` for every `.rs` file
-/// that mentions `tauri_specta` or `specta_typescript`.
+/// Iterate `src_tauri_dir` recursively, skipping what the workspace scan skips
+/// (`target/` above all), and return `(path, content)` for every `.rs` file that
+/// mentions `tauri_specta` or `specta_typescript`.
 fn scan_rust_files(src_tauri_dir: &Path) -> Vec<(PathBuf, String)> {
-    WalkDir::new(src_tauri_dir)
-        .into_iter()
+    crate::discovery::scanner::workspace_walk(src_tauri_dir)
+        .build()
         .filter_map(Result::ok)
         .filter(|e| {
-            e.file_type().is_file() && e.path().extension().and_then(|s| s.to_str()) == Some("rs")
+            e.file_type().is_some_and(|t| t.is_file())
+                && e.path().extension().and_then(|s| s.to_str()) == Some("rs")
         })
         .filter_map(|e| {
             let content = std::fs::read_to_string(e.path()).ok()?;

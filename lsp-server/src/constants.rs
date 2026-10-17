@@ -1,5 +1,8 @@
 //! Shared constants used across the LSP server.
 
+/// Where the server points users to report a problem
+pub const NEW_ISSUE_URL: &str = "https://github.com/mvoof/tarus/issues/new";
+
 /// File extensions the server can parse and index.
 pub const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "svelte"];
 

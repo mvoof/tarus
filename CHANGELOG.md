@@ -5,6 +5,13 @@
 - **Performance**
   - Fixed the startup scan taking minutes on larger projects, with CodeLens and diagnostics empty until it finished. Each file compiled the language's tree-sitter query again (~75 ms for TypeScript, longer than parsing the file), twice per file at startup and once per edit. The queries are now compiled once: on a project of ~980 files the scan went from ~3 minutes to ~5 seconds
 
+- **Bug fixes**
+  - Fixed build output and other git-ignored files being indexed: a Storybook build or any folder outside the built-in list (`node_modules`, `target`, `dist`, ...) filled the constants with minified names and slowed the scan. The scan and the files the editor opens or the file watcher reports now follow the same rules git does: `.gitignore` in every folder, `.ignore`, `.git/info/exclude` and the global excludes file, with the built-in list still applied on top. Files a binding generator writes are indexed even when git ignores them. An edit to an ignore file takes effect after a server restart
+  - Fixed generator discovery reading every `.rs` file under `src-tauri`, `target/` included
+
+- **Added**
+  - A warning in the output for each indexed file over 512 KB, which is usually build output: it names the file and suggests adding it to `.gitignore`, or opening an issue if Tarus should skip such files by default. The file is still indexed
+
 ### [0.13.0] - 2026-10-17
 
 - **Bug fixes**

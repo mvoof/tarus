@@ -23,8 +23,10 @@ use tower_lsp_server::{Client, LanguageServer, UriExt};
 use crate::capabilities::{self, build_server_capabilities, diagnostics};
 use crate::constants;
 use crate::discovery::config_reader;
-use crate::discovery::scanner::{self, is_tauri_project, scan_workspace_files};
-use crate::indexer::ProjectIndex;
+use crate::discovery::scanner::{
+    self, is_tauri_project, scan_workspace_files, WorkspaceFilter, LARGE_FILE_BYTES,
+};
+use crate::indexer::{DiscoveredGenerator, ProjectIndex};
 use crate::pipeline;
 use crate::scheduling::{PublishOrder, ReindexQueue};
 use crate::utils;
@@ -36,6 +38,9 @@ use std::sync::Arc;
 pub struct Backend {
     client: Client,
     workspace_root: OnceCell<PathBuf>,
+    /// Which files the editor or the file watcher hands over get indexed, set once
+    /// the generators are known.
+    workspace_filter: OnceCell<WorkspaceFilter>,
     project_index: Arc<ProjectIndex>,
     is_developer_mode_active: Arc<AtomicBool>,
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
@@ -60,6 +65,7 @@ impl Backend {
         Self {
             client,
             workspace_root: OnceCell::new(),
+            workspace_filter: OnceCell::new(),
             project_index: Arc::new(ProjectIndex::new()),
             is_developer_mode_active: Arc::new(AtomicBool::new(false)),
             debounce_tasks: Arc::new(DashMap::new()),
@@ -73,6 +79,19 @@ impl Backend {
     /// Helper: Checks if the server is fully initialized (workspace root set)
     fn is_ready(&self) -> bool {
         self.workspace_root.get().is_some()
+    }
+
+    /// Like `uri_to_path`, but None for files the workspace scan excludes (ignore
+    /// files, `node_modules`, `.d.ts`, ...), so opening or changing one never
+    /// indexes it.
+    fn indexable_path(&self, uri: &Uri) -> Option<PathBuf> {
+        let path = uri_to_path(uri)?;
+        let is_ignored = match self.workspace_filter.get() {
+            Some(filter) => filter.is_ignored(&path),
+            None => scanner::is_ignored_path(&path),
+        };
+
+        (!is_ignored).then_some(path)
     }
 
     async fn log_dev_info(&self, message: &str) {
@@ -174,7 +193,7 @@ impl Backend {
     }
 
     /// Spawn background task that scans workspace files, indexes them, and publishes diagnostics.
-    fn spawn_indexing(&self, root: PathBuf) {
+    fn spawn_indexing(&self, root: PathBuf, generators: Vec<DiscoveredGenerator>) {
         let project_index = self.project_index.clone();
         let document_cache = self.document_cache.clone();
         let client = self.client.clone();
@@ -188,9 +207,7 @@ impl Backend {
                 .log_message(MessageType::INFO, "🚀 Starting background indexing...")
                 .await;
 
-            let files = tokio::task::spawn_blocking(move || scan_workspace_files(&root))
-                .await
-                .unwrap_or_default();
+            let files = scan_and_report(&client, root, generators).await;
 
             // Both passes take the lock editor re-indexes take, one file at a time: an
             // edit indexed while the scan runs must not be overwritten by it, and must
@@ -395,8 +412,12 @@ impl LanguageServer for Backend {
             }
         }
 
-        self.project_index.set_generator_bindings(generators);
-        self.spawn_indexing(root.clone());
+        let _ = self
+            .workspace_filter
+            .set(WorkspaceFilter::new(root, generators.clone()));
+        self.project_index
+            .set_generator_bindings(generators.clone());
+        self.spawn_indexing(root.clone(), generators);
 
         let registration_options = DidChangeWatchedFilesRegistrationOptions {
             watchers: vec![FileSystemWatcher {
@@ -599,7 +620,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path) = indexable_path(&params.text_document.uri) {
+        if let Some(path) = self.indexable_path(&params.text_document.uri) {
             let content = params.text_document.text.clone();
 
             // Cache document content for completion
@@ -623,7 +644,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path) = indexable_path(&params.text_document.uri) {
+        if let Some(path) = self.indexable_path(&params.text_document.uri) {
             // With TextDocumentSyncKind::FULL, content_changes[0].text contains the full document
             if let Some(change) = params.content_changes.into_iter().next() {
                 let content = change.text;
@@ -681,7 +702,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path) = indexable_path(&params.text_document.uri) {
+        if let Some(path) = self.indexable_path(&params.text_document.uri) {
             // Closing drops the editor's copy, unsaved edits included: the disk is the
             // file's text again, for this re-index and for any dependent refresh later.
             self.document_cache.remove(&path);
@@ -705,7 +726,7 @@ impl LanguageServer for Backend {
             return;
         }
 
-        if let Some(path) = indexable_path(&params.text_document.uri) {
+        if let Some(path) = self.indexable_path(&params.text_document.uri) {
             self.reindex_and_publish(path).await;
         }
     }
@@ -716,7 +737,7 @@ impl LanguageServer for Backend {
         }
 
         for event in params.changes {
-            let Some(path) = indexable_path(&event.uri) else {
+            let Some(path) = self.indexable_path(&event.uri) else {
                 continue;
             };
 
@@ -764,12 +785,6 @@ impl LanguageServer for Backend {
 
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     uri.to_file_path().map(std::borrow::Cow::into_owned)
-}
-
-/// Like `uri_to_path`, but None for files the workspace scan excludes
-/// (`node_modules`, `target`, `.d.ts`, ...), so opening one never indexes it.
-fn indexable_path(uri: &Uri) -> Option<PathBuf> {
-    uri_to_path(uri).filter(|path| !scanner::is_ignored_path(path))
 }
 
 fn document_symbol_len(response: &DocumentSymbolResponse) -> usize {
@@ -940,6 +955,36 @@ async fn publish_diagnostics_for(
 }
 
 /// Clear `path`'s diagnostics, unless a newer computation already published them.
+/// Scan the workspace for the files to index, warning about each one over the
+/// size source files rarely reach: it is usually build output that no ignore
+/// file covers yet.
+async fn scan_and_report(
+    client: &Client,
+    root: PathBuf,
+    generators: Vec<DiscoveredGenerator>,
+) -> Vec<PathBuf> {
+    let scan = tokio::task::spawn_blocking(move || scan_workspace_files(&root, &generators))
+        .await
+        .unwrap_or_default();
+
+    for (path, size) in &scan.large_files {
+        client
+            .log_message(
+                MessageType::WARNING,
+                format!(
+                    "⚠️ Large file indexed: {} ({} KB, over {} KB). If it is build output, add it to .gitignore. If Tarus should skip such files by default, open an issue: {}",
+                    path.display(),
+                    size / 1024,
+                    LARGE_FILE_BYTES / 1024,
+                    constants::NEW_ISSUE_URL,
+                ),
+            )
+            .await;
+    }
+
+    scan.files
+}
+
 async fn clear_diagnostics(client: &Client, jobs: &Jobs, path: PathBuf) {
     let sequence = jobs.publishes.start();
     send_if_newest(client, jobs, path, sequence, Vec::new()).await;
