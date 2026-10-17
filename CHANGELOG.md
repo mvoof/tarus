@@ -2,6 +2,10 @@
 
 ### [Unreleased]
 
+- **Changed**
+  - The "Tarus LSP Server" output reads at a glance. By default it shows the server version and workspace, the generators found, the number of files to index per folder, each indexing pass with its time and the total, and problems as warnings: files that did not parse, large files. Developer mode (`tarus.developerMode`) adds one line per request with a workspace-relative path, its result and time (`CodeLens  src/app.ts → 6 lenses (3 ms)`), one per re-index, and the constants found. Requests no longer print the full URI structure, and an empty result no longer takes a line of its own
+  - The index dump is no longer written on every change in developer mode, which made the output grow by hundreds of kilobytes. Run `TARUS: Dump Index` to write it once: every command and event in alphabetical order, each with where it is defined, called, emitted or listened to, as workspace-relative `file:line:column`
+
 - **Performance**
   - Fixed the startup scan taking minutes on larger projects, with CodeLens and diagnostics empty until it finished. Each file compiled the language's tree-sitter query again (~75 ms for TypeScript, longer than parsing the file), twice per file at startup and once per edit. The queries are now compiled once: on a project of ~980 files the scan went from ~3 minutes to ~5 seconds
 

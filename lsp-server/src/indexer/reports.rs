@@ -1,108 +1,113 @@
 //! Debug reports and introspection
 
-use super::types::IndexKey;
-use super::ProjectIndex;
-use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-
 use super::types::LocationInfo;
+use super::ProjectIndex;
+use crate::syntax::{Behavior, EntityType};
+use std::fmt::Write as _;
+use std::path::Path;
+
+/// Distinct names in the index, by kind
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct NameCounts {
+    pub commands: usize,
+    pub events: usize,
+}
 
 impl ProjectIndex {
-    /// Generates a report only for a specific file (delta update)
-    pub fn file_report(&self, path: &Path) -> String {
-        let filename = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown");
-
-        let mut report_message = String::new();
-
-        let _ = writeln!(report_message, "\n📝 === UPDATE REPORT: {filename} ===");
-
-        let Some(keys) = self.file_map.get(&path.to_path_buf()) else {
-            return format!("📝 File update: {filename:?} (No Tarus keys found)");
-        };
-
-        let keys_clone: Vec<IndexKey> = keys.value().clone();
-
-        report_message.push_str("\n🔑 === 1. MAIN KEY INDEX (Delta Subset) ===\n");
-
-        let mut delta_map: HashMap<IndexKey, Vec<LocationInfo>> = HashMap::new();
-
-        for key in &keys_clone {
-            if let Some(locs) = self.map.get(key) {
-                let file_locs: Vec<LocationInfo> =
-                    locs.iter().filter(|l| l.path == path).cloned().collect();
-
-                if !file_locs.is_empty() {
-                    delta_map.insert(key.clone(), file_locs);
-                }
-            }
-        }
-
-        if delta_map.is_empty() {
-            report_message.push_str("   (Map subset is empty)\n");
-        } else {
-            let _ = writeln!(report_message, "{delta_map:#?}");
-        }
-
-        report_message.push_str("\n📄 === 2. REVERSE FILE MAP (Delta Subset) ===\n");
-
-        let mut delta_file_map: HashMap<PathBuf, Vec<IndexKey>> = HashMap::new();
-        delta_file_map.insert(path.to_path_buf(), keys_clone);
-
-        let _ = writeln!(report_message, "{delta_file_map:#?}");
-
-        report_message
-    }
-
-    /// Creates a readable report of the index contents
-    pub fn technical_report(&self) -> String {
-        let mut report_message = String::from("\n💾 === TECHNICAL INDEX DUMP ===\n");
-
-        if self.map.is_empty() {
-            report_message.push_str("   (Storage is Empty)\n");
-
-            return report_message;
-        }
-
-        report_message.push_str("\n\n🔑 === 1. MAIN KEY INDEX (map) ===\n");
-        report_message.push_str("   [Key -> List of ALL Locations]\n");
+    /// How many distinct command and event names the index holds
+    #[must_use]
+    pub fn name_counts(&self) -> NameCounts {
+        let mut counts = NameCounts::default();
 
         for entry in &self.map {
-            let key = entry.key();
-            let locs = entry.value();
-            let _ = writeln!(report_message, "  {key:?} ({} loc(s))", locs.len());
-            for loc in locs {
-                let _ = writeln!(
-                    report_message,
-                    "    - {} {:?}",
-                    loc.path.display(),
-                    loc.range
-                );
+            match entry.key().entity {
+                EntityType::Command => counts.commands += 1,
+                EntityType::Event => counts.events += 1,
             }
         }
 
-        report_message.push_str("\n\n📄 === 2. REVERSE FILE MAP (file_map) ===\n");
-        report_message.push_str("   [FilePath -> List of ALL Keys in that file]\n");
+        counts
+    }
 
-        if self.file_map.is_empty() {
-            report_message.push_str("   (File Map is Empty)\n");
-        } else {
-            for entry in &self.file_map {
-                let _ = writeln!(
-                    report_message,
-                    "  {} ({} key(s))",
-                    entry.key().display(),
-                    entry.value().len()
-                );
-                for k in entry.value() {
-                    let _ = writeln!(report_message, "    - {k:?}");
+    /// The whole index for `TARUS: Dump Index`: every command and event by name,
+    /// each with the places it is defined, called, emitted or listened to.
+    /// `display_path` writes a file's path, relative to the workspace.
+    pub fn index_report(&self, display_path: &dyn Fn(&Path) -> String) -> String {
+        if self.map.is_empty() {
+            return "Index: empty".to_string();
+        }
+
+        let counts = self.name_counts();
+        let mut report = format!(
+            "Index: {} commands, {} events, {} files\n",
+            counts.commands,
+            counts.events,
+            self.file_map.len()
+        );
+
+        for (entity, heading) in [
+            (EntityType::Command, "Commands"),
+            (EntityType::Event, "Events"),
+        ] {
+            let mut names: Vec<(String, Vec<LocationInfo>)> = self
+                .map
+                .iter()
+                .filter(|entry| entry.key().entity == entity)
+                .map(|entry| (entry.key().name.clone(), entry.value().clone()))
+                .collect();
+
+            if names.is_empty() {
+                continue;
+            }
+
+            names.sort_by(|left, right| left.0.cmp(&right.0));
+            let _ = write!(report, "\n{heading}\n");
+
+            for (name, mut locations) in names {
+                locations.sort_by_key(|location| {
+                    (
+                        behavior_rank(location.behavior),
+                        display_path(&location.path),
+                        location.range.start.line,
+                        location.range.start.character,
+                    )
+                });
+
+                let _ = writeln!(report, "  {name} ({})", locations.len());
+
+                for location in &locations {
+                    let _ = writeln!(
+                        report,
+                        "    {:<11} {}:{}:{}",
+                        behavior_label(location.behavior),
+                        display_path(&location.path),
+                        location.range.start.line + 1,
+                        location.range.start.character + 1
+                    );
                 }
             }
         }
 
-        report_message
+        report
+    }
+}
+
+/// Definitions first, then the places that use them
+fn behavior_rank(behavior: Behavior) -> u8 {
+    match behavior {
+        Behavior::Definition => 0,
+        Behavior::Call | Behavior::SpectaCall => 1,
+        Behavior::Emit => 2,
+        Behavior::Listen => 3,
+    }
+}
+
+fn behavior_label(behavior: Behavior) -> &'static str {
+    match behavior {
+        Behavior::Definition => "definition",
+        Behavior::Call => "call",
+        Behavior::SpectaCall => "specta call",
+        Behavior::Emit => "emit",
+        Behavior::Listen => "listen",
     }
 }
