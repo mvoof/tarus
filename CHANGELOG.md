@@ -2,19 +2,21 @@
 
 ### [Unreleased]
 
-- **Changed**
-  - The "Tarus LSP Server" output reads at a glance. By default it shows the server version and workspace, the generators found, the number of files to index per folder, each indexing pass with its time and the total, and problems as warnings: files that did not parse, large files. Developer mode (`tarus.developerMode`) adds one line per request with a workspace-relative path, its result and time (`CodeLens  src/app.ts → 6 lenses (3 ms)`), one per re-index, and the constants found. Requests no longer print the full URI structure, and an empty result no longer takes a line of its own
-  - The index dump is no longer written on every change in developer mode, which made the output grow by hundreds of kilobytes. Run `TARUS: Dump Index` to write it once: every command and event in alphabetical order, each with where it is defined, called, emitted or listened to, as workspace-relative `file:line:column`
-
-- **Performance**
-  - Fixed the startup scan taking minutes on larger projects, with CodeLens and diagnostics empty until it finished. Each file compiled the language's tree-sitter query again (~75 ms for TypeScript, longer than parsing the file), twice per file at startup and once per edit. The queries are now compiled once: on a project of ~980 files the scan went from ~3 minutes to ~5 seconds
+### [0.14.0] - 2026-10-17
 
 - **Bug fixes**
   - Fixed build output and other git-ignored files being indexed: a Storybook build or any folder outside the built-in list (`node_modules`, `target`, `dist`, ...) filled the constants with minified names and slowed the scan. The scan and the files the editor opens or the file watcher reports now follow the same rules git does: `.gitignore` in every folder, `.ignore`, `.git/info/exclude` and the global excludes file, with the built-in list still applied on top. Files a binding generator writes are indexed even when git ignores them. An edit to an ignore file takes effect after a server restart
   - Fixed generator discovery reading every `.rs` file under `src-tauri`, `target/` included
 
+- **Performance**
+  - Fixed the startup scan taking minutes on larger projects, with CodeLens and diagnostics empty until it finished. Each file compiled the language's tree-sitter query again (~75 ms for TypeScript, longer than parsing the file), twice per file at startup and once per edit. The queries are now compiled once: on a project of ~980 files the scan went from ~3 minutes to ~5 seconds
+
 - **Added**
   - A warning in the output for each indexed file over 512 KB, which is usually build output: it names the file and suggests adding it to `.gitignore`, or opening an issue if Tarus should skip such files by default. The file is still indexed
+
+- **Changed**
+  - The "Tarus LSP Server" output reads at a glance. By default it shows the server version and workspace, the generators found, the number of files to index per folder, each indexing pass with its time and the total, and problems as warnings: files that did not parse, large files. Developer mode (`tarus.developerMode`) adds one line per request with a workspace-relative path, its result and time (`CodeLens  src/app.ts → 6 lenses (3 ms)`), one per re-index, and the constants found. Requests no longer print the full URI structure, and an empty result no longer takes a line of its own
+  - The index dump is no longer written on every change in developer mode, which made the output grow by hundreds of kilobytes. Run `TARUS: Dump Index` to write it once: every command and event in alphabetical order, each with where it is defined, called, emitted or listened to, as workspace-relative `file:line:column`
 
 ### [0.13.0] - 2026-10-17
 
