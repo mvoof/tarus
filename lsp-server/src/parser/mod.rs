@@ -59,8 +59,7 @@ pub fn parse(
             let tree = parser
                 .parse(content, None)
                 .ok_or_else(|| ParseError::SyntaxError("Failed to parse Rust file".to_string()))?;
-            let parsed =
-                extract_rust_findings(tree.root_node(), content, &ts_lang, global_constants)?;
+            let parsed = extract_rust_findings(tree.root_node(), content, global_constants);
             dynamic_usages.merge(parsed.dynamic_usages);
             unresolved_calls.extend(parsed.unresolved_calls);
             uses.constants.extend(parsed.used_constants);
@@ -149,7 +148,7 @@ pub fn parse_rust_full(
 
     let root = tree.root_node();
 
-    let parsed = extract_rust_findings(root, content, &ts_lang, global_constants)?;
+    let parsed = extract_rust_findings(root, content, global_constants);
     let command_schemas = rust::types::extract_command_schemas_from_tree(root, content, path);
     let event_schemas = rust::types::extract_event_schemas_from_tree(root, content, path);
 

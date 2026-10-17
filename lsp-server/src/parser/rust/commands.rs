@@ -1,15 +1,15 @@
 //! Rust source code parsing for Tauri commands and events
 
 use crate::indexer::{DynamicUsages, Finding, UnresolvedCall};
-use crate::syntax::{Behavior, EntityType, ParseError, ParseResult};
+use crate::syntax::{Behavior, EntityType};
 use crate::utils::{find_capture, point_to_position};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use streaming_iterator::StreamingIterator;
 use tower_lsp_server::lsp_types::Range;
-use tree_sitter::{Language, Query, QueryCursor};
+use tree_sitter::QueryCursor;
 
-use crate::parser::lang_config::RUST_QUERY;
+use crate::parser::lang_config::{compiled_query, LangType};
 
 static RUST_EVENT_PATTERNS: LazyLock<HashMap<&'static str, (EntityType, Behavior)>> =
     LazyLock::new(|| {
@@ -37,19 +37,14 @@ pub struct RustParse {
 }
 
 /// Extract findings from a pre-parsed Rust tree root node.
-///
-/// # Errors
-///
-/// Returns error if tree-sitter query execution fails.
+#[must_use]
 #[allow(clippy::implicit_hasher)]
 pub fn extract_rust_findings(
     root: tree_sitter::Node<'_>,
     content: &str,
-    ts_lang: &Language,
     global_constants: &HashMap<String, String>,
-) -> ParseResult<RustParse> {
-    let query = Query::new(ts_lang, RUST_QUERY)
-        .map_err(|e| ParseError::QueryError(format!("Failed to create Rust query: {e}")))?;
+) -> RustParse {
+    let query = compiled_query(LangType::Rust);
 
     let mut cursor = QueryCursor::new();
     let bytes = content.as_bytes();
@@ -76,7 +71,7 @@ pub fn extract_rust_findings(
     let mut findings = Vec::new();
     let mut dynamic_usages = DynamicUsages::default();
     let mut unresolved_calls = Vec::new();
-    let mut matches = cursor.matches(&query, root, bytes);
+    let mut matches = cursor.matches(query, root, bytes);
 
     while let Some(m) = matches.next() {
         if let Some(f) = process_specta_emit(m, specta_emit_struct_idx, bytes) {
@@ -112,12 +107,12 @@ pub fn extract_rust_findings(
         }
     }
 
-    Ok(RustParse {
+    RustParse {
         findings,
         dynamic_usages,
         unresolved_calls,
         used_constants,
-    })
+    }
 }
 
 fn process_specta_emit(

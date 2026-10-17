@@ -11,7 +11,7 @@ use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 use super::extractors::{count_specta_call_args, extract_type_argument_info};
 use super::sfc::{adjust_position, adjust_range};
-use crate::parser::lang_config::{get_query_source, LangType};
+use crate::parser::lang_config::{compiled_query, LangType};
 
 /// Function patterns with their argument position
 struct FunctionPatternWithPos {
@@ -302,16 +302,14 @@ pub fn parse_frontend(
         )));
     }
 
-    let query_src = get_query_source(lang);
-    let query = Query::new(&ts_lang, query_src)
-        .map_err(|e| ParseError::QueryError(format!("Failed to create {lang:?} query: {e}")))?;
+    let query = compiled_query(lang);
 
-    let caps = FrontendCaptures::from_query(&query);
+    let caps = FrontendCaptures::from_query(query);
     let root = tree.root_node();
     let bytes = content.as_bytes();
 
     // First pass: collect import aliases
-    let aliases = collect_aliases(&query, root, bytes, &caps);
+    let aliases = collect_aliases(query, root, bytes, &caps);
 
     // Local constants win over workspace-wide ones, and locally bound identifiers
     // (parameters, destructured variables) win over both — see `Scope`.
@@ -329,7 +327,7 @@ pub fn parse_frontend(
     let mut unresolved_calls = Vec::new();
     let mut forwarders = Vec::new();
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, root, bytes);
+    let mut matches = cursor.matches(query, root, bytes);
     let mut record_unresolved = |call: UnresolvedCall| {
         dynamic_usages.record(call.behavior);
         unresolved_calls.push(call);
@@ -400,17 +398,16 @@ pub fn extract_forwarders(content: &str, lang: LangType) -> ParseResult<Vec<Forw
     // file's helpers, and discarding them all would turn each of their call sites
     // elsewhere into an unresolved dynamic usage. Tree-sitter still recovers the
     // intact subtrees. On an edit, the main pass decides whether they are stored.
-    let query = Query::new(&ts_lang, get_query_source(lang))
-        .map_err(|e| ParseError::QueryError(format!("Failed to create {lang:?} query: {e}")))?;
+    let query = compiled_query(lang);
 
-    let caps = FrontendCaptures::from_query(&query);
+    let caps = FrontendCaptures::from_query(query);
     let root = tree.root_node();
     let bytes = content.as_bytes();
-    let aliases = collect_aliases(&query, root, bytes, &caps);
+    let aliases = collect_aliases(query, root, bytes, &caps);
 
     let mut forwarders = Vec::new();
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, root, bytes);
+    let mut matches = cursor.matches(query, root, bytes);
 
     while let Some(m) = matches.next() {
         for (func_cap, arg_cap, position) in [
