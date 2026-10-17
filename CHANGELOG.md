@@ -2,6 +2,8 @@
 
 ### [Unreleased]
 
+### [0.13.0] - 2026-10-17
+
 - **Bug fixes**
   - Fixed calls through a constant or a forwarding helper keeping the old name after that constant's value or that helper changed in another file. A call stores the name it resolved to when its file was parsed, so `emit(EVENT_X)` stayed linked to the old event until its own file was edited. Files that use a changed constant or helper are now parsed again, including through a `const A: &str = B;` chain. Each file records the names it resolved while it was parsed, so only those files are read: a file that merely mentions the name in a comment or a string is left alone
   - Fixed a deleted file's constants, command and event signatures and generated types staying in the index, so names kept resolving to deleted values and hover, completion and type checks kept using deleted signatures. A signature another file also declares is kept, from that file. A file deleted on disk while open in the editor also loses its warnings once its tab is closed
