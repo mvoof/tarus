@@ -3,8 +3,9 @@
 //! `LspService`.
 
 use dashmap::DashMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::lsp_types::{
@@ -12,10 +13,10 @@ use tower_lsp_server::lsp_types::{
     CompletionResponse, ConfigurationItem, ConfigurationParams, DidChangeTextDocumentParams,
     DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    DocumentSymbolParams, DocumentSymbolResponse, FileChangeType, FileSystemWatcher, GlobPattern,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InitializeParams,
-    InitializeResult, InitializedParams, Location, MessageType, OneOf, ReferenceParams,
-    Registration, ServerCapabilities, SymbolInformation, Uri, WorkspaceSymbol,
+    DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandParams, FileChangeType,
+    FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+    HoverParams, InitializeParams, InitializeResult, InitializedParams, LSPAny, Location, OneOf,
+    ReferenceParams, Registration, ServerCapabilities, SymbolInformation, Uri, WorkspaceSymbol,
     WorkspaceSymbolParams,
 };
 use tower_lsp_server::{Client, LanguageServer, UriExt};
@@ -27,6 +28,7 @@ use crate::discovery::scanner::{
     self, is_tauri_project, scan_workspace_files, WorkspaceFilter, LARGE_FILE_BYTES,
 };
 use crate::indexer::{DiscoveredGenerator, ProjectIndex};
+use crate::logging::{self, format_duration, Log};
 use crate::pipeline;
 use crate::scheduling::{PublishOrder, ReindexQueue};
 use crate::utils;
@@ -42,7 +44,7 @@ pub struct Backend {
     /// the generators are known.
     workspace_filter: OnceCell<WorkspaceFilter>,
     project_index: Arc<ProjectIndex>,
-    is_developer_mode_active: Arc<AtomicBool>,
+    log: Log,
     debounce_tasks: Arc<DashMap<PathBuf, tokio::task::JoinHandle<()>>>,
     /// Orders this server's re-indexes and publishes, see [`Jobs`].
     jobs: Arc<Jobs>,
@@ -63,11 +65,11 @@ impl Backend {
     #[must_use]
     pub fn new(client: Client) -> Self {
         Self {
+            log: Log::new(client.clone()),
             client,
             workspace_root: OnceCell::new(),
             workspace_filter: OnceCell::new(),
             project_index: Arc::new(ProjectIndex::new()),
-            is_developer_mode_active: Arc::new(AtomicBool::new(false)),
             debounce_tasks: Arc::new(DashMap::new()),
             jobs: Arc::new(Jobs::default()),
             document_cache: Arc::new(DashMap::new()),
@@ -94,45 +96,20 @@ impl Backend {
         (!is_ignored).then_some(path)
     }
 
-    async fn log_dev_info(&self, message: &str) {
-        if self.is_developer_mode_active.load(Ordering::Relaxed) {
-            self.client.log_message(MessageType::INFO, message).await;
-        }
-    }
-
-    /// Log a developer-mode result: "✅ Found N <label>" or "⚠️ No <label> found".
-    async fn log_dev_result(&self, count: Option<usize>, label: &str) {
-        match count {
-            Some(n) => self.log_dev_info(&format!("✅ Found {n} {label}")).await,
-            None => self.log_dev_info(&format!("⚠️ No {label} found")).await,
-        }
-    }
-
     /// Re-index `path` from its current text and publish what that reaches.
     async fn reindex_and_publish(&self, path: PathBuf) {
+        let started = Instant::now();
         let job_path = path.clone();
         let files = in_background(
             &self.project_index,
             &self.document_cache,
-            &self.client,
+            &self.log,
             &self.jobs,
             move |index, read| pipeline::reindex_current(&job_path, index, read),
         )
         .await;
-        self.finish_reindex(&path, files).await;
-    }
 
-    /// Publish diagnostics for `files` and, in developer mode, report on `path` —
-    /// only when it was indexed: a skipped or failed job has nothing to report, and
-    /// neither has a job that dropped the file because it is gone.
-    async fn finish_reindex(&self, path: &Path, files: Vec<PathBuf>) {
-        if !files.is_empty()
-            && self.project_index.is_indexed(path)
-            && self.project_index.get_parse_error(path).is_none()
-        {
-            self.log_dev_info(&self.project_index.file_report(path))
-                .await;
-        }
+        report_reindex(&self.log, &self.project_index, &path, files.len(), started).await;
 
         publish_diagnostics_for(
             files,
@@ -165,31 +142,24 @@ impl Backend {
 
         let mut iter = response.into_iter();
 
-        if let Some(settings) = iter.next() {
-            if let Some(is_enabled) = settings.as_bool() {
-                self.is_developer_mode_active
-                    .store(is_enabled, Ordering::Relaxed);
-                self.client
-                    .log_message(
-                        MessageType::INFO,
-                        &format!("Developer Mode initialized to: {is_enabled}"),
-                    )
-                    .await;
-            }
+        if let Some(is_enabled) = iter.next().and_then(|setting| setting.as_bool()) {
+            self.log.set_debug(is_enabled);
         }
 
-        if let Some(settings) = iter.next() {
-            if let Some(limit) = settings.as_u64() {
-                self.project_index
-                    .set_reference_limit(usize::try_from(limit).unwrap_or(3));
-                self.client
-                    .log_message(
-                        MessageType::INFO,
-                        &format!("Reference Limit initialized to: {limit}"),
-                    )
-                    .await;
-            }
+        let limit = iter.next().and_then(|setting| setting.as_u64());
+
+        if let Some(limit) = limit {
+            self.project_index
+                .set_reference_limit(usize::try_from(limit).unwrap_or(3));
         }
+
+        self.log
+            .debug(|| {
+                let limit = limit.map_or_else(|| "default".to_string(), |limit| limit.to_string());
+
+                format!("Settings: developerMode on, referenceLimit {limit}")
+            })
+            .await;
     }
 
     /// Spawn background task that scans workspace files, indexes them, and publishes diagnostics.
@@ -197,17 +167,15 @@ impl Backend {
         let project_index = self.project_index.clone();
         let document_cache = self.document_cache.clone();
         let client = self.client.clone();
-        let is_dev_mode = self.is_developer_mode_active.clone();
+        let log = self.log.clone();
         let constants_ready = self.constants_ready.clone();
         let index_ready = self.index_ready.clone();
         let jobs = self.jobs.clone();
 
         tokio::spawn(async move {
-            client
-                .log_message(MessageType::INFO, "🚀 Starting background indexing...")
-                .await;
-
-            let files = scan_and_report(&client, root, generators).await;
+            let indexing_started = Instant::now();
+            let files = scan_and_report(&log, root, generators).await;
+            let pass_started = Instant::now();
 
             // Both passes take the lock editor re-indexes take, one file at a time: an
             // edit indexed while the scan runs must not be overwritten by it, and must
@@ -242,28 +210,7 @@ impl Backend {
                 .unwrap_or_default()
             };
 
-            let rust_constants = project_index.get_all_rust_constants();
-            let js_constants = project_index.get_all_js_constants();
-            let rust_const_count = rust_constants.len();
-            let js_const_count = js_constants.len();
-            let rust_keys: Vec<String> = rust_constants
-                .iter()
-                .map(|(name, value)| format!("{name}={value}"))
-                .collect();
-            let js_keys: Vec<String> = js_constants
-                .iter()
-                .map(|(name, value)| format!("{name}={value}"))
-                .collect();
-            client
-                .log_message(
-                    MessageType::INFO,
-                    format!(
-                        "🔑 Constants collected — Rust: {rust_const_count} [{rust_keys}], JS/TS: {js_const_count} [{js_keys}]",
-                        rust_keys = rust_keys.join(", "),
-                        js_keys = js_keys.join(", "),
-                    ),
-                )
-                .await;
+            report_constants(&log, &project_index, pass_started).await;
 
             // Signal that the global constants map is fully populated so that
             // did_open / did_change handlers can use it for cross-file resolution.
@@ -271,33 +218,39 @@ impl Backend {
 
             // Pass 2: full parse using the complete constants map, from each file's
             // current text — a file opened during the scan has the editor's copy.
-            {
+            let pass_started = Instant::now();
+            let files = {
                 let project_index = project_index.clone();
                 let jobs = jobs.clone();
 
-                let _ = tokio::task::spawn_blocking(move || {
-                    for path in files {
+                tokio::task::spawn_blocking(move || {
+                    for path in &files {
                         let _guard = jobs.lock_reindex();
 
-                        let Ok(content) = utils::read_current_text(&path, &document_cache) else {
+                        let Ok(content) = utils::read_current_text(path, &document_cache) else {
                             continue;
                         };
 
                         // An open file mid-edit that no edit has indexed yet has no
                         // earlier good index to keep, so the saved text stands in until
                         // the edit parses. One an edit already indexed keeps that.
-                        if !pipeline::process_file_content(&path, &content, &project_index)
-                            && document_cache.contains_key(&path)
-                            && !project_index.is_indexed(&path)
+                        if !pipeline::process_file_content(path, &content, &project_index)
+                            && document_cache.contains_key(path)
+                            && !project_index.is_indexed(path)
                         {
-                            if let Ok(saved) = std::fs::read_to_string(&path) {
-                                pipeline::process_file_content(&path, &saved, &project_index);
+                            if let Ok(saved) = std::fs::read_to_string(path) {
+                                pipeline::process_file_content(path, &saved, &project_index);
                             }
                         }
                     }
+
+                    files
                 })
-                .await;
-            }
+                .await
+                .unwrap_or_default()
+            };
+
+            report_full_parse(&log, &project_index, &files, pass_started).await;
 
             // Set before publishing: a re-index finishing from here on publishes its
             // own files, and one that finished before is covered by the loop below.
@@ -316,14 +269,14 @@ impl Backend {
             // the index is fully populated with resolved constants.
             let _ = client.code_lens_refresh().await;
 
-            let report = project_index.technical_report();
-            if is_dev_mode.load(Ordering::Relaxed) {
-                client.log_message(MessageType::INFO, report).await;
-            }
-
-            client
-                .log_message(MessageType::INFO, "🏁 Indexing complete".to_string())
-                .await;
+            let counts = project_index.name_counts();
+            log.info(format!(
+                "Indexing complete in {}: {} commands, {} events",
+                format_duration(indexing_started.elapsed()),
+                counts.commands,
+                counts.events,
+            ))
+            .await;
         });
     }
 }
@@ -349,12 +302,14 @@ impl LanguageServer for Backend {
             if is_tauri_project(&root) {
                 is_tauri = true;
                 let _ = self.workspace_root.set(root.clone());
+                self.log.set_root(root.clone());
 
-                self.client
-                    .log_message(
-                        MessageType::INFO,
-                        "✅ Tauri project detected. Tree-sitter parser ready.",
-                    )
+                self.log
+                    .info(format!(
+                        "TARUS {}, workspace {}",
+                        env!("CARGO_PKG_VERSION"),
+                        root.display()
+                    ))
                     .await;
             }
         }
@@ -391,25 +346,24 @@ impl LanguageServer for Backend {
         .unwrap_or_default();
 
         if generators.is_empty() {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    "TARUS: No type generator configurations found. Using content-based detection as fallback.",
-                )
+            self.log
+                .info("Generators: none found, bindings are detected by content")
                 .await;
         } else {
-            for g in &generators {
-                self.client
-                    .log_message(
-                        MessageType::INFO,
-                        &format!(
-                            "TARUS: Detected {:?} generator → {}",
-                            g.kind,
-                            g.output_path.display()
-                        ),
+            let found: Vec<String> = generators
+                .iter()
+                .map(|generator| {
+                    format!(
+                        "{:?} → {}",
+                        generator.kind,
+                        self.log.path(&generator.output_path)
                     )
-                    .await;
-            }
+                })
+                .collect();
+
+            self.log
+                .info(format!("Generators: {}", found.join(", ")))
+                .await;
         }
 
         let _ = self
@@ -428,13 +382,10 @@ impl LanguageServer for Backend {
         let register_options = match serde_json::to_value(registration_options) {
             Ok(v) => Some(v),
             Err(e) => {
-                self.client
-                    .log_message(
-                        MessageType::WARNING,
-                        format!(
-                            "tarus-file-watcher: failed to serialize registration options: {e}"
-                        ),
-                    )
+                self.log
+                    .warn(format!(
+                        "File watcher not registered, its options did not serialize: {e}"
+                    ))
                     .await;
                 return;
             }
@@ -445,11 +396,10 @@ impl LanguageServer for Backend {
             register_options,
         };
         if let Err(e) = self.client.register_capability(vec![registration]).await {
-            self.client
-                .log_message(
-                    MessageType::WARNING,
-                    format!("tarus-file-watcher: client rejected capability registration: {e}"),
-                )
+            self.log
+                .warn(format!(
+                    "File watcher not registered, the editor rejected it: {e}"
+                ))
                 .await;
         }
     }
@@ -458,14 +408,11 @@ impl LanguageServer for Backend {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-
-        self.log_dev_info(&format!(
-            "➡️ Request: Definition at {:?} line: {}, char: {}",
-            uri, position.line, position.character
-        ))
-        .await;
+        let started = Instant::now();
+        let target = self.log.location(
+            &params.text_document_position_params.text_document.uri,
+            Some(params.text_document_position_params.position),
+        );
 
         let result = capabilities::definition::handle_goto_definition(params, &self.project_index);
 
@@ -476,70 +423,69 @@ impl LanguageServer for Backend {
                 None
             }
         });
-        self.log_dev_result(count, "definition links").await;
+        self.log
+            .request(
+                "Definition",
+                &target,
+                &logging::outcome(count, "links"),
+                started,
+            )
+            .await;
 
         Ok(result)
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-        let uri = &params.text_document_position.text_document.uri;
-        let position = params.text_document_position.position;
-
-        self.log_dev_info(&format!(
-            "➡️ Request: References at {:?} line: {}, char: {}",
-            uri, position.line, position.character
-        ))
-        .await;
+        let started = Instant::now();
+        let target = self.log.location(
+            &params.text_document_position.text_document.uri,
+            Some(params.text_document_position.position),
+        );
 
         let result = capabilities::references::handle_references(params, &self.project_index);
 
-        self.log_dev_result(result.as_ref().map(Vec::len), "references")
+        let outcome = logging::outcome(result.as_ref().map(Vec::len), "references");
+        self.log
+            .request("References", &target, &outcome, started)
             .await;
 
         Ok(result)
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
-        let uri = &params.text_document.uri;
-
-        self.log_dev_info(&format!("➡️ Request: CodeLens for {uri:?}"))
-            .await;
+        let started = Instant::now();
+        let target = self.log.location(&params.text_document.uri, None);
 
         let result = capabilities::code_lens::handle_code_lens(params, &self.project_index);
 
-        self.log_dev_result(result.as_ref().map(Vec::len), "code lenses")
+        let outcome = logging::outcome(result.as_ref().map(Vec::len), "lenses");
+        self.log
+            .request("CodeLens", &target, &outcome, started)
             .await;
 
         Ok(result)
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-
-        self.log_dev_info(&format!(
-            "➡️ Request: Hover at {:?} line: {}, char: {}",
-            uri, position.line, position.character
-        ))
-        .await;
+        let started = Instant::now();
+        let target = self.log.location(
+            &params.text_document_position_params.text_document.uri,
+            Some(params.text_document_position_params.position),
+        );
 
         let result = capabilities::hover::handle_hover(params, &self.project_index);
 
-        self.log_dev_result(result.as_ref().map(|_| 1), "hover tooltip")
-            .await;
+        let outcome = if result.is_some() { "found" } else { "none" };
+        self.log.request("Hover", &target, outcome, started).await;
 
         Ok(result)
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        let uri = &params.text_document.uri;
-        let position = params.range.start;
-
-        self.log_dev_info(&format!(
-            "➡️ Request: CodeAction at {:?} line: {}, char: {}",
-            uri, position.line, position.character
-        ))
-        .await;
+        let started = Instant::now();
+        let target = self
+            .log
+            .location(&params.text_document.uri, Some(params.range.start));
 
         let workspace_root = self.workspace_root.get().cloned();
         let result = capabilities::code_actions::handle_code_action(
@@ -548,7 +494,9 @@ impl LanguageServer for Backend {
             workspace_root.as_ref(),
         );
 
-        self.log_dev_result(result.as_ref().map(Vec::len), "code actions")
+        let outcome = logging::outcome(result.as_ref().map(Vec::len), "actions");
+        self.log
+            .request("CodeAction", &target, &outcome, started)
             .await;
 
         Ok(result)
@@ -558,14 +506,14 @@ impl LanguageServer for Backend {
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
-        let uri = &params.text_document.uri;
-
-        self.log_dev_info(&format!("➡️ Request: DocumentSymbol for {uri:?}"))
-            .await;
+        let started = Instant::now();
+        let target = self.log.location(&params.text_document.uri, None);
 
         let result = capabilities::symbols::handle_document_symbol(params, &self.project_index);
 
-        self.log_dev_result(result.as_ref().map(document_symbol_len), "document symbols")
+        let outcome = logging::outcome(result.as_ref().map(document_symbol_len), "symbols");
+        self.log
+            .request("Symbols", &target, &outcome, started)
             .await;
 
         Ok(result)
@@ -575,22 +523,25 @@ impl LanguageServer for Backend {
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
-        self.log_dev_info(&format!(
-            "➡️ Request: WorkspaceSymbol query: '{}'",
-            params.query
-        ))
-        .await;
+        let started = Instant::now();
+        let target = format!("\"{}\"", params.query);
 
         let result = capabilities::symbols::handle_workspace_symbol(&params, &self.project_index);
 
-        self.log_dev_result(result.as_ref().map(one_of_len), "workspace symbols")
+        let outcome = logging::outcome(result.as_ref().map(one_of_len), "symbols");
+        self.log
+            .request("Workspace", &target, &outcome, started)
             .await;
 
         Ok(result)
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        self.log_dev_info("➡️ Request: Completion").await;
+        let started = Instant::now();
+        let target = self.log.location(
+            &params.text_document_position.text_document.uri,
+            Some(params.text_document_position.position),
+        );
 
         let result = capabilities::completion::handle_completion(
             &params,
@@ -598,11 +549,10 @@ impl LanguageServer for Backend {
             &self.document_cache,
         );
 
-        self.log_dev_result(
-            result.as_ref().map(completion_response_len),
-            "completion items",
-        )
-        .await;
+        let outcome = logging::outcome(result.as_ref().map(completion_response_len), "items");
+        self.log
+            .request("Completion", &target, &outcome, started)
+            .await;
 
         Ok(result)
     }
@@ -662,7 +612,7 @@ impl LanguageServer for Backend {
                 let document_cache = self.document_cache.clone();
                 let client = self.client.clone();
                 let path_clone = path.clone();
-                let is_dev_mode = self.is_developer_mode_active.clone();
+                let log = self.log.clone();
                 let index_ready = self.index_ready.clone();
                 let jobs = self.jobs.clone();
 
@@ -684,7 +634,7 @@ impl LanguageServer for Backend {
                             &project_index,
                             &document_cache,
                             &client,
-                            &is_dev_mode,
+                            &log,
                             &index_ready,
                             &jobs,
                         )
@@ -752,7 +702,7 @@ impl LanguageServer for Backend {
                 let others = in_background(
                     &self.project_index,
                     &self.document_cache,
-                    &self.client,
+                    &self.log,
                     &self.jobs,
                     move |index, read| pipeline::forget(&job_path, index, |file| read(file).ok()),
                 )
@@ -775,6 +725,15 @@ impl LanguageServer for Backend {
                 self.reindex_and_publish(path).await;
             }
         }
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<LSPAny>> {
+        if params.command == constants::DUMP_INDEX_COMMAND {
+            let report = self.project_index.index_report(&|path| self.log.path(path));
+            self.log.info(report).await;
+        }
+
+        Ok(None)
     }
 
     #[allow(unknown_lints, clippy::unused_async_trait_impl)]
@@ -815,16 +774,17 @@ async fn process_debounced_change(
     project_index: &Arc<ProjectIndex>,
     document_cache: &Arc<DashMap<PathBuf, String>>,
     client: &Client,
-    is_dev_mode: &Arc<AtomicBool>,
+    log: &Log,
     index_ready: &AtomicBool,
     jobs: &Arc<Jobs>,
 ) {
+    let started = Instant::now();
     let job_path = path.to_path_buf();
     let job_queue = jobs.clone();
     let files = in_background(
         project_index,
         document_cache,
-        client,
+        log,
         jobs,
         move |index, read| {
             job_queue.queued.started(&job_path);
@@ -834,21 +794,7 @@ async fn process_debounced_change(
     )
     .await;
 
-    // Log parse errors in developer mode (check AFTER processing)
-    if is_dev_mode.load(Ordering::Relaxed) {
-        if let Some(error_msg) = project_index.get_parse_error(path) {
-            let filename = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown");
-            client
-                .log_message(
-                    MessageType::ERROR,
-                    format!("Parse error in {filename}: {error_msg}"),
-                )
-                .await;
-        }
-    }
+    report_reindex(log, project_index, path, files.len(), started).await;
 
     publish_diagnostics_for(files, project_index, client, index_ready, jobs).await;
 }
@@ -886,7 +832,7 @@ impl Jobs {
 async fn in_background<F>(
     project_index: &Arc<ProjectIndex>,
     document_cache: &Arc<DashMap<PathBuf, String>>,
-    client: &Client,
+    log: &Log,
     jobs: &Arc<Jobs>,
     job: F,
 ) -> Vec<PathBuf>
@@ -908,8 +854,8 @@ where
     .await
     .unwrap_or_else(|error| {
         let message = format!("Re-index failed: {error}");
-        let client = client.clone();
-        tokio::spawn(async move { client.log_message(MessageType::ERROR, message).await });
+        let log = log.clone();
+        tokio::spawn(async move { log.error(message).await });
 
         Vec::new()
     })
@@ -955,34 +901,156 @@ async fn publish_diagnostics_for(
 }
 
 /// Clear `path`'s diagnostics, unless a newer computation already published them.
-/// Scan the workspace for the files to index, warning about each one over the
-/// size source files rarely reach: it is usually build output that no ignore
-/// file covers yet.
+/// Scan the workspace for the files to index, saying how many and where, and
+/// warning about each one over the size source files rarely reach: it is usually
+/// build output that no ignore file covers yet.
 async fn scan_and_report(
-    client: &Client,
+    log: &Log,
     root: PathBuf,
     generators: Vec<DiscoveredGenerator>,
 ) -> Vec<PathBuf> {
-    let scan = tokio::task::spawn_blocking(move || scan_workspace_files(&root, &generators))
+    let scan_root = root.clone();
+    let scan = tokio::task::spawn_blocking(move || scan_workspace_files(&scan_root, &generators))
         .await
         .unwrap_or_default();
 
+    log.info(format!(
+        "Indexing {} files ({})",
+        scan.files.len(),
+        files_by_folder(&root, &scan.files)
+    ))
+    .await;
+
     for (path, size) in &scan.large_files {
-        client
-            .log_message(
-                MessageType::WARNING,
-                format!(
-                    "⚠️ Large file indexed: {} ({} KB, over {} KB). If it is build output, add it to .gitignore. If Tarus should skip such files by default, open an issue: {}",
-                    path.display(),
-                    size / 1024,
-                    LARGE_FILE_BYTES / 1024,
-                    constants::NEW_ISSUE_URL,
-                ),
-            )
-            .await;
+        log.warn(format!(
+            "Large file indexed: {} ({} KB, over {} KB). If it is build output, add it to .gitignore. If Tarus should skip such files by default, open an issue: {}",
+            log.path(path),
+            size / 1024,
+            LARGE_FILE_BYTES / 1024,
+            constants::NEW_ISSUE_URL,
+        ))
+        .await;
     }
 
     scan.files
+}
+
+/// How many folders `files_by_folder` names before summing up the rest
+const FOLDERS_SHOWN: usize = 4;
+
+/// `src 816, src-tauri 125, 2 more 13`: file counts per top-level folder of
+/// `root`, largest first.
+fn files_by_folder(root: &Path, files: &[PathBuf]) -> String {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+
+    for file in files {
+        let relative = file.strip_prefix(root).unwrap_or(file);
+        let folder = match relative.components().next() {
+            Some(first) if relative.components().count() > 1 => {
+                first.as_os_str().to_string_lossy().into_owned()
+            }
+            _ => "root".to_string(),
+        };
+
+        *counts.entry(folder).or_default() += 1;
+    }
+
+    let mut counts: Vec<(String, usize)> = counts.into_iter().collect();
+    counts.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+
+    let mut parts: Vec<String> = counts
+        .iter()
+        .take(FOLDERS_SHOWN)
+        .map(|(folder, count)| format!("{folder} {count}"))
+        .collect();
+
+    let rest = &counts[counts.len().min(FOLDERS_SHOWN)..];
+
+    if !rest.is_empty() {
+        let rest_files: usize = rest.iter().map(|(_, count)| count).sum();
+        parts.push(format!("{} more {rest_files}", rest.len()));
+    }
+
+    parts.join(", ")
+}
+
+/// Pass 1 summary; the constants themselves in developer mode.
+async fn report_constants(log: &Log, project_index: &ProjectIndex, started: Instant) {
+    let rust_constants = project_index.get_all_rust_constants();
+    let js_constants = project_index.get_all_js_constants();
+
+    log.info(format!(
+        "Pass 1, constants and helpers: {} Rust, {} JS/TS constants ({})",
+        rust_constants.len(),
+        js_constants.len(),
+        format_duration(started.elapsed())
+    ))
+    .await;
+
+    for (language, constants) in [("Rust", &rust_constants), ("JS/TS", &js_constants)] {
+        log.debug(|| {
+            let mut pairs: Vec<String> = constants
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect();
+            pairs.sort();
+
+            format!("{language} constants: {}", pairs.join(", "))
+        })
+        .await;
+    }
+}
+
+/// Pass 2 summary, and a warning for each file that did not parse.
+async fn report_full_parse(
+    log: &Log,
+    project_index: &ProjectIndex,
+    files: &[PathBuf],
+    started: Instant,
+) {
+    let not_parsed: Vec<(&PathBuf, String)> = files
+        .iter()
+        .filter_map(|path| Some((path, project_index.get_parse_error(path)?)))
+        .collect();
+
+    log.info(format!(
+        "Pass 2, full parse: {} files, {} not parsed ({})",
+        files.len(),
+        not_parsed.len(),
+        format_duration(started.elapsed())
+    ))
+    .await;
+
+    for (path, error) in not_parsed {
+        log.warn(format!("Not parsed: {}: {error}", log.path(path)))
+            .await;
+    }
+}
+
+/// One developer-mode line for a re-index of `path` that republished
+/// `republished` files. A file the job dropped, because it is gone, has none.
+async fn report_reindex(
+    log: &Log,
+    project_index: &ProjectIndex,
+    path: &Path,
+    republished: usize,
+    started: Instant,
+) {
+    if !log.is_debug() {
+        return;
+    }
+
+    let outcome = match project_index.get_parse_error(path) {
+        Some(error) => format!("not parsed: {error}"),
+        None if project_index.is_indexed(path) => format!(
+            "{} names, {republished} files republished",
+            project_index.get_file_keys(path).len()
+        ),
+        None => return,
+    };
+
+    log.request("Re-index", &log.path(path), &outcome, started)
+        .await;
 }
 
 async fn clear_diagnostics(client: &Client, jobs: &Jobs, path: PathBuf) {
@@ -1008,4 +1076,46 @@ async fn send_if_newest(
             client.publish_diagnostics(uri, diagnostics, None)
         })
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn files(root: &Path, relative: &[&str]) -> Vec<PathBuf> {
+        relative.iter().map(|file| root.join(file)).collect()
+    }
+
+    #[test]
+    fn files_by_folder_lists_the_largest_folders_first() {
+        let root = Path::new("/proj");
+        let scanned = files(
+            root,
+            &[
+                "src/a.ts",
+                "src/b.ts",
+                "src/c.ts",
+                "src-tauri/src/main.rs",
+                "src-tauri/build.rs",
+            ],
+        );
+
+        assert_eq!(files_by_folder(root, &scanned), "src 3, src-tauri 2");
+    }
+
+    #[test]
+    fn files_by_folder_counts_files_at_the_root_and_sums_up_the_rest() {
+        let root = Path::new("/proj");
+        let scanned = files(
+            root,
+            &[
+                "vite.ts", "a/1.ts", "a/2.ts", "b/1.ts", "c/1.ts", "d/1.ts", "e/1.ts",
+            ],
+        );
+
+        assert_eq!(
+            files_by_folder(root, &scanned),
+            "a 2, b 1, c 1, d 1, 2 more 2"
+        );
+    }
 }

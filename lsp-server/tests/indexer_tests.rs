@@ -3,6 +3,7 @@
 mod common_paths;
 
 use common_paths::test_path;
+use expect_test::expect;
 use lsp_server::indexer::{
     CommandSchema, DynamicUsages, EventSchema, FileIndex, Finding, GeneratorKind, IndexKey,
     NameUses, ParamSchema, ProjectIndex,
@@ -693,4 +694,79 @@ fn test_rust_reference_through_a_str_type_alias_in_another_file() {
 
     index.remove_rust_constants_for_file(&types_file);
     assert_eq!(index.get_all_rust_constants().get("RUN"), None);
+}
+
+fn finding_at(key: &str, entity: EntityType, behavior: Behavior, line: u32) -> Finding {
+    let mut finding = create_test_finding(key, entity, behavior);
+    finding.range.start.line = line;
+    finding.range.end.line = line;
+
+    finding
+}
+
+fn file_with(path: std::path::PathBuf, findings: Vec<Finding>) -> FileIndex {
+    FileIndex {
+        path,
+        findings,
+        dynamic_usages: DynamicUsages::default(),
+        forwarders: Vec::new(),
+        unresolved_calls: Vec::new(),
+        uses: NameUses::default(),
+    }
+}
+
+#[test]
+fn test_index_report_lists_names_alphabetically_with_definitions_first() {
+    let index = ProjectIndex::new();
+    let backend = test_path("src-tauri/lib.rs");
+    let frontend = test_path("src/app.ts");
+
+    index.add_file(file_with(
+        frontend.clone(),
+        vec![
+            finding_at("save", EntityType::Command, Behavior::Call, 4),
+            finding_at("ready", EntityType::Event, Behavior::Listen, 9),
+        ],
+    ));
+    index.add_file(file_with(
+        backend.clone(),
+        vec![
+            finding_at("save", EntityType::Command, Behavior::Definition, 1),
+            finding_at("greet", EntityType::Command, Behavior::Definition, 7),
+            finding_at("ready", EntityType::Event, Behavior::Emit, 12),
+        ],
+    ));
+
+    let report = index.index_report(&|path| {
+        if path == backend {
+            "src-tauri/lib.rs".to_string()
+        } else {
+            "src/app.ts".to_string()
+        }
+    });
+
+    expect![[r#"
+        Index: 2 commands, 1 events, 2 files
+
+        Commands
+          greet (1)
+            definition  src-tauri/lib.rs:8:1
+          save (2)
+            definition  src-tauri/lib.rs:2:1
+            call        src/app.ts:5:1
+
+        Events
+          ready (2)
+            emit        src-tauri/lib.rs:13:1
+            listen      src/app.ts:10:1
+    "#]]
+    .assert_eq(&report);
+}
+
+#[test]
+fn test_index_report_of_an_empty_index() {
+    assert_eq!(
+        ProjectIndex::new().index_report(&|_| String::new()),
+        "Index: empty"
+    );
 }

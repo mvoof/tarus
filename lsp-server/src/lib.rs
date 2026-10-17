@@ -6,6 +6,7 @@ pub mod capabilities;
 pub mod constants;
 pub mod discovery;
 pub mod indexer;
+pub mod logging;
 pub mod parser;
 pub mod pipeline;
 pub mod scheduling;

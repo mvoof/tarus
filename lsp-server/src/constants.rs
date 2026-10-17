@@ -61,6 +61,10 @@ pub const TYPEGEN_LISTEN_FN: &str = "listen";
 // Timing & limits
 // ---------------------------------------------------------------------------
 
+/// The command that writes the whole index to the output channel
+/// (`TARUS: Dump Index` in the editor).
+pub const DUMP_INDEX_COMMAND: &str = "tarus.dumpIndex";
+
 /// Debounce delay (ms) before re-processing a file after edits.
 pub const DEBOUNCE_MS: u64 = 300;
 

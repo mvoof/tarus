@@ -20,6 +20,7 @@ mod symbols;
 pub mod types;
 
 pub use dependents::{FileDeclarations, NameChanges};
+pub use reports::NameCounts;
 pub use types::*;
 
 use crate::syntax::EntityType;

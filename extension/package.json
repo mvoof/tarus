@@ -33,6 +33,11 @@
         "command": "tarus.restartServer",
         "title": "Restart Server",
         "category": "TARUS"
+      },
+      {
+        "command": "tarus.dumpIndex",
+        "title": "Dump Index",
+        "category": "TARUS"
       }
     ],
     "configuration": {

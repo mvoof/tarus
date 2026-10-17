@@ -13,9 +13,9 @@ pub mod references;
 pub mod symbols;
 
 use tower_lsp_server::lsp_types::{
-    CodeActionProviderCapability, CodeLensOptions, CompletionOptions, HoverProviderCapability,
-    OneOf, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, TextDocumentSyncSaveOptions,
+    CodeActionProviderCapability, CodeLensOptions, CompletionOptions, ExecuteCommandOptions,
+    HoverProviderCapability, OneOf, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions,
 };
 
 /// Build the LSP server capabilities configuration
@@ -36,6 +36,10 @@ pub fn build_server_capabilities() -> ServerCapabilities {
             ..Default::default()
         }),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        execute_command_provider: Some(ExecuteCommandOptions {
+            commands: vec![crate::constants::DUMP_INDEX_COMMAND.to_string()],
+            ..Default::default()
+        }),
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
                 save: Some(TextDocumentSyncSaveOptions::Supported(true)),
