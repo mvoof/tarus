@@ -2,6 +2,9 @@
 
 ### [Unreleased]
 
+- **Performance**
+  - Fixed the startup scan taking minutes on larger projects, with CodeLens and diagnostics empty until it finished. Each file compiled the language's tree-sitter query again (~75 ms for TypeScript, longer than parsing the file), twice per file at startup and once per edit. The queries are now compiled once: on a project of ~980 files the scan went from ~3 minutes to ~5 seconds
+
 ### [0.13.0] - 2026-10-17
 
 - **Bug fixes**

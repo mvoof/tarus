@@ -3,18 +3,19 @@
 use crate::indexer::{CommandSchema, EventSchema, GeneratorKind, ParamSchema};
 use crate::utils::{capture_text, find_capture};
 use std::path::Path;
+use std::sync::LazyLock;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor};
 
-const RUST_PARAMS_QUERY: &str = include_str!("../../queries/rust_params.scm");
+// Compiled once per process, like the main queries in `lang_config`.
+static RUST_PARAMS_QUERY: LazyLock<Query> =
+    LazyLock::new(|| compile_rust_query(include_str!("../../queries/rust_params.scm")));
 
 const TAURI_SELF_PARAMS: &[&str] = &["self", "&self", "&mut self"];
 const TAURI_INJECTED_TYPES: &[&str] = &["AppHandle", "Window", "WebviewWindow", "Webview"];
 
-fn setup_rust_query(query_str: &str) -> Option<(Query, QueryCursor)> {
-    let lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-    let query = Query::new(&lang, query_str).ok()?;
-    Some((query, QueryCursor::new()))
+fn compile_rust_query(source: &str) -> Query {
+    Query::new(&tree_sitter_rust::LANGUAGE.into(), source).expect("embedded query compiles")
 }
 
 /// Map a Rust type string to its TypeScript equivalent.
@@ -111,20 +112,8 @@ pub fn extract_command_schemas_from_tree(
     content: &str,
     source_path: &Path,
 ) -> Vec<CommandSchema> {
-    let Ok(schemas) = try_extract_command_schemas_from_node(root, content, source_path) else {
-        return Vec::new();
-    };
-
-    schemas
-}
-
-fn try_extract_command_schemas_from_node(
-    root: tree_sitter::Node<'_>,
-    content: &str,
-    source_path: &Path,
-) -> Result<Vec<CommandSchema>, Box<dyn std::error::Error>> {
-    let (query, mut cursor) =
-        setup_rust_query(RUST_PARAMS_QUERY).ok_or("failed to build rust_params query")?;
+    let query = &*RUST_PARAMS_QUERY;
+    let mut cursor = QueryCursor::new();
 
     let fn_name_idx = query.capture_index_for_name("fn_name");
     let fn_params_idx = query.capture_index_for_name("fn_params");
@@ -132,7 +121,7 @@ fn try_extract_command_schemas_from_node(
     let fn_item_idx = query.capture_index_for_name("fn_item");
 
     let mut schemas = Vec::new();
-    let mut matches = cursor.matches(&query, root, content.as_bytes());
+    let mut matches = cursor.matches(query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
         // Check that fn_item has a #[tauri::command] attribute
@@ -176,7 +165,7 @@ fn try_extract_command_schemas_from_node(
         });
     }
 
-    Ok(schemas)
+    schemas
 }
 
 // Attribute detection utilities (has_tauri_command_attr, has_specta_event_derive)
@@ -232,7 +221,8 @@ fn parse_rust_params_from_node(
 
 // ─── Event schema extraction from Rust source ────────────────────────────────
 
-const RUST_EMIT_QUERY: &str = include_str!("../../queries/rust_emit.scm");
+static RUST_EMIT_QUERY: LazyLock<Query> =
+    LazyLock::new(|| compile_rust_query(include_str!("../../queries/rust_emit.scm")));
 
 /// Extract event schemas from a pre-parsed tree root node.
 ///
@@ -243,20 +233,8 @@ pub fn extract_event_schemas_from_tree(
     content: &str,
     source_path: &Path,
 ) -> Vec<EventSchema> {
-    let Ok(schemas) = try_extract_event_schemas_from_node(root, content, source_path) else {
-        return Vec::new();
-    };
-
-    schemas
-}
-
-fn try_extract_event_schemas_from_node(
-    root: tree_sitter::Node<'_>,
-    content: &str,
-    source_path: &Path,
-) -> Result<Vec<EventSchema>, Box<dyn std::error::Error>> {
-    let (query, mut cursor) =
-        setup_rust_query(RUST_EMIT_QUERY).ok_or("failed to build rust_emit query")?;
+    let query = &*RUST_EMIT_QUERY;
+    let mut cursor = QueryCursor::new();
 
     let event_name_idx = query.capture_index_for_name("event_name");
     let payload_arg_idx = query.capture_index_for_name("payload_arg");
@@ -265,7 +243,7 @@ fn try_extract_event_schemas_from_node(
 
     let mut schemas = Vec::new();
     let mut seen_events = std::collections::HashSet::new();
-    let mut matches = cursor.matches(&query, root, content.as_bytes());
+    let mut matches = cursor.matches(query, root, content.as_bytes());
 
     while let Some(m) = matches.next() {
         let event_cap = find_capture(m, event_name_idx);
@@ -333,7 +311,7 @@ fn try_extract_event_schemas_from_node(
         }
     }
 
-    Ok(schemas)
+    schemas
 }
 
 /// Try to resolve the type of an emit payload argument.
